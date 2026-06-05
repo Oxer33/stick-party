@@ -16,7 +16,8 @@ import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
-import '../theme.dart';
+import 'glass_kit.dart';
+import 'glass_tokens.dart';
 
 /// Tuning for the runner shell (no magic numbers at call sites).
 class _RunnerTune {
@@ -255,7 +256,7 @@ class _MiniGameViewState extends State<MiniGameView>
           child: Stack(
             fit: StackFit.expand,
             children: <Widget>[
-              const ColoredBox(color: AppColors.background),
+              const ColoredBox(color: GlassColors.base),
               RepaintBoundary(
                 child: CustomPaint(
                   painter: _GamePainter(
@@ -337,7 +338,7 @@ class _DividerPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Paint p = Paint()
-      ..color = AppColors.onSurfaceMuted.withValues(alpha: 0.18)
+      ..color = GlassColors.textMuted.withValues(alpha: 0.18)
       ..strokeWidth = 1.5;
     // Draw each zone's edges; shared edges are de-duplicated by [drawn].
     final Set<String> drawn = <String>{};
@@ -481,13 +482,14 @@ class _PlayerBadge extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        Container(
+        GlassPanel(
+          radius: _RunnerTune.badgeRadius,
+          blur: GlassTokens.blurChip,
+          shadow: false,
+          borderColor: color.withValues(alpha: 0.9),
+          tint: color,
+          tintOpacity: 0.14,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: AppColors.surface.withValues(alpha: 0.85),
-            borderRadius: BorderRadius.circular(_RunnerTune.badgeRadius),
-            border: Border.all(color: color, width: 2),
-          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
@@ -500,7 +502,7 @@ class _PlayerBadge extends StatelessWidget {
               Text(
                 slot.name,
                 style: const TextStyle(
-                  color: AppColors.onSurface,
+                  color: GlassColors.text,
                   fontWeight: FontWeight.w700,
                   fontSize: 13,
                 ),
@@ -559,19 +561,18 @@ class _CountdownOverlay extends StatelessWidget {
           final String label = _label(rem);
           final bool isGo = label == 'GO!';
           return Center(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: AppColors.background.withValues(alpha: 0.45),
-                shape: BoxShape.circle,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(28),
+            child: ClipOval(
+              child: GlassPanel(
+                radius: 999,
+                tint: isGo ? GlassColors.cyan : GlassColors.violet,
+                tintOpacity: 0.22,
+                padding: const EdgeInsets.all(36),
                 child: Text(
                   label,
                   style: TextStyle(
                     fontSize: isGo ? 64 : 88,
                     fontWeight: FontWeight.w900,
-                    color: isGo ? AppColors.secondary : Colors.white,
+                    color: isGo ? GlassColors.cyan : Colors.white,
                     letterSpacing: 2,
                   ),
                 ),
@@ -601,19 +602,21 @@ class _QuitButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.surface.withValues(alpha: 0.85),
-      shape: const CircleBorder(),
-      child: IconButton(
-        tooltip: 'Quit',
-        icon: const Icon(Icons.close, color: AppColors.onSurface),
-        onPressed: () {
-          if (onQuit != null) {
-            onQuit!();
-          } else {
-            Navigator.of(context).maybePop();
-          }
-        },
+    return GestureDetector(
+      onTap: () {
+        if (onQuit != null) {
+          onQuit!();
+        } else {
+          Navigator.of(context).maybePop();
+        }
+      },
+      behavior: HitTestBehavior.opaque,
+      child: GlassPanel(
+        radius: 999,
+        blur: GlassTokens.blurChip,
+        shadow: false,
+        padding: const EdgeInsets.all(12),
+        child: const Icon(Icons.close, color: GlassColors.text, size: 22),
       ),
     );
   }

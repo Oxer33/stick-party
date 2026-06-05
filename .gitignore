@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Generated preview frames (regenerable via test/preview/*)
+/preview/
+
 # Symbolication related
 app.*.symbols
 

@@ -1,15 +1,17 @@
-/// Small shared presentational widgets used across the shell screens. Keeps the
-/// screens DRY: coin/streak badges, a procedural game icon, a podium row and a
-/// section header live here instead of being copy-pasted.
+/// Small shared presentational widgets used across the shell screens, restyled
+/// for the glass design system. Keeps screens DRY: coin/streak chips, a
+/// procedural game icon, a podium row, a section header, a labelled progress bar
+/// and a stat tile live here instead of being copy-pasted.
 library;
 
 import 'package:flutter/material.dart';
 
 import '../../engine/player_manager.dart';
 import '../../meta/streak.dart';
-import '../theme.dart';
+import 'glass_kit.dart';
+import 'glass_tokens.dart';
 
-/// A pill showing the coin balance.
+/// A frosted chip showing the coin balance.
 class CoinBadge extends StatelessWidget {
   const CoinBadge({super.key, required this.coins});
 
@@ -17,32 +19,15 @@ class CoinBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
-        border: Border.all(color: AppColors.gold, width: 1.5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          const Icon(Icons.monetization_on, color: AppColors.gold, size: 18),
-          const SizedBox(width: 6),
-          Text(
-            '$coins',
-            style: const TextStyle(
-              color: AppColors.onSurface,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ],
-      ),
+    return GlassChip(
+      icon: Icons.monetization_on,
+      label: '$coins',
+      accent: GlassColors.amber,
     );
   }
 }
 
-/// A flame pill that only appears once the streak is meaningful.
+/// A flame chip that only appears once the streak is meaningful.
 class StreakBadge extends StatelessWidget {
   const StreakBadge({super.key, required this.streak});
 
@@ -51,31 +36,10 @@ class StreakBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!streak.showFlame) return const SizedBox.shrink();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
-        border: Border.all(color: AppColors.flame, width: 1.5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Icon(
-            streak.isHot ? Icons.local_fire_department : Icons.whatshot,
-            color: AppColors.flame,
-            size: 18,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '${streak.current}',
-            style: const TextStyle(
-              color: AppColors.onSurface,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ],
-      ),
+    return GlassChip(
+      icon: streak.isHot ? Icons.local_fire_department : Icons.whatshot,
+      label: '${streak.current}',
+      accent: GlassColors.flame,
     );
   }
 }
@@ -106,7 +70,15 @@ class ProceduralIcon extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: <Color>[color, color.withValues(alpha: 0.55)],
         ),
-        borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
+        borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: color.withValues(alpha: 0.4),
+            blurRadius: 14,
+            spreadRadius: -2,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       alignment: Alignment.center,
       child: Text(
@@ -131,29 +103,26 @@ class SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: AppTokens.gap),
+      padding: const EdgeInsets.only(bottom: GlassTokens.gap),
       child: Row(
         children: <Widget>[
           Container(
             width: 4,
             height: 22,
             decoration: BoxDecoration(
-              color: color ?? AppColors.primary,
+              color: color ?? GlassColors.violet,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(width: 10),
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
+          Text(title, style: GlassText.title.copyWith(fontSize: 18)),
         ],
       ),
     );
   }
 }
 
-/// One row of a podium / ranking list in the player's accent color.
+/// One row of a podium / ranking list as a frosted panel in the player's color.
 class PodiumRow extends StatelessWidget {
   const PodiumRow({
     super.key,
@@ -178,52 +147,51 @@ class PodiumRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = Color(slot.colorArgb);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: highlight ? color.withValues(alpha: 0.20) : AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(
-          color: highlight ? color : AppColors.surfaceHigh,
-          width: highlight ? 2.5 : 1,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
+      child: GlassPanel(
+        radius: GlassTokens.radius,
+        tint: highlight ? color : null,
+        tintOpacity: 0.22,
+        borderColor: highlight ? color.withValues(alpha: 0.8) : null,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: <Widget>[
+            SizedBox(
+              width: 36,
+              child: Text(
+                _medals[place] ?? '$place',
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+              ),
+            ),
+            Container(
+              width: 16,
+              height: 16,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                slot.name,
+                style: TextStyle(
+                  color: GlassColors.text,
+                  fontWeight: highlight ? FontWeight.w900 : FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+            if (trailing != null)
+              Text(
+                trailing!,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16,
+                ),
+              ),
+          ],
         ),
-      ),
-      child: Row(
-        children: <Widget>[
-          SizedBox(
-            width: 36,
-            child: Text(
-              _medals[place] ?? '$place',
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
-            ),
-          ),
-          Container(
-            width: 16,
-            height: 16,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              slot.name,
-              style: TextStyle(
-                color: AppColors.onSurface,
-                fontWeight: highlight ? FontWeight.w900 : FontWeight.w700,
-                fontSize: 16,
-              ),
-            ),
-          ),
-          if (trailing != null)
-            Text(
-              trailing!,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.w900,
-                fontSize: 16,
-              ),
-            ),
-        ],
       ),
     );
   }
@@ -247,23 +215,16 @@ class LabeledProgressBar extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Text(
-          label,
-          style: const TextStyle(
-            color: AppColors.onSurfaceMuted,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        Text(label, style: GlassText.body.copyWith(fontSize: 12)),
         const SizedBox(height: 6),
         ClipRRect(
           borderRadius: BorderRadius.circular(6),
           child: LinearProgressIndicator(
             value: fraction.clamp(0.0, 1.0),
             minHeight: 8,
-            backgroundColor: AppColors.surfaceHigh,
+            backgroundColor: GlassColors.frost.withValues(alpha: 0.12),
             valueColor:
-                AlwaysStoppedAnimation<Color>(color ?? AppColors.secondary),
+                AlwaysStoppedAnimation<Color>(color ?? GlassColors.cyan),
           ),
         ),
       ],
@@ -271,7 +232,7 @@ class LabeledProgressBar extends StatelessWidget {
   }
 }
 
-/// A stat tile: big number over a caption.
+/// A stat tile: big number over a caption, in a frosted panel.
 class StatTile extends StatelessWidget {
   const StatTile({
     super.key,
@@ -286,32 +247,23 @@ class StatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return GlassPanel(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
           Text(
             value,
             style: TextStyle(
-              color: color ?? AppColors.onSurface,
+              color: color ?? GlassColors.text,
               fontWeight: FontWeight.w900,
               fontSize: 28,
+              letterSpacing: -1,
             ),
           ),
           const SizedBox(height: 4),
-          Text(
-            caption,
-            style: const TextStyle(
-              color: AppColors.onSurfaceMuted,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+          Text(caption, style: GlassText.body.copyWith(fontSize: 12)),
         ],
       ),
     );

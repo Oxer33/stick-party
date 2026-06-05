@@ -1,8 +1,10 @@
 /// Game select: a grid of mini-games supported by the current player count.
-/// Tapping a card launches that game for a single quick-play round.
+/// Tapping a card launches that game for a single quick-play round. Restyled as
+/// glass cards; logic/nav unchanged.
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -12,7 +14,9 @@ import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
 import '../providers.dart';
 import '../router.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_scaffold.dart';
+import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
 
 class GameSelectScreen extends ConsumerWidget {
@@ -25,36 +29,41 @@ class GameSelectScreen extends ConsumerWidget {
         .where((MiniGameMeta m) => m.supportsPlayers(players.count))
         .toList(growable: false);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('PICK A GAME')),
-      body: SafeArea(
-        child: metas.isEmpty
-            ? const Center(
-                child: Text('No games for this player count.'),
-              )
-            : GridView.builder(
-                padding: const EdgeInsets.all(AppTokens.pagePadding),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 0.95,
-                ),
-                itemCount: metas.length,
-                itemBuilder: (BuildContext context, int i) {
-                  final MiniGameMeta meta = metas[i];
-                  return _GameCard(
-                    meta: meta,
-                    colorArgb:
-                        PlayerPalette.argb[i % PlayerPalette.argb.length],
-                    onTap: () => context.push(
-                      AppRoutes.play,
-                      extra: PlayArgs(gameId: meta.id, players: players),
-                    ),
-                  );
-                },
+    return GlassScaffold(
+      title: 'PICK A GAME',
+      scroll: false,
+      padding: EdgeInsets.zero,
+      body: metas.isEmpty
+          ? Center(
+              child: Text(
+                'No games for this player count.',
+                style: GlassText.body,
               ),
-      ),
+            )
+          : GridView.builder(
+              padding: const EdgeInsets.all(GlassTokens.pagePadding),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                mainAxisSpacing: GlassTokens.gapSmall,
+                crossAxisSpacing: GlassTokens.gapSmall,
+                childAspectRatio: 0.95,
+              ),
+              itemCount: metas.length,
+              itemBuilder: (BuildContext context, int i) {
+                final MiniGameMeta meta = metas[i];
+                return _GameCard(
+                  meta: meta,
+                  colorArgb: PlayerPalette.argb[i % PlayerPalette.argb.length],
+                  onTap: () => context.push(
+                    AppRoutes.play,
+                    extra: PlayArgs(gameId: meta.id, players: players),
+                  ),
+                )
+                    .animate()
+                    .fadeIn(delay: (GlassTokens.stagger * (i % 6)))
+                    .slideY(begin: 0.18, end: 0, curve: Curves.easeOutCubic);
+              },
+            ),
     );
   }
 }
@@ -72,16 +81,15 @@ class _GameCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(AppTokens.radius),
+    final Color accent = Color(colorArgb);
+    return GestureDetector(
       onTap: onTap,
-      child: Container(
+      behavior: HitTestBehavior.opaque,
+      child: GlassPanel(
+        tint: accent,
+        tintOpacity: 0.08,
+        borderColor: accent.withValues(alpha: 0.4),
         padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppTokens.radius),
-          border: Border.all(color: AppColors.surfaceHigh),
-        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -91,30 +99,40 @@ class _GameCard extends StatelessWidget {
               meta.name,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.onSurface,
-                fontWeight: FontWeight.w800,
-                fontSize: 16,
-              ),
+              style: GlassText.heading,
             ),
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: Color(colorArgb).withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                meta.inputHint,
-                style: TextStyle(
-                  color: Color(colorArgb),
-                  fontWeight: FontWeight.w800,
-                  fontSize: 11,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ),
+            const SizedBox(height: 8),
+            _HintChip(label: meta.inputHint, accent: accent),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A small accent-tinted pill for a game's input hint (TAP / HOLD / MASH).
+class _HintChip extends StatelessWidget {
+  const _HintChip({required this.label, required this.accent});
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: accent.withValues(alpha: 0.5)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: accent,
+          fontWeight: FontWeight.w800,
+          fontSize: 11,
+          letterSpacing: 1.2,
         ),
       ),
     );

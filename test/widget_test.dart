@@ -34,7 +34,11 @@ void main() {
         child: const StickPartyApp(),
       ),
     );
-    await tester.pumpAndSettle();
+    // The home screen has a continuously-animating mesh background + title
+    // shimmer, so pumpAndSettle would never settle. Pump a few fixed frames to
+    // let the entrance animations and first build complete instead.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
 
     // Title is split into two words on the home screen.
     expect(find.text('STICK'), findsOneWidget);

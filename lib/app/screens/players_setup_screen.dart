@@ -1,8 +1,10 @@
 /// Players setup: choose seat count (1–4), human/CPU per seat, accent color,
 /// the match mode, and bot difficulty. START launches quick-play or a cup.
+/// Restyled with glass cards + segmented controls; logic/nav unchanged.
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -10,7 +12,9 @@ import '../../engine/bots.dart';
 import '../../engine/player_manager.dart';
 import '../providers.dart';
 import '../router.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_scaffold.dart';
+import '../widgets/glass_tokens.dart';
 
 class PlayersSetupScreen extends ConsumerWidget {
   const PlayersSetupScreen({super.key, required this.isCup});
@@ -28,86 +32,84 @@ class PlayersSetupScreen extends ConsumerWidget {
         ref.read(playersSetupProvider.notifier);
     final BotDifficulty difficulty = ref.watch(difficultyProvider);
 
-    return Scaffold(
-      appBar: AppBar(title: Text(isCup ? 'CUP SETUP' : 'PLAYERS')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              // Seat count stepper.
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: <Widget>[
-                  const Text('PLAYERS',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w800, letterSpacing: 1)),
-                  Row(
-                    children: <Widget>[
-                      _RoundIconButton(
-                        icon: Icons.remove,
-                        enabled: manager.count > _minPlayers,
-                        onTap: controller.removePlayer,
+    return GlassScaffold(
+      title: isCup ? 'CUP SETUP' : 'PLAYERS',
+      scroll: false,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          // Seat count stepper.
+          GlassPanel(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                Text('PLAYERS', style: GlassText.label),
+                Row(
+                  children: <Widget>[
+                    _RoundIconButton(
+                      icon: Icons.remove,
+                      enabled: manager.count > _minPlayers,
+                      onTap: controller.removePlayer,
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Text(
+                        '${manager.count}',
+                        style: GlassText.display.copyWith(fontSize: 30),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: Text(
-                          '${manager.count}',
-                          style: const TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.w900,
-                            color: AppColors.onSurface,
-                          ),
-                        ),
-                      ),
-                      _RoundIconButton(
-                        icon: Icons.add,
-                        enabled: manager.count < _maxPlayers,
-                        onTap: () => controller.addPlayer(isBot: true),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppTokens.gap),
-              // Seats.
-              Expanded(
-                child: ListView.separated(
-                  itemCount: manager.count,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
-                  itemBuilder: (BuildContext context, int i) {
-                    final PlayerSlot slot = manager.slots[i];
-                    return _SeatTile(
-                      slot: slot,
-                      onToggleBot: () => controller.toggleBot(i),
-                      onCycleColor: () => controller.cycleColor(i),
-                    );
-                  },
+                    ),
+                    _RoundIconButton(
+                      icon: Icons.add,
+                      enabled: manager.count < _maxPlayers,
+                      onTap: () => controller.addPlayer(isBot: true),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: AppTokens.gap),
-              // Mode selector.
-              _ModeSelector(
-                count: manager.count,
-                selected: manager.mode,
-                onChanged: controller.setMode,
-              ),
-              const SizedBox(height: AppTokens.gap),
-              // Difficulty selector.
-              _DifficultySelector(
-                selected: difficulty,
-                onChanged: (BotDifficulty d) =>
-                    ref.read(difficultyProvider.notifier).state = d,
-              ),
-              const SizedBox(height: AppTokens.gap),
-              ElevatedButton(
-                onPressed: () => _start(context),
-                child: Text(isCup ? 'START CUP' : 'START'),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: GlassTokens.gap),
+          // Seats.
+          Expanded(
+            child: ListView.separated(
+              itemCount: manager.count,
+              separatorBuilder: (_, _) =>
+                  const SizedBox(height: GlassTokens.gapSmall),
+              itemBuilder: (BuildContext context, int i) {
+                final PlayerSlot slot = manager.slots[i];
+                return _SeatTile(
+                  slot: slot,
+                  onToggleBot: () => controller.toggleBot(i),
+                  onCycleColor: () => controller.cycleColor(i),
+                )
+                    .animate()
+                    .fadeIn(delay: (GlassTokens.stagger * i))
+                    .slideX(begin: 0.12, end: 0, curve: Curves.easeOutCubic);
+              },
+            ),
+          ),
+          const SizedBox(height: GlassTokens.gap),
+          // Mode selector.
+          _ModeSelector(
+            count: manager.count,
+            selected: manager.mode,
+            onChanged: controller.setMode,
+          ),
+          // Difficulty selector.
+          _DifficultySelector(
+            selected: difficulty,
+            onChanged: (BotDifficulty d) =>
+                ref.read(difficultyProvider.notifier).state = d,
+          ),
+          const SizedBox(height: GlassTokens.gap),
+          GlassButton(
+            label: isCup ? 'START CUP' : 'START',
+            icon: Icons.play_arrow_rounded,
+            primary: true,
+            onTap: () => _start(context),
+          ),
+        ],
       ),
     );
   }
@@ -135,44 +137,41 @@ class _SeatTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = Color(slot.colorArgb);
-    return Container(
+    return GlassPanel(
+      tint: color,
+      tintOpacity: 0.10,
+      borderColor: color.withValues(alpha: 0.6),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: color, width: 2),
-      ),
       child: Row(
         children: <Widget>[
           // Tappable color swatch.
           GestureDetector(
             onTap: onCycleColor,
             child: Container(
-              width: 40,
-              height: 40,
+              width: 44,
+              height: 44,
               decoration: BoxDecoration(
                 color: color,
-                borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
+                borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: color.withValues(alpha: 0.5),
+                    blurRadius: 12,
+                    spreadRadius: -2,
+                  ),
+                ],
               ),
               child: const Icon(Icons.palette, color: Colors.white, size: 20),
             ),
           ),
           const SizedBox(width: 14),
-          Expanded(
-            child: Text(
-              slot.name,
-              style: const TextStyle(
-                color: AppColors.onSurface,
-                fontWeight: FontWeight.w800,
-                fontSize: 16,
-              ),
-            ),
-          ),
+          Expanded(child: Text(slot.name, style: GlassText.heading)),
           // Human / CPU toggle.
           _Segmented(
             options: const <String>['HUMAN', 'CPU'],
             selectedIndex: slot.isBot ? 1 : 0,
             onSelected: (_) => onToggleBot(),
+            accent: color,
           ),
         ],
       ),
@@ -196,30 +195,22 @@ class _ModeSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     final List<GameMode> modes = _modesFor(count);
     if (modes.length <= 1) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        const Text('MODE',
-            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: <Widget>[
-            for (final GameMode m in modes)
-              ChoiceChip(
-                label: Text(_modeLabel(m)),
-                selected: m == selected,
-                onSelected: (_) => onChanged(m),
-                selectedColor: AppColors.primary,
-                backgroundColor: AppColors.surfaceHigh,
-                labelStyle: TextStyle(
-                  color: m == selected ? Colors.white : AppColors.onSurface,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-          ],
-        ),
-      ],
+    final int index = modes.indexOf(selected).clamp(0, modes.length - 1);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: GlassTokens.gap),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text('MODE', style: GlassText.label),
+          const SizedBox(height: 8),
+          _Segmented(
+            options: <String>[for (final GameMode m in modes) _modeLabel(m)],
+            selectedIndex: index,
+            onSelected: (int i) => onChanged(modes[i]),
+            expand: true,
+          ),
+        ],
+      ),
     );
   }
 
@@ -260,8 +251,7 @@ class _DifficultySelector extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        const Text('CPU DIFFICULTY',
-            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1)),
+        Text('CPU DIFFICULTY', style: GlassText.label),
         const SizedBox(height: 8),
         _Segmented(
           options: const <String>['EASY', 'MEDIUM', 'HARD'],
@@ -274,19 +264,21 @@ class _DifficultySelector extends StatelessWidget {
   }
 }
 
-/// A small segmented control.
+/// A glass segmented control: a frosted track with an accent-tinted active pill.
 class _Segmented extends StatelessWidget {
   const _Segmented({
     required this.options,
     required this.selectedIndex,
     required this.onSelected,
     this.expand = false,
+    this.accent,
   });
 
   final List<String> options;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
   final bool expand;
+  final Color? accent;
 
   @override
   Widget build(BuildContext context) {
@@ -300,31 +292,41 @@ class _Segmented extends StatelessWidget {
           ? <Widget>[for (final Widget c in children) Expanded(child: c)]
           : children,
     );
-    return Container(
+    return GlassPanel(
+      radius: GlassTokens.radiusSmall,
+      blur: GlassTokens.blurChip,
+      shadow: false,
       padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceHigh,
-        borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
-      ),
       child: row,
     );
   }
 
   Widget _buildSegment(int i, String label, bool active) {
+    final Color accentColor = accent ?? GlassColors.violet;
     return GestureDetector(
       onTap: () => onSelected(i),
+      behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: active ? AppColors.primary : Colors.transparent,
-          borderRadius: BorderRadius.circular(AppTokens.radiusSmall - 2),
+          color: active ? accentColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(GlassTokens.radiusSmall - 3),
+          boxShadow: active
+              ? <BoxShadow>[
+                  BoxShadow(
+                    color: accentColor.withValues(alpha: 0.5),
+                    blurRadius: 12,
+                    spreadRadius: -3,
+                  ),
+                ]
+              : null,
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: active ? Colors.white : AppColors.onSurfaceMuted,
+            color: active ? Colors.white : GlassColors.textMuted,
             fontWeight: FontWeight.w800,
             fontSize: 12,
           ),
@@ -347,18 +349,19 @@ class _RoundIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: enabled ? AppColors.primary : AppColors.surfaceHigh,
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: enabled ? onTap : null,
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Icon(
-            icon,
-            color: enabled ? Colors.white : AppColors.onSurfaceMuted,
-          ),
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      behavior: HitTestBehavior.opaque,
+      child: GlassPanel(
+        radius: 999,
+        blur: GlassTokens.blurChip,
+        shadow: false,
+        tint: enabled ? GlassColors.violet : null,
+        tintOpacity: 0.3,
+        padding: const EdgeInsets.all(10),
+        child: Icon(
+          icon,
+          color: enabled ? Colors.white : GlassColors.textMuted,
         ),
       ),
     );

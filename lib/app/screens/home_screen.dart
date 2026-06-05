@@ -1,20 +1,34 @@
-/// Home / main menu. Title, coin + streak badges, primary navigation buttons,
-/// a daily-claim hint dot, and a house-ad teaser card (the cross-promo funnel).
+/// Home / main menu — the glass showcase. A shimmering gradient title, a frosted
+/// chip row (coins, streak, settings), a grid of large glass buttons, a
+/// daily-claim hint dot, and a house-ad teaser card (the cross-promo funnel).
+///
+/// Navigation, providers and the cross-promo flow are unchanged from the
+/// original; only the presentation is glass.
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/rng.dart';
 import '../../meta/daily.dart';
 import '../../meta/progress_store.dart';
+import '../../meta/streak.dart';
 import '../../services/analytics_service.dart';
 import '../../services/cross_promo_service.dart';
 import '../providers.dart';
 import '../router.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_tokens.dart';
+import '../widgets/mesh_background.dart';
 import '../widgets/ui_kit.dart';
+
+/// Big logo type size.
+const double _kTitleSize = 64;
+
+/// Height of each menu button.
+const double _kMenuButtonHeight = 76;
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -25,120 +39,38 @@ class HomeScreen extends ConsumerWidget {
     final bool dailyAvailable = _dailyAvailable(ref);
 
     return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              // Top bar: coins + streak.
-              Row(
-                children: <Widget>[
-                  CoinBadge(coins: progress.coins),
-                  const SizedBox(width: 10),
-                  StreakBadge(streak: progress.streak),
-                ],
-              ),
-              // Scrollable middle so the menu never overflows on short screens.
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      const SizedBox(height: 24),
-                      // Title.
-                      Text(
-                        'STICK',
-                        textAlign: TextAlign.center,
-                        style:
-                            Theme.of(context).textTheme.displayLarge?.copyWith(
-                                  color: AppColors.primary,
-                                  fontSize: 64,
-                                ),
-                      ),
-                      Text(
-                        'PARTY',
-                        textAlign: TextAlign.center,
-                        style:
-                            Theme.of(context).textTheme.displayLarge?.copyWith(
-                                  color: AppColors.secondary,
-                                  fontSize: 64,
-                                ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        '2 • 3 • 4 PLAYER GAMES',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: AppColors.onSurfaceMuted,
-                          letterSpacing: 4,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                      // Primary actions.
-                      ElevatedButton(
-                        onPressed: () => context.push(
-                          AppRoutes.setup,
-                          extra: const SetupArgs(isCup: false),
-                        ),
-                        child: const Text('QUICK PLAY'),
-                      ),
-                      const SizedBox(height: 12),
-                      FilledButton.tonal(
-                        style: FilledButton.styleFrom(
-                          minimumSize:
-                              const Size.fromHeight(AppTokens.buttonHeight),
-                          backgroundColor: AppColors.secondary,
-                          foregroundColor: const Color(0xFF06201E),
-                        ),
-                        onPressed: () => context.push(
-                          AppRoutes.setup,
-                          extra: const SetupArgs(isCup: true),
-                        ),
-                        child: const Text('CUP'),
-                      ),
-                      const SizedBox(height: 20),
-                      // Secondary grid.
-                      Row(
-                        children: <Widget>[
-                          _MenuTile(
-                            icon: Icons.storefront,
-                            label: 'SHOP',
-                            onTap: () => context.push(AppRoutes.shop),
-                          ),
-                          const SizedBox(width: 12),
-                          _MenuTile(
-                            icon: Icons.calendar_today,
-                            label: 'DAILY',
-                            showDot: dailyAvailable,
-                            onTap: () => context.push(AppRoutes.daily),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: <Widget>[
-                          _MenuTile(
-                            icon: Icons.bar_chart,
-                            label: 'STATS',
-                            onTap: () => context.push(AppRoutes.stats),
-                          ),
-                          const SizedBox(width: 12),
-                          _MenuTile(
-                            icon: Icons.settings,
-                            label: 'SETTINGS',
-                            onTap: () => context.push(AppRoutes.settings),
-                          ),
-                        ],
-                      ),
-                    ],
+      backgroundColor: Colors.transparent,
+      body: MeshGradientBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(GlassTokens.pagePadding),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                _TopChips(coins: progress.coins, streak: progress.streak)
+                    .animate()
+                    .fadeIn(duration: GlassTokens.entrance)
+                    .slideY(begin: -0.3, end: 0, curve: Curves.easeOutCubic),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        const SizedBox(height: 28),
+                        const _Title(),
+                        const SizedBox(height: 28),
+                        _MenuGrid(dailyAvailable: dailyAvailable),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              const _HouseAdTeaser(),
-            ],
+                const SizedBox(height: GlassTokens.gap),
+                const _HouseAdTeaser()
+                    .animate()
+                    .fadeIn(delay: 360.ms, duration: GlassTokens.entrance)
+                    .slideY(begin: 0.4, end: 0, curve: Curves.easeOutCubic),
+              ],
+            ),
           ),
         ),
       ),
@@ -154,75 +86,181 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
-/// A square secondary-menu tile with an optional "available" dot.
-class _MenuTile extends StatelessWidget {
-  const _MenuTile({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.showDot = false,
-  });
+/// The frosted top chip row: coins, streak (conditional) and a settings cog.
+class _TopChips extends StatelessWidget {
+  const _TopChips({required this.coins, required this.streak});
 
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final bool showDot;
+  final int coins;
+  final StreakState streak;
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        onTap: onTap,
-        child: Container(
-          height: 88,
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(AppTokens.radius),
-            border: Border.all(color: AppColors.surfaceHigh),
-          ),
-          child: Stack(
-            children: <Widget>[
-              Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(icon, color: AppColors.onSurface, size: 28),
-                    const SizedBox(height: 8),
-                    Text(
-                      label,
-                      style: const TextStyle(
-                        color: AppColors.onSurface,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (showDot)
-                Positioned(
-                  top: 10,
-                  right: 10,
-                  child: Container(
-                    width: 12,
-                    height: 12,
-                    decoration: const BoxDecoration(
-                      color: AppColors.primary,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-            ],
-          ),
+    return Row(
+      children: <Widget>[
+        CoinBadge(coins: coins),
+        const SizedBox(width: GlassTokens.gapSmall),
+        StreakBadge(streak: streak),
+        const Spacer(),
+        GlassChip(
+          icon: Icons.settings,
+          label: 'SETTINGS',
+          accent: GlassColors.cyan,
+          onTap: () => context.push(AppRoutes.settings),
         ),
-      ),
+      ],
     );
   }
 }
 
-/// A small "More Games" teaser card driven by the cross-promo service. Tapping
-/// records a click, opens the (stub) store, and routes to the full list.
+/// The two-word gradient logo + subtitle. Kept as two separate [Text] widgets
+/// ("STICK" / "PARTY") so the smoke test can find each independently.
+class _Title extends StatelessWidget {
+  const _Title();
+
+  @override
+  Widget build(BuildContext context) {
+    final TextStyle titleStyle = GlassText.display.copyWith(
+      fontSize: _kTitleSize,
+    );
+    return Column(
+      children: <Widget>[
+        gradientText(
+          'STICK',
+          style: titleStyle,
+          textAlign: TextAlign.center,
+          gradient: const LinearGradient(
+            colors: <Color>[GlassColors.violet, GlassColors.magenta],
+          ),
+        )
+            .animate(onPlay: (AnimationController c) => c.repeat(reverse: true))
+            .shimmer(
+              duration: 2600.ms,
+              color: GlassColors.frost.withValues(alpha: 0.5),
+            ),
+        gradientText(
+          'PARTY',
+          style: titleStyle,
+          textAlign: TextAlign.center,
+          gradient: const LinearGradient(
+            colors: <Color>[GlassColors.magenta, GlassColors.cyan],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '2 • 3 • 4 PLAYER GAMES',
+          textAlign: TextAlign.center,
+          style: GlassText.overline.copyWith(letterSpacing: 4),
+        ),
+      ],
+    )
+        .animate()
+        .fadeIn(duration: 600.ms)
+        .scale(begin: const Offset(0.9, 0.9), end: const Offset(1, 1));
+  }
+}
+
+/// The main menu: a primary QUICK PLAY button then a 2-col grid of glass tiles.
+class _MenuGrid extends StatelessWidget {
+  const _MenuGrid({required this.dailyAvailable});
+
+  final bool dailyAvailable;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Widget> tiles = <Widget>[
+      GlassButton(
+        label: 'QUICK PLAY',
+        icon: Icons.sports_esports,
+        primary: true,
+        accent: GlassColors.violet,
+        height: _kMenuButtonHeight,
+        onTap: () => context.push(
+          AppRoutes.setup,
+          extra: const SetupArgs(isCup: false),
+        ),
+      ),
+      GlassButton(
+        label: 'CUP',
+        icon: Icons.emoji_events,
+        accent: GlassColors.amber,
+        height: _kMenuButtonHeight,
+        onTap: () => context.push(
+          AppRoutes.setup,
+          extra: const SetupArgs(isCup: true),
+        ),
+      ),
+      GlassButton(
+        label: 'SHOP',
+        icon: Icons.storefront,
+        accent: GlassColors.magenta,
+        height: _kMenuButtonHeight,
+        onTap: () => context.push(AppRoutes.shop),
+      ),
+      GlassButton(
+        label: 'DAILY',
+        icon: Icons.calendar_today,
+        accent: GlassColors.cyan,
+        height: _kMenuButtonHeight,
+        trailing: dailyAvailable ? const _NotifyDot() : null,
+        onTap: () => context.push(AppRoutes.daily),
+      ),
+      GlassButton(
+        label: 'STATS',
+        icon: Icons.bar_chart,
+        accent: GlassColors.flame,
+        height: _kMenuButtonHeight,
+        onTap: () => context.push(AppRoutes.stats),
+      ),
+    ];
+
+    return GridView.count(
+      crossAxisCount: 2,
+      mainAxisSpacing: GlassTokens.gapSmall,
+      crossAxisSpacing: GlassTokens.gapSmall,
+      childAspectRatio: 1.9,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      children: <Widget>[
+        for (int i = 0; i < tiles.length; i++)
+          tiles[i]
+              .animate()
+              .fadeIn(
+                delay: (GlassTokens.stagger * i) + const Duration(milliseconds: 120),
+                duration: GlassTokens.entrance,
+              )
+              .slideY(begin: 0.25, end: 0, curve: Curves.easeOutCubic),
+      ],
+    );
+  }
+}
+
+/// A small accent dot used as a "something to claim" indicator.
+class _NotifyDot extends StatelessWidget {
+  const _NotifyDot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 12,
+      height: 12,
+      decoration: BoxDecoration(
+        color: GlassColors.magenta,
+        shape: BoxShape.circle,
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: GlassColors.magenta.withValues(alpha: 0.8),
+            blurRadius: 8,
+          ),
+        ],
+      ),
+    ).animate(onPlay: (AnimationController c) => c.repeat(reverse: true)).fadeIn(
+          duration: 800.ms,
+        );
+  }
+}
+
+/// A "More Games" teaser card driven by the cross-promo service. Tapping records
+/// a click, opens the (stub) store, and routes to the full list.
 class _HouseAdTeaser extends ConsumerStatefulWidget {
   const _HouseAdTeaser();
 
@@ -254,16 +292,15 @@ class _HouseAdTeaserState extends ConsumerState<_HouseAdTeaser> {
   Widget build(BuildContext context) {
     final HouseAd? ad = _ad;
     if (ad == null) return const SizedBox.shrink();
-    return InkWell(
-      borderRadius: BorderRadius.circular(AppTokens.radius),
+    final Color accent = Color(ad.iconArgb);
+    return GestureDetector(
       onTap: () => _onTap(ad),
-      child: Container(
+      behavior: HitTestBehavior.opaque,
+      child: GlassPanel(
+        tint: accent,
+        tintOpacity: 0.10,
+        borderColor: accent.withValues(alpha: 0.5),
         padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppTokens.radius),
-          border: Border.all(color: Color(ad.iconArgb).withValues(alpha: 0.6)),
-        ),
         child: Row(
           children: <Widget>[
             ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
@@ -272,28 +309,18 @@ class _HouseAdTeaserState extends ConsumerState<_HouseAdTeaser> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Text(
-                    'MORE GAMES',
-                    style: TextStyle(
-                      color: AppColors.onSurfaceMuted,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
+                  Text('MORE GAMES', style: GlassText.overline),
                   const SizedBox(height: 2),
                   Text(
                     ad.title,
-                    style: const TextStyle(
-                      color: AppColors.onSurface,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 15,
-                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GlassText.heading,
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right, color: AppColors.onSurfaceMuted),
+            const Icon(Icons.chevron_right, color: GlassColors.textMuted),
           ],
         ),
       ),

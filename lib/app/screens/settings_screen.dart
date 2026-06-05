@@ -1,5 +1,6 @@
 /// Settings: bot difficulty, shake intensity, restore purchases, reset progress
-/// (with confirmation), and a short about/legal note.
+/// (with confirmation), and a short about/legal note. Restyled glass; all
+/// actions / providers unchanged.
 library;
 
 import 'package:flutter/material.dart';
@@ -9,7 +10,9 @@ import '../../engine/bots.dart';
 import '../../services/iap_service.dart';
 import '../../services/purchase_applier.dart';
 import '../providers.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_scaffold.dart';
+import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -20,98 +23,90 @@ class SettingsScreen extends ConsumerWidget {
     final BotDifficulty difficulty = ref.watch(difficultyProvider);
     final double shake = ref.watch(shakeIntensityProvider);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('SETTINGS')),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          children: <Widget>[
-            const SectionHeader(title: 'GAMEPLAY'),
-            _Card(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  const Text('CPU difficulty',
-                      style: TextStyle(
-                          color: AppColors.onSurface,
-                          fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 10),
-                  SegmentedButton<BotDifficulty>(
-                    segments: const <ButtonSegment<BotDifficulty>>[
-                      ButtonSegment<BotDifficulty>(
-                          value: BotDifficulty.easy, label: Text('Easy')),
-                      ButtonSegment<BotDifficulty>(
-                          value: BotDifficulty.medium, label: Text('Medium')),
-                      ButtonSegment<BotDifficulty>(
-                          value: BotDifficulty.hard, label: Text('Hard')),
-                    ],
-                    selected: <BotDifficulty>{difficulty},
-                    onSelectionChanged: (Set<BotDifficulty> sel) =>
-                        ref.read(difficultyProvider.notifier).state =
-                            sel.first,
-                  ),
-                ],
-              ),
+    return GlassScaffold(
+      title: 'SETTINGS',
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const SectionHeader(title: 'GAMEPLAY'),
+          GlassPanel(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('CPU difficulty', style: GlassText.heading),
+                const SizedBox(height: 10),
+                SegmentedButton<BotDifficulty>(
+                  segments: const <ButtonSegment<BotDifficulty>>[
+                    ButtonSegment<BotDifficulty>(
+                        value: BotDifficulty.easy, label: Text('Easy')),
+                    ButtonSegment<BotDifficulty>(
+                        value: BotDifficulty.medium, label: Text('Medium')),
+                    ButtonSegment<BotDifficulty>(
+                        value: BotDifficulty.hard, label: Text('Hard')),
+                  ],
+                  selected: <BotDifficulty>{difficulty},
+                  onSelectionChanged: (Set<BotDifficulty> sel) =>
+                      ref.read(difficultyProvider.notifier).state = sel.first,
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            _Card(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: <Widget>[
-                      const Text('Screen shake',
-                          style: TextStyle(
-                              color: AppColors.onSurface,
-                              fontWeight: FontWeight.w700)),
-                      Text('${(shake * 100).round()}%',
-                          style: const TextStyle(
-                              color: AppColors.onSurfaceMuted)),
-                    ],
-                  ),
-                  Slider(
-                    value: shake,
-                    onChanged: (double v) =>
-                        ref.read(shakeIntensityProvider.notifier).state = v,
-                  ),
-                ],
-              ),
+          ),
+          const SizedBox(height: GlassTokens.gapSmall),
+          GlassPanel(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: <Widget>[
+                    Text('Screen shake', style: GlassText.heading),
+                    Text('${(shake * 100).round()}%', style: GlassText.body),
+                  ],
+                ),
+                Slider(
+                  value: shake,
+                  onChanged: (double v) =>
+                      ref.read(shakeIntensityProvider.notifier).state = v,
+                ),
+              ],
             ),
-            const SizedBox(height: 24),
-            const SectionHeader(title: 'PURCHASES', color: AppColors.gold),
-            _Card(
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Restore purchases',
-                    style: TextStyle(
-                        color: AppColors.onSurface,
-                        fontWeight: FontWeight.w700)),
-                subtitle: const Text('Re-apply your one-time unlocks',
-                    style: TextStyle(color: AppColors.onSurfaceMuted)),
-                trailing: const Icon(Icons.restore, color: AppColors.onSurface),
-                onTap: () => _restore(context, ref),
-              ),
+          ),
+          const SizedBox(height: 24),
+          const SectionHeader(title: 'PURCHASES', color: GlassColors.amber),
+          GlassPanel(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text('Restore purchases', style: GlassText.heading),
+              subtitle: Text('Re-apply your one-time unlocks',
+                  style: GlassText.body),
+              trailing: const Icon(Icons.restore, color: GlassColors.text),
+              onTap: () => _restore(context, ref),
             ),
-            const SizedBox(height: 24),
-            const SectionHeader(title: 'DATA', color: AppColors.flame),
-            _Card(
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Reset progress',
-                    style: TextStyle(
-                        color: AppColors.flame, fontWeight: FontWeight.w700)),
-                subtitle: const Text('Erase coins, unlocks and stats',
-                    style: TextStyle(color: AppColors.onSurfaceMuted)),
-                trailing:
-                    const Icon(Icons.delete_outline, color: AppColors.flame),
-                onTap: () => _confirmReset(context, ref),
+          ),
+          const SizedBox(height: 24),
+          const SectionHeader(title: 'DATA', color: GlassColors.flame),
+          GlassPanel(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            borderColor: GlassColors.flame.withValues(alpha: 0.5),
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                'Reset progress',
+                style: GlassText.heading.copyWith(color: GlassColors.flame),
               ),
+              subtitle: Text('Erase coins, unlocks and stats',
+                  style: GlassText.body),
+              trailing:
+                  const Icon(Icons.delete_outline, color: GlassColors.flame),
+              onTap: () => _confirmReset(context, ref),
             ),
-            const SizedBox(height: 24),
-            const _AboutNote(),
-          ],
-        ),
+          ),
+          const SizedBox(height: 24),
+          const _AboutNote(),
+        ],
       ),
     );
   }
@@ -151,7 +146,7 @@ class SettingsScreen extends ConsumerWidget {
             child: const Text('CANCEL'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.flame),
+            style: FilledButton.styleFrom(backgroundColor: GlassColors.flame),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('RESET'),
           ),
@@ -170,25 +165,6 @@ class SettingsScreen extends ConsumerWidget {
   }
 }
 
-class _Card extends StatelessWidget {
-  const _Card({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: AppColors.surfaceHigh),
-      ),
-      child: child,
-    );
-  }
-}
-
 class _AboutNote extends StatelessWidget {
   const _AboutNote();
 
@@ -196,21 +172,14 @@ class _AboutNote extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: <Widget>[
-        const Text(
-          'Stick Party',
-          style: TextStyle(
-              color: AppColors.onSurface, fontWeight: FontWeight.w800),
-        ),
+        Text('Stick Party', style: GlassText.heading),
         const SizedBox(height: 6),
         Text(
           'Rated Everyone. Plays fully offline. No accounts, no tracking. '
           'In-app purchases are cosmetic only and never affect gameplay — '
           'no loot boxes, no pay-to-win, no dark patterns.',
           textAlign: TextAlign.center,
-          style: TextStyle(
-            color: AppColors.onSurfaceMuted.withValues(alpha: 0.9),
-            fontSize: 12,
-          ),
+          style: GlassText.body.copyWith(fontSize: 12),
         ),
       ],
     );

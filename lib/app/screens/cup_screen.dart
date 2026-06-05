@@ -1,6 +1,10 @@
 /// Cup screen: runs a tournament of several mini-games one at a time, showing a
 /// standings panel between games (with an optional house-ad / stub interstitial,
 /// NEVER during a game) and a champion podium at the end.
+///
+/// The cup controller logic and the ad / house-ad gating are unchanged from the
+/// original; only the presentation (standings, between-game card, champion) is
+/// restyled with glass.
 library;
 
 import 'package:flutter/material.dart';
@@ -18,7 +22,9 @@ import '../../services/analytics_service.dart';
 import '../../services/cross_promo_service.dart';
 import '../providers.dart';
 import '../router.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_scaffold.dart';
+import '../widgets/glass_tokens.dart';
 import '../widgets/mini_game_view.dart';
 import '../widgets/ui_kit.dart';
 
@@ -82,6 +88,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
       return const Scaffold(body: SizedBox.shrink());
     }
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Stack(
         children: <Widget>[
           MiniGameView(
@@ -97,20 +104,10 @@ class _CupScreenState extends ConsumerState<CupScreen> {
             top: 8,
             left: 8,
             child: SafeArea(
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: AppColors.surface.withValues(alpha: 0.85),
-                  borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
-                ),
-                child: Text(
-                  'GAME ${_cup.index + 1}/${_cup.total}',
-                  style: const TextStyle(
-                    color: AppColors.onSurface,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
+              child: GlassChip(
+                icon: Icons.emoji_events,
+                label: 'GAME ${_cup.index + 1}/${_cup.total}',
+                accent: GlassColors.amber,
               ),
             ),
           ),
@@ -149,37 +146,36 @@ class _CupScreenState extends ConsumerState<CupScreen> {
 
   Widget _buildStandings() {
     final List<int> standings = _cup.board.standings();
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('STANDINGS • ${_cup.index}/${_cup.total}'),
-        automaticallyImplyLeading: false,
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Expanded(
-                child: ListView(
-                  children: <Widget>[
-                    for (int i = 0; i < standings.length; i++)
-                      _standingRow(i, standings[i]),
-                    if (_showHouseAd) ...<Widget>[
-                      const SizedBox(height: AppTokens.gap),
-                      const _CupHouseAdCard(),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: AppTokens.gap),
-              ElevatedButton(
-                onPressed: _nextGame,
-                child: Text('NEXT GAME (${_cup.index + 1}/${_cup.total})'),
-              ),
-            ],
+    return GlassScaffold(
+      title: 'STANDINGS • ${_cup.index}/${_cup.total}',
+      showBack: false,
+      scroll: false,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Expanded(
+            child: ListView(
+              children: <Widget>[
+                for (int i = 0; i < standings.length; i++)
+                  _standingRow(i, standings[i])
+                      .animate()
+                      .fadeIn(delay: (GlassTokens.stagger * i))
+                      .slideX(begin: 0.12, end: 0),
+                if (_showHouseAd) ...<Widget>[
+                  const SizedBox(height: GlassTokens.gap),
+                  const _CupHouseAdCard(),
+                ],
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: GlassTokens.gap),
+          GlassButton(
+            label: 'NEXT GAME (${_cup.index + 1}/${_cup.total})',
+            icon: Icons.play_arrow_rounded,
+            primary: true,
+            onTap: _nextGame,
+          ),
+        ],
       ),
     );
   }
@@ -224,62 +220,59 @@ class _CupScreenState extends ConsumerState<CupScreen> {
     final bool humanChampion = championId != null &&
         _players.slots.any((PlayerSlot s) => s.id == championId && !s.isBot);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('CHAMPION'),
-        automaticallyImplyLeading: false,
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              const SizedBox(height: 8),
-              if (championId != null) _championBanner(championId),
-              if (humanChampion)
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(
-                      '+${Economy.coinsPerCupWin} coins',
-                      style: const TextStyle(
-                        color: AppColors.gold,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 18,
-                      ),
-                    ),
+    return GlassScaffold(
+      title: 'CHAMPION',
+      showBack: false,
+      scroll: false,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const SizedBox(height: 8),
+          if (championId != null) _championBanner(championId),
+          if (humanChampion)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '+${Economy.coinsPerCupWin} coins',
+                  style: const TextStyle(
+                    color: GlassColors.amber,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 18,
                   ),
-                ),
-              const SizedBox(height: AppTokens.gap),
-              Expanded(
-                child: ListView(
-                  children: <Widget>[
-                    for (int i = 0; i < standings.length; i++)
-                      _standingRow(i, standings[i]),
-                  ],
                 ),
               ),
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _rematch,
-                      child: const Text('REMATCH'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton(
-                      onPressed: () => context.go(AppRoutes.home),
-                      child: const Text('HOME'),
-                    ),
-                  ),
-                ],
+            ),
+          const SizedBox(height: GlassTokens.gap),
+          Expanded(
+            child: ListView(
+              children: <Widget>[
+                for (int i = 0; i < standings.length; i++)
+                  _standingRow(i, standings[i]),
+              ],
+            ),
+          ),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: GlassButton(
+                  label: 'REMATCH',
+                  icon: Icons.refresh,
+                  onTap: _rematch,
+                ),
+              ),
+              const SizedBox(width: GlassTokens.gapSmall),
+              Expanded(
+                child: GlassButton(
+                  label: 'HOME',
+                  icon: Icons.home_rounded,
+                  primary: true,
+                  onTap: () => context.go(AppRoutes.home),
+                ),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -288,13 +281,11 @@ class _CupScreenState extends ConsumerState<CupScreen> {
     final PlayerSlot? slot = _slotById(championId);
     if (slot == null) return const SizedBox.shrink();
     final Color color = Color(slot.colorArgb);
-    return Container(
+    return GlassPanel(
+      tint: color,
+      tintOpacity: 0.18,
+      borderColor: color.withValues(alpha: 0.8),
       padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: color, width: 3),
-      ),
       child: Column(
         children: <Widget>[
           const Text('🏆', style: TextStyle(fontSize: 56)),
@@ -307,14 +298,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
               fontSize: 28,
             ),
           ),
-          const Text(
-            'CUP CHAMPION',
-            style: TextStyle(
-              color: AppColors.onSurfaceMuted,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 2,
-            ),
-          ),
+          Text('CUP CHAMPION', style: GlassText.overline),
         ],
       ),
     ).animate().fadeIn().scale(
@@ -369,16 +353,14 @@ class _CupHouseAdCardState extends ConsumerState<_CupHouseAdCard> {
     final HouseAd? ad = _ad;
     if (ad == null) return const SizedBox.shrink();
     final Color color = Color(ad.iconArgb);
-    return InkWell(
-      borderRadius: BorderRadius.circular(AppTokens.radius),
+    return GestureDetector(
       onTap: () => ref.read(crossPromoProvider).openStore(ad),
-      child: Container(
+      behavior: HitTestBehavior.opaque,
+      child: GlassPanel(
+        tint: color,
+        tintOpacity: 0.12,
+        borderColor: color.withValues(alpha: 0.6),
         padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(AppTokens.radius),
-          border: Border.all(color: color.withValues(alpha: 0.6)),
-        ),
         child: Row(
           children: <Widget>[
             ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
@@ -387,23 +369,13 @@ class _CupHouseAdCardState extends ConsumerState<_CupHouseAdCard> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Text(
-                    ad.title,
-                    style: const TextStyle(
-                      color: AppColors.onSurface,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 15,
-                    ),
-                  ),
+                  Text(ad.title, style: GlassText.heading),
                   const SizedBox(height: 2),
                   Text(
                     ad.blurb,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.onSurfaceMuted,
-                      fontSize: 12,
-                    ),
+                    style: GlassText.body.copyWith(fontSize: 12),
                   ),
                 ],
               ),

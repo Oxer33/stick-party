@@ -1,66 +1,158 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
+import '../../art/fx/juice.dart';
+import '../../art/stick/stick_figure.dart';
+import '../../art/stick/stick_skeleton.dart';
+import '../../art/stick/stick_style.dart';
+import '../../core/math2.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/lane_hopper.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
-import '../../art/fx/juice.dart';
-import '../../art/stick/stick_figure.dart';
-import '../../art/stick/stick_style.dart';
+import 'falling_render.dart';
 
-/// Numeric tuning — no magic numbers inline.
+/// Numeric tuning — no magic numbers inline. All times in seconds, speeds px/s.
 class _Tuning {
-  static const double timeLimit = 45;
-  static const int laneCount = 4; // horizontal lanes per track
-  static const double fallSpeedStart = 240; // px/s
-  static const double fallAccel = 26; // px/s^2 ramp so rounds always end
-  static const double spawnEveryStart = 1.1; // seconds between blocks
-  static const double spawnMin = 0.4; // floor on spawn interval
-  static const double spawnRamp = 0.012; // spawn interval shrink per second
-  static const double blockSize = 46;
-  static const double hopAnimSpeed = 16;
-  static const double runnerInsetY = 70; // runner row above band bottom
-  static const double laneMargin = 0.12; // fraction inset of lanes in a band
-  static const double hitPad = 8; // collision slack
-  static const double figureLift = 4;
+  // Round length. Well under the test's 80s safety cap; escalation guarantees
+  // it converges far sooner.
+  static const double timeLimit = 38;
+
+  static const int laneCount = 4; // horizontal lanes per player band
+  static const double laneMargin = 0.14; // fraction inset of lanes in a band
+
+  // Fall speed: starts brisk and ramps so the round always resolves.
+  static const double fallSpeedStart = 250; // px/s
+  static const double fallAccel = 30; // px/s^2
+
+  // Spawn cadence: shrinks over time (more hazards as it escalates).
+  static const double spawnEveryStart = 1.0; // s between hazards (per band)
+  static const double spawnMin = 0.34; // floor on spawn interval
+  static const double spawnRamp = 0.013; // interval shrink per second
+
+  // Hazard sizing relative to lane spacing (kept clear of neighbours).
+  static const double hazardSizeBase = 0.62; // size / lane spacing
+  static const double hazardSizeJitter = 0.16; // ± size variation
+
+  // Per-kind speed multipliers (boulder mid, anvil fast/heavy, crate slow).
+  static const double boulderSpeedMul = 1.0;
+  static const double anvilSpeedMul = 1.35;
+  static const double crateSpeedMul = 0.78;
+
+  static const double hopAnimSpeed = 18; // lane ease rate (snappy)
+  static const double runnerInsetFactor = 0.28; // runner row above band bottom
+  // Figure scale tracks band height so the runner stays a clear, chunky
+  // presence whether there are 1 or 4 stacked bands.
+  static const double figureScaleMin = 0.9; // 4-up bands (~350px)
+  static const double figureScaleMax = 2.4; // single full-height band
+  static const double figureScaleLoBand = 300; // band px at min scale
+  static const double figureScaleHiBand = 1300; // band px at max scale
+
+  static const double hitPadFactor = 0.42; // collision slack / hazard size
+  static const double nearMissBand = 0.85; // |Δlane| window for a near-miss
+  static const double nearMissScore = 5; // points per stylish dodge
+  static const double survivePerSec = 2; // passive survival score / second
+
+  // Near-miss reward feel.
+  static const double nearMissSlowMo = 0.22; // hitStop duration
+  static const double nearMissTimeScale = 0.4; // sim time scale during slow-mo
+  static const double nearMissFlashSec = 0.35;
+
+  // Hop feel.
+  static const double hopHoldSec = 0.16; // jump pose hold after a hop
+  static const double dustSizeFactor = 4; // hop dust size / figure scale
+
+  // Crush fling.
+  static const double flingX = 150; // horizontal fling / figure scale
+  static const double flingY = 120; // upward fling / figure scale
+
+  // Bot reactivity. A bot commits a dodge when the nearest threat in its lane
+  // is within this lead time (scaled by accuracy: better bots react earlier).
+  static const double botLeadBase = 0.22; // base lead seconds
+  static const double botLeadPerAccuracy = 0.55; // extra lead at accuracy 1
+
+  static const double spinPerSec = 2.4; // hazard tumble rate (visual)
+  static const double scrollPerSec = 220; // band texture scroll rate (visual)
 }
 
-/// A block falling down one player's track lane.
-class _Block {
+/// One falling hazard in a player's band. Mutable, round-scoped value.
+class _Hazard {
   final int lane;
+  final HazardKind kind;
+  final double size;
+  final double speedMul;
+  final double spinPhase; // deterministic per-hazard spin offset
   double y;
-  _Block({required this.lane, required this.y});
+  bool counted = false; // near-miss/strike resolved once as it crosses
+
+  _Hazard({
+    required this.lane,
+    required this.kind,
+    required this.size,
+    required this.speedMul,
+    required this.spinPhase,
+    required this.y,
+  });
+}
+
+/// A short-lived per-lane near-miss flash anchor (visual only).
+class _Flash {
+  final int lane;
+  double life;
+  final double maxLife;
+  _Flash({required this.lane, required this.life}) : maxLife = life;
+  double get strength => maxLife <= 0 ? 0 : (life / maxLife).clamp(0.0, 1.0);
 }
 
 /// One player's dodge track: a horizontal band with [laneCount] lanes, a runner
-/// hopping between them, and its own stream of falling blocks.
+/// hopping between them, and its own stream of falling hazards.
 class _Track {
   final int playerId;
   final Color color;
-  final Rect band; // sub-region of the arena owned by this player
-  final LaneSet lanes; // horizontal lane x-coordinates
+  final Rect band;
+  final LaneSet lanes;
   final double runnerY; // fixed y where the runner stands
+  final double figureLift; // pelvis lift so feet plant on the runner line
+  final double figureScale;
   final Hopper hopper;
   final StickFigure figure;
-  final List<_Block> blocks = <_Block>[];
+  final List<_Hazard> hazards = <_Hazard>[];
+  final List<_Flash> flashes = <_Flash>[];
+
   bool alive = true;
-  int hopDir = 1; // alternates so bot/idle drift bounces in-bounds
+  int hopDir = 1; // last hop direction (bounces at the ends)
   double spawnTimer = 0;
+  double hopHold = 0; // brief jump-pose timer after a hop
   ReactionClock? clock;
+
   _Track({
     required this.playerId,
     required this.color,
     required this.band,
     required this.lanes,
     required this.runnerY,
+    required this.figureLift,
+    required this.figureScale,
     required this.hopper,
     required this.figure,
     this.clock,
   });
+
+  /// Lane x-coordinates for the renderer.
+  List<double> laneXs() =>
+      [for (var i = 0; i < lanes.count; i++) lanes.coordOf(i)];
 }
 
-/// Falling Dodge: blocks rain down each player's lane track; tap to slide to an
-/// adjacent lane. Getting struck eliminates you. Last runner standing wins.
+/// Falling Dodge: telegraphed hazards (boulders, anvils, spike-crates) rain
+/// down each player's lane band; one tap hops the runner toward safety. A
+/// stylish near-miss rewards brief slow-mo + sparks + a "NICE!" popup; getting
+/// crushed ragdolls + eliminates you. Fall speed and spawn rate escalate so the
+/// round always converges — last runner standing wins, with a time-limit
+/// fallback ranked by survival score.
+///
+/// Bots read the same ground telegraphs and dodge on a reaction clock; their
+/// [BotProfile] accuracy sets how early they react and [errorRate] makes them
+/// occasionally mistime and take a hit, so they feel reactive, not scripted.
 class FallingDodge extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -74,8 +166,9 @@ class FallingDodge extends MiniGameBase {
 
   late Juice _juice;
   final List<_Track> _tracks = <_Track>[];
-  final List<int> _eliminationOrder = <int>[];
+  final List<int> _eliminationOrder = <int>[]; // worst→best as they fall
   double _elapsed = 0;
+  double _animClock = 0; // real-time clock for spin/scroll (never scaled)
   double _fallSpeed = _Tuning.fallSpeedStart;
 
   @override
@@ -86,6 +179,8 @@ class FallingDodge extends MiniGameBase {
     begin();
   }
 
+  // ── World build ─────────────────────────────────────────────────────────────
+
   void _buildTracks() {
     final arena = ctx.arena;
     final count = ctx.players.length;
@@ -94,20 +189,29 @@ class FallingDodge extends MiniGameBase {
       final p = ctx.players[i];
       final band = Rect.fromLTWH(0, bandH * i, arena.width, bandH);
       final lanes = _laneSet(band);
-      _tracks.add(_Track(
+      final runnerY = band.bottom - bandH * _Tuning.runnerInsetFactor;
+      final scale = _figureScaleFor(bandH);
+      final lift = _footReach(scale);
+      final track = _Track(
         playerId: p.id,
         color: Color(p.colorArgb),
         band: band,
         lanes: lanes,
-        runnerY: band.bottom - _Tuning.runnerInsetY,
+        runnerY: runnerY,
+        figureLift: lift,
+        figureScale: scale,
         hopper:
             Hopper(lane: _Tuning.laneCount ~/ 2, laneCount: _Tuning.laneCount),
         figure: StickFigure(
-          style: StickStyle.hero.copyWith(fill: Color(p.colorArgb)),
+          proportions: StickProportions.hero.scaled(scale),
+          style: _runnerStyle(Color(p.colorArgb)),
           facing: 1,
         )..setLoco(LocoState.run),
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
-      ));
+      );
+      // Stagger initial spawns so bands don't pulse in lockstep.
+      track.spawnTimer = ctx.rng.range(0.1, _Tuning.spawnEveryStart);
+      _tracks.add(track);
     }
   }
 
@@ -122,31 +226,69 @@ class FallingDodge extends MiniGameBase {
     );
   }
 
+  /// Scale the runner to the band height so 1..4 players all read clearly.
+  double _figureScaleFor(double bandH) {
+    final t = ((bandH - _Tuning.figureScaleLoBand) /
+            (_Tuning.figureScaleHiBand - _Tuning.figureScaleLoBand))
+        .clamp(0.0, 1.0);
+    return lerpD(_Tuning.figureScaleMin, _Tuning.figureScaleMax, t);
+  }
+
+  /// Pelvis→foot reach at rest (legs near-vertical), used to plant feet.
+  double _footReach(double scale) {
+    final p = StickProportions.hero.scaled(scale);
+    return p.thigh + p.shin;
+  }
+
+  StickStyle _runnerStyle(Color color) => StickStyle.hero.copyWith(
+        fill: color,
+        outline: _brighten(color, 0.5),
+        glowSigma: 5,
+        rimAlpha: 0.26,
+        shadowAlpha: 0.0, // we draw our own contact shadow
+        smearAlpha: 0.26,
+      );
+
+  // ── Input ───────────────────────────────────────────────────────────────────
+
   @override
   void onInput(PlayerInput input) {
     if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
       return;
     }
-    _swap(input.playerId);
+    _hopToSafety(input.playerId);
   }
 
-  /// Human tap: slide toward the safest lane (away from the nearest threat).
-  void _swap(int id) {
+  /// Tap: hop toward the safest adjacent lane (away from the nearest threat).
+  void _hopToSafety(int id) {
     final t = _trackOf(id);
     if (t == null || !t.alive) return;
-    final dir = _safeDirection(t);
+    _commitHop(t, _safeDirection(t));
+  }
+
+  void _commitHop(_Track t, int dir) {
+    final before = t.hopper.lane;
     t.hopper.hop(dir);
     t.hopDir = dir;
+    if (t.hopper.lane == before) return;
+    // Lean/hop pose + a take-off dust kick at the source lane.
+    t.hopHold = _Tuning.hopHoldSec;
+    t.figure.facing = dir >= 0 ? 1.0 : -1.0;
+    if (!t.figure.isRagdoll) t.figure.setLoco(LocoState.jump);
+    _juice.particles.burst(
+      at: Offset(t.lanes.coordOf(before), t.runnerY),
+      count: 5,
+      color: const Color(0xFFE8EEF6),
+      speed: 150,
+      baseAngle: -math.pi / 2,
+      spread: math.pi * 0.7,
+      size: _Tuning.dustSizeFactor * t.figureScale,
+      gravity: 420,
+      life: 0.3,
+    );
   }
 
-  _Track? _trackOf(int id) {
-    for (final t in _tracks) {
-      if (t.playerId == id) return t;
-    }
-    return null;
-  }
-
-  /// Pick a hop direction that moves away from the most imminent block, while
+  /// Pick a hop direction that moves away from the most imminent hazard while
   /// staying inside the lane range.
   int _safeDirection(_Track t) {
     final lane = t.hopper.lane;
@@ -154,41 +296,47 @@ class FallingDodge extends MiniGameBase {
     var dir = t.hopDir;
     if (threatLane != null) {
       if (threatLane == lane) {
-        dir = lane <= 0 ? 1 : -1; // step off the current lane
+        dir = lane <= 0 ? 1 : -1; // step off the threatened lane
       } else {
         dir = threatLane > lane ? -1 : 1; // move opposite the threat
       }
     }
-    // Bounce off the track ends.
-    if (lane + dir < 0) dir = 1;
+    if (lane + dir < 0) dir = 1; // bounce off the ends
     if (lane + dir > _Tuning.laneCount - 1) dir = -1;
     return dir;
   }
 
+  /// The lane of the closest hazard still above the runner line.
   int? _nearestThreatLane(_Track t) {
-    _Block? nearest;
-    for (final b in t.blocks) {
-      if (b.y > t.runnerY) continue; // already passed
-      if (nearest == null || b.y > nearest.y) nearest = b;
+    _Hazard? nearest;
+    for (final h in t.hazards) {
+      if (h.y > t.runnerY) continue; // already passed the line
+      if (nearest == null || h.y > nearest.y) nearest = h;
     }
     return nearest?.lane;
   }
 
+  // ── Update ──────────────────────────────────────────────────────────────────
+
   @override
   void update(double dt) {
     if (status != MiniGameStatus.running) return;
+    if (!dt.isFinite || dt <= 0) return;
     _elapsed += dt;
+    _animClock += dt;
+
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
     _fallSpeed = _Tuning.fallSpeedStart + _Tuning.fallAccel * _elapsed;
+
     for (final t in _tracks) {
       if (t.alive) {
         _spawnTick(t, sdt);
-        _stepBlocks(t, sdt);
+        _stepHazards(t, sdt);
       }
-      t.hopper.update(sdt, speed: _Tuning.hopAnimSpeed);
-      t.figure.update(dt);
+      _tickFigure(t, dt, sdt);
+      _tickFlashes(t, dt);
     }
     _driveBots(dt);
     _checkEnd();
@@ -200,59 +348,176 @@ class FallingDodge extends MiniGameBase {
     final interval = (_Tuning.spawnEveryStart - _Tuning.spawnRamp * _elapsed)
         .clamp(_Tuning.spawnMin, _Tuning.spawnEveryStart);
     t.spawnTimer = interval;
-    final lane = ctx.rng.intRange(0, _Tuning.laneCount);
-    t.blocks.add(_Block(lane: lane, y: t.band.top - _Tuning.blockSize));
+    _spawnHazard(t);
   }
 
-  void _stepBlocks(_Track t, double dt) {
-    final survivors = <_Block>[];
-    for (final b in t.blocks) {
-      final y = b.y + _fallSpeed * dt;
-      if (_strikes(t, b.lane, y)) {
-        _eliminate(t, b.lane);
-        return; // track is done; drop remaining blocks
+  void _spawnHazard(_Track t) {
+    final lane = ctx.rng.intRange(0, _Tuning.laneCount);
+    final kind = _pickKind();
+    final spacing = t.lanes.spacing.abs();
+    final sizeFrac = (_Tuning.hazardSizeBase +
+            ctx.rng.jitter(_Tuning.hazardSizeJitter))
+        .clamp(0.4, 0.95);
+    final size = spacing * sizeFrac;
+    t.hazards.add(_Hazard(
+      lane: lane,
+      kind: kind,
+      size: size,
+      speedMul: _speedMulFor(kind),
+      spinPhase: ctx.rng.range(0, math.pi * 2),
+      y: t.band.top - size,
+    ));
+  }
+
+  HazardKind _pickKind() {
+    final r = ctx.rng.next();
+    if (r < 0.5) return HazardKind.boulder; // common
+    if (r < 0.8) return HazardKind.crate; // slow but wide spikes
+    return HazardKind.anvil; // fast and punishing
+  }
+
+  double _speedMulFor(HazardKind k) => switch (k) {
+        HazardKind.boulder => _Tuning.boulderSpeedMul,
+        HazardKind.anvil => _Tuning.anvilSpeedMul,
+        HazardKind.crate => _Tuning.crateSpeedMul,
+      };
+
+  void _stepHazards(_Track t, double dt) {
+    final survivors = <_Hazard>[];
+    for (final h in t.hazards) {
+      final prevY = h.y;
+      h.y += _fallSpeed * h.speedMul * dt;
+
+      // Resolve a crossing of the runner line exactly once.
+      if (!h.counted && prevY <= t.runnerY && h.y >= t.runnerY) {
+        if (_isHit(t, h)) {
+          _eliminate(t, h);
+          return; // track is done; drop the rest of its hazards
+        }
+        h.counted = true;
+        _registerNearMiss(t, h);
       }
-      if (y > t.band.bottom + _Tuning.blockSize) continue; // fell past
-      survivors.add(_Block(lane: b.lane, y: y));
+
+      if (h.y > t.band.bottom + h.size) continue; // fell past the band
+      survivors.add(h);
     }
-    t.blocks
+    t.hazards
       ..clear()
       ..addAll(survivors);
   }
 
-  bool _strikes(_Track t, int blockLane, double blockY) {
-    if (blockLane != t.hopper.lane) return false;
-    final dy = (blockY - t.runnerY).abs();
-    return dy <= _Tuning.blockSize / 2 + _Tuning.hitPad;
+  /// A hit requires the same lane AND the runner's visual position close enough
+  /// horizontally that it has not cleared the falling body yet.
+  bool _isHit(_Track t, _Hazard h) {
+    if (h.lane != t.hopper.lane) return false;
+    final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
+    final hazardX = t.lanes.coordOf(h.lane);
+    final pad = h.size * (_Tuning.hitPadFactor + 0.5);
+    return (runnerX - hazardX).abs() <= pad;
   }
 
-  /// Bots slide away from imminent blocks; accuracy gates whether they react.
+  /// Reward a stylish dodge: a hazard that crossed the runner line in a lane
+  /// directly adjacent to the runner → slow-mo + spark + "NICE!" popup.
+  void _registerNearMiss(_Track t, _Hazard h) {
+    if ((h.lane - t.hopper.lane).abs() != 1) return;
+    final laneDist = (h.lane - t.hopper.visualLane).abs();
+    if (laneDist > _Tuning.nearMissBand) return;
+
+    addScore(t.playerId, _Tuning.nearMissScore);
+    _juice.hitStop
+        .trigger(_Tuning.nearMissSlowMo, scale: _Tuning.nearMissTimeScale);
+    _juice.particles.burst(
+      at: Offset(t.lanes.coordOf(h.lane), t.runnerY),
+      count: 8,
+      color: const Color(0xFF35E0FF),
+      speed: 260,
+      size: 5 * t.figureScale,
+      life: 0.4,
+    );
+    _juice.popup(
+      Offset(t.lanes.coordOfVisual(t.hopper.visualLane), t.runnerY - 28),
+      'NICE!',
+      const Color(0xFF8DEBFF),
+      size: 22 + 8 * t.figureScale,
+    );
+    t.flashes.add(_Flash(lane: h.lane, life: _Tuning.nearMissFlashSec));
+  }
+
+  void _tickFigure(_Track t, double dt, double sdt) {
+    t.hopper.update(sdt, speed: _Tuning.hopAnimSpeed);
+    if (t.hopHold > 0) {
+      t.hopHold -= dt;
+      if (t.hopHold <= 0 && t.alive && !t.figure.isRagdoll) {
+        t.figure.setLoco(LocoState.run);
+      }
+    }
+    t.figure.update(dt);
+  }
+
+  void _tickFlashes(_Track t, double dt) {
+    if (t.flashes.isEmpty) return;
+    for (final f in t.flashes) {
+      f.life -= dt;
+    }
+    t.flashes.removeWhere((f) => f.life <= 0);
+  }
+
+  // ── Bots ─────────────────────────────────────────────────────────────────────
+
+  /// Bots read the ground telegraph and dodge on their reaction clock. Better
+  /// accuracy → react with more lead time; [errorRate] → occasionally freeze.
   void _driveBots(double dt) {
     for (final t in _tracks) {
       final clock = t.clock;
       if (clock == null || !t.alive) continue;
       if (!clock.tick(dt)) continue;
       if (_botShouldDodge(t)) {
-        _swap(t.playerId);
+        _hopToSafety(t.playerId);
       }
       clock.arm(ctx.botProfile, ctx.rng);
     }
   }
 
+  /// True when a hazard is bearing down on the bot's current lane within its
+  /// (accuracy-scaled) lead window and it does not fumble the reaction.
   bool _botShouldDodge(_Track t) {
-    final threat = _nearestThreatLane(t);
-    if (threat == null || threat != t.hopper.lane) return false;
-    // Skill gate: weak bots sometimes freeze (errorRate) and get hit.
+    final lane = t.hopper.lane;
+    final lead = _Tuning.botLeadBase +
+        _Tuning.botLeadPerAccuracy * ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    var imminent = false;
+    for (final h in t.hazards) {
+      if (h.lane != lane || h.counted || h.y > t.runnerY) continue;
+      final speed = _fallSpeed * h.speedMul;
+      if (speed <= 0) continue;
+      final eta = (t.runnerY - h.y) / speed;
+      if (eta <= lead) {
+        imminent = true;
+        break;
+      }
+    }
+    if (!imminent) return false;
+    // Skill gate: weak bots sometimes mistime and eat the hazard.
     return !ctx.rng.chance(ctx.botProfile.errorRate);
   }
 
-  void _eliminate(_Track t, int lane) {
+  // ── Elimination / outcome ────────────────────────────────────────────────────
+
+  void _eliminate(_Track t, _Hazard h) {
     t.alive = false;
-    t.blocks.clear();
+    t.hazards.clear();
     _eliminationOrder.add(t.playerId);
-    final at = Offset(t.lanes.coordOf(lane), t.runnerY);
-    t.figure.enterRagdoll(at, t.runnerY, Offset(ctx.rng.sign() * 140, -180));
+    final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
+    final at = Offset(runnerX, t.runnerY);
+    // Crush: fling away from the impact lane, with an upward stomp component.
+    final away = (runnerX - t.lanes.coordOf(h.lane)) >= 0 ? 1.0 : -1.0;
+    t.figure.enterRagdoll(
+      Offset(runnerX, t.runnerY - t.figureLift),
+      t.runnerY,
+      Offset(away * _Tuning.flingX * t.figureScale,
+          -_Tuning.flingY * t.figureScale),
+    );
     _juice.ko(at, t.color);
+    _juice.popup(Offset(runnerX, t.runnerY - 34), 'OUT!', t.color, size: 30);
   }
 
   void _checkEnd() {
@@ -263,75 +528,164 @@ class FallingDodge extends MiniGameBase {
   }
 
   void _finish(List<_Track> alive) {
+    // Survival bonus first, so a survivor always outranks the eliminated on
+    // score as well as on placement.
+    for (final t in alive) {
+      addScore(t.playerId, _Tuning.timeLimit * _Tuning.survivePerSec);
+    }
+    // Survivors (most score first) rank above the eliminated; eliminated are
+    // ordered most-recent-first (they lasted longest).
+    final survivors = alive.toList()
+      ..sort((a, b) => scoreOf(b.playerId).compareTo(scoreOf(a.playerId)));
     final ranking = <int>[
-      for (final t in alive) t.playerId,
+      for (final t in survivors) t.playerId,
       ..._eliminationOrder.reversed,
     ];
-    // Score = survival time in whole seconds (survivors capped at the limit).
-    for (final t in _tracks) {
-      final survived = t.alive ? _Tuning.timeLimit : _elapsed;
-      setScore(t.playerId, survived.floor());
-    }
     _juice.confetti(ctx.arena);
-    finishByOrder(ranking);
+    finishByOrder(_dedupe(ranking));
   }
+
+  /// Ensure every player id appears exactly once, preserving [order] first.
+  List<int> _dedupe(List<int> order) {
+    final seen = <int>{};
+    final result = <int>[];
+    for (final id in order) {
+      if (seen.add(id)) result.add(id);
+    }
+    for (final p in ctx.players) {
+      if (seen.add(p.id)) result.add(p.id);
+    }
+    return result;
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
     final o = _juice.shake.offset;
     canvas.translate(o.dx, o.dy);
+
+    FallingRenderer.drawBackground(canvas, size, _escalation());
+
+    final scroll = _animClock * _Tuning.scrollPerSec;
     for (final t in _tracks) {
-      _drawTrack(canvas, t);
+      _drawTrack(canvas, t, scroll);
     }
+
     _juice.render(canvas);
     canvas.restore();
   }
 
-  void _drawTrack(Canvas canvas, _Track t) {
-    // Band backdrop with a thin divider.
-    canvas.drawRect(t.band, Paint()..color = const Color(0xFF111722));
-    canvas.drawRect(
-      Rect.fromLTWH(t.band.left, t.band.top, t.band.width, 2),
-      Paint()..color = const Color(0x22FFFFFF),
-    );
-    // Lane guide lines.
-    final guide = Paint()
-      ..color = const Color(0x18FFFFFF)
-      ..strokeWidth = 2;
-    for (var i = 0; i < t.lanes.count; i++) {
-      final x = t.lanes.coordOf(i);
-      canvas.drawLine(
-        Offset(x, t.band.top + 8),
-        Offset(x, t.band.bottom - 8),
-        guide,
-      );
-    }
-    // Falling blocks.
-    for (final b in t.blocks) {
-      _drawBlock(canvas, t, b);
-    }
-    // Runner.
-    final rx = t.lanes.coordOfVisual(t.hopper.visualLane);
-    t.figure.render(canvas, Offset(rx, t.runnerY - _Tuning.figureLift));
+  /// 0..1 escalation, used for ambient heat — ramps with fall speed.
+  double _escalation() {
+    final span = _Tuning.fallAccel * _Tuning.timeLimit;
+    if (span <= 0) return 0;
+    return ((_fallSpeed - _Tuning.fallSpeedStart) / span).clamp(0.0, 1.0);
   }
 
-  void _drawBlock(Canvas canvas, _Track t, _Block b) {
-    final x = t.lanes.coordOf(b.lane);
-    final rect = Rect.fromCenter(
-      center: Offset(x, b.y),
-      width: _Tuning.blockSize,
-      height: _Tuning.blockSize,
+  void _drawTrack(Canvas canvas, _Track t, double scroll) {
+    FallingRenderer.drawBand(
+      canvas,
+      t.band,
+      t.color,
+      scroll: scroll,
+      danger: _dangerLevel(t),
+      alive: t.alive,
     );
-    final paint = Paint()..color = t.color.withValues(alpha: 0.9);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
-      paint,
+    FallingRenderer.drawLanes(
+      canvas,
+      t.band,
+      t.laneXs(),
+      t.hopper.visualLane,
+      t.alive,
     );
-    // Inner mark.
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(10), const Radius.circular(4)),
-      Paint()..color = const Color(0x33000000),
+
+    // Near-miss lane flashes (under hazards).
+    for (final f in t.flashes) {
+      FallingRenderer.drawNearMissFlash(
+        canvas,
+        t.band,
+        t.lanes.coordOf(f.lane),
+        f.strength,
+      );
+    }
+
+    // Ground telegraphs for every approaching hazard.
+    if (t.alive) {
+      for (final h in t.hazards) {
+        if (h.y > t.runnerY) continue;
+        FallingRenderer.drawTelegraph(
+          canvas,
+          t.lanes.coordOf(h.lane),
+          t.runnerY,
+          h.size,
+          _telegraphProgress(t, h),
+        );
+      }
+    }
+
+    // Runner contact shadow + figure.
+    final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
+    if (!t.figure.isRagdoll) {
+      FallingRenderer.drawContactShadow(
+        canvas,
+        Offset(runnerX, t.runnerY),
+        t.lanes.spacing.abs() * 0.5,
+        t.alive,
+      );
+    }
+    FallingRenderer.drawRunner(
+      canvas,
+      t.figure,
+      Offset(runnerX, t.runnerY - t.figureLift),
     );
+
+    // Falling hazards (on top of the runner so a near-hit reads as overlap).
+    for (final h in t.hazards) {
+      final spin = h.spinPhase + _animClock * _Tuning.spinPerSec * h.speedMul;
+      FallingRenderer.drawHazard(
+        canvas,
+        Offset(t.lanes.coordOf(h.lane), h.y),
+        h.size,
+        h.kind,
+        t.runnerY,
+        spin,
+      );
+    }
+
+    FallingRenderer.drawBandLabel(canvas, t.band, t.color, t.alive);
   }
+
+  /// 0..1 how close the nearest in-lane hazard is to the runner line; drives
+  /// the band frame danger glow.
+  double _dangerLevel(_Track t) {
+    if (!t.alive) return 0;
+    var best = 0.0;
+    for (final h in t.hazards) {
+      if (h.lane != t.hopper.lane || h.y > t.runnerY) continue;
+      best = math.max(best, _telegraphProgress(t, h));
+    }
+    return best;
+  }
+
+  /// 0..1 telegraph intensity for a hazard: grows as it nears the runner line.
+  double _telegraphProgress(_Track t, _Hazard h) {
+    final fall = t.runnerY - t.band.top;
+    if (fall <= 0) return 1;
+    final remaining = (t.runnerY - h.y).clamp(0.0, fall);
+    return (1.0 - remaining / fall).clamp(0.0, 1.0);
+  }
+
+  // ── Small helpers ────────────────────────────────────────────────────────────
+
+  _Track? _trackOf(int id) {
+    for (final t in _tracks) {
+      if (t.playerId == id) return t;
+    }
+    return null;
+  }
+
+  static Color _brighten(Color c, double t) =>
+      Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
 }

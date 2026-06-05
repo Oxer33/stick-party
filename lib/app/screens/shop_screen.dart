@@ -1,6 +1,6 @@
 /// Shop: cosmetics (free auto-owned, coin-buyable, selectable skins) and the
 /// real-money IAP catalog. Honest price labels, cosmetics-only — no dark
-/// patterns, no pay-to-win.
+/// patterns, no pay-to-win. Restyled glass; all purchase actions unchanged.
 library;
 
 import 'package:flutter/material.dart';
@@ -13,7 +13,9 @@ import '../../services/analytics_service.dart';
 import '../../services/iap_service.dart';
 import '../../services/purchase_applier.dart';
 import '../providers.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_scaffold.dart';
+import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
 
 class ShopScreen extends ConsumerWidget {
@@ -31,35 +33,25 @@ class ShopScreen extends ConsumerWidget {
         .where((Cosmetic c) => c.type == CosmeticType.mapTheme)
         .toList(growable: false);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('SHOP'),
-        actions: <Widget>[
-          Padding(
-            padding: const EdgeInsets.only(right: AppTokens.gap),
-            child: Center(child: CoinBadge(coins: progress.coins)),
-          ),
+    return GlassScaffold(
+      title: 'SHOP',
+      actions: <Widget>[CoinBadge(coins: progress.coins)],
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const SectionHeader(title: 'STICK SKINS'),
+          ...skins.map(
+              (Cosmetic c) => _CosmeticTile(cosmetic: c, progress: progress)),
+          const SizedBox(height: 24),
+          const SectionHeader(title: 'MAP THEMES', color: GlassColors.cyan),
+          ...themes.map(
+              (Cosmetic c) => _CosmeticTile(cosmetic: c, progress: progress)),
+          const SizedBox(height: 24),
+          const SectionHeader(title: 'STORE', color: GlassColors.amber),
+          ...products.map((IapProduct p) => _IapTile(product: p)),
+          const SizedBox(height: GlassTokens.gapSmall),
+          const _EthicsNote(),
         ],
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          children: <Widget>[
-            const SectionHeader(title: 'STICK SKINS'),
-            ...skins.map((Cosmetic c) =>
-                _CosmeticTile(cosmetic: c, progress: progress)),
-            const SizedBox(height: 24),
-            const SectionHeader(
-                title: 'MAP THEMES', color: AppColors.secondary),
-            ...themes.map((Cosmetic c) =>
-                _CosmeticTile(cosmetic: c, progress: progress)),
-            const SizedBox(height: 24),
-            const SectionHeader(title: 'STORE', color: AppColors.gold),
-            ...products.map((IapProduct p) => _IapTile(product: p)),
-            const SizedBox(height: 12),
-            const _EthicsNote(),
-          ],
-        ),
       ),
     );
   }
@@ -78,50 +70,38 @@ class _CosmeticTile extends ConsumerWidget {
     final bool selected = isSkin && progress.selectedSkinId == cosmetic.id;
     final int iconArgb = cosmetic.paletteArgb.isNotEmpty
         ? cosmetic.paletteArgb.first
-        : AppColors.primary.toARGB32();
+        : GlassColors.violet.toARGB32();
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(
-          color: selected ? AppColors.primary : AppColors.surfaceHigh,
-          width: selected ? 2 : 1,
-        ),
-      ),
-      child: Row(
-        children: <Widget>[
-          ProceduralIcon(label: cosmetic.name, colorArgb: iconArgb),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  cosmetic.name,
-                  style: const TextStyle(
-                    color: AppColors.onSurface,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
+      child: GlassPanel(
+        tint: selected ? GlassColors.violet : null,
+        tintOpacity: 0.14,
+        borderColor:
+            selected ? GlassColors.violet.withValues(alpha: 0.8) : null,
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: <Widget>[
+            ProceduralIcon(label: cosmetic.name, colorArgb: iconArgb),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(cosmetic.name, style: GlassText.heading),
+                  const SizedBox(height: 2),
+                  Text(
+                    owned
+                        ? (cosmetic.isFree ? 'Free' : 'Owned')
+                        : '${cosmetic.priceCoins} coins',
+                    style: GlassText.body.copyWith(fontSize: 12),
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  owned
-                      ? (cosmetic.isFree ? 'Free' : 'Owned')
-                      : '${cosmetic.priceCoins} coins',
-                  style: const TextStyle(
-                    color: AppColors.onSurfaceMuted,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          _action(context, ref, owned, selected, isSkin),
-        ],
+            _action(context, ref, owned, selected, isSkin),
+          ],
+        ),
       ),
     );
   }
@@ -139,8 +119,8 @@ class _CosmeticTile extends ConsumerWidget {
         onPressed: affordable ? () => _buy(context, ref) : null,
         style: FilledButton.styleFrom(
           minimumSize: const Size(88, 40),
-          backgroundColor: AppColors.gold,
-          foregroundColor: const Color(0xFF231A00),
+          backgroundColor: GlassColors.amber,
+          foregroundColor: GlassColors.base,
         ),
         child: const Text('BUY'),
       );
@@ -149,18 +129,24 @@ class _CosmeticTile extends ConsumerWidget {
       return selected
           ? const Padding(
               padding: EdgeInsets.symmetric(horizontal: 12),
-              child: Icon(Icons.check_circle, color: AppColors.primary),
+              child: Icon(Icons.check_circle, color: GlassColors.violet),
             )
           : OutlinedButton(
               onPressed: () =>
                   ref.read(progressProvider.notifier).selectSkin(cosmetic.id),
-              style: OutlinedButton.styleFrom(minimumSize: const Size(88, 40)),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(88, 40),
+                foregroundColor: GlassColors.text,
+                side: BorderSide(
+                  color: GlassColors.frost.withValues(alpha: 0.3),
+                ),
+              ),
               child: const Text('USE'),
             );
     }
     return const Padding(
       padding: EdgeInsets.symmetric(horizontal: 12),
-      child: Icon(Icons.check, color: AppColors.onSurfaceMuted),
+      child: Icon(Icons.check, color: GlassColors.textMuted),
     );
   }
 
@@ -184,46 +170,33 @@ class _IapTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: AppColors.surfaceHigh),
-      ),
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  product.title,
-                  style: const TextStyle(
-                    color: AppColors.onSurface,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
+      child: GlassPanel(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(product.title, style: GlassText.heading),
+                  const SizedBox(height: 2),
+                  Text(
+                    product.consumable ? 'Coin pack' : 'One-time unlock',
+                    style: GlassText.body.copyWith(fontSize: 12),
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  product.consumable ? 'Coin pack' : 'One-time unlock',
-                  style: const TextStyle(
-                    color: AppColors.onSurfaceMuted,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          FilledButton(
-            onPressed: () => _buy(context, ref),
-            style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
-            // Real, honest price label from the store catalog.
-            child: Text(product.priceLabel),
-          ),
-        ],
+            FilledButton(
+              onPressed: () => _buy(context, ref),
+              style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
+              // Real, honest price label from the store catalog.
+              child: Text(product.priceLabel),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -267,13 +240,13 @@ class _EthicsNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 8),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Text(
         'Purchases are cosmetic only and never affect gameplay. '
         'Prices shown are real and set by the app store.',
         textAlign: TextAlign.center,
-        style: TextStyle(color: AppColors.onSurfaceMuted, fontSize: 12),
+        style: GlassText.body.copyWith(fontSize: 12),
       ),
     );
   }

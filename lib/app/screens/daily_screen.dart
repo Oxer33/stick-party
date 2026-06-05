@@ -1,5 +1,6 @@
 /// Daily screen: a once-per-day login bonus (persisted via the daily-claim
 /// store) and the three deterministic daily missions with progress bars.
+/// Restyled glass; claim logic / providers unchanged.
 library;
 
 import 'package:flutter/material.dart';
@@ -7,7 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../meta/daily.dart';
 import '../providers.dart';
-import '../theme.dart';
+import '../widgets/glass_kit.dart';
+import '../widgets/glass_scaffold.dart';
+import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
 
 class DailyScreen extends ConsumerStatefulWidget {
@@ -40,24 +43,22 @@ class _DailyScreenState extends ConsumerState<DailyScreen> {
       todayIso: _todayIso,
     );
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('DAILY')),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(AppTokens.pagePadding),
-          children: <Widget>[
-            const SectionHeader(title: 'LOGIN BONUS'),
-            _LoginBonusCard(
-              bonus: bonus,
-              claimed: bonus.alreadyClaimedToday,
-              onClaim: () => _claim(bonus),
-            ),
-            const SizedBox(height: 24),
-            const SectionHeader(
-                title: "TODAY'S MISSIONS", color: AppColors.secondary),
-            ..._missions.map((DailyMission m) => _MissionTile(mission: m)),
-          ],
-        ),
+    return GlassScaffold(
+      title: 'DAILY',
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const SectionHeader(title: 'LOGIN BONUS'),
+          _LoginBonusCard(
+            bonus: bonus,
+            claimed: bonus.alreadyClaimedToday,
+            onClaim: () => _claim(bonus),
+          ),
+          const SizedBox(height: 24),
+          const SectionHeader(
+              title: "TODAY'S MISSIONS", color: GlassColors.cyan),
+          ..._missions.map((DailyMission m) => _MissionTile(mission: m)),
+        ],
       ),
     );
   }
@@ -109,18 +110,16 @@ class _LoginBonusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isCoins = bonus.reward.kind == LoginRewardKind.coins;
-    return Container(
+    return GlassPanel(
+      tint: GlassColors.amber,
+      tintOpacity: 0.12,
+      borderColor: GlassColors.amber.withValues(alpha: 0.6),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: AppColors.gold),
-      ),
       child: Row(
         children: <Widget>[
           Icon(
             isCoins ? Icons.monetization_on : Icons.checkroom,
-            color: AppColors.gold,
+            color: GlassColors.amber,
             size: 40,
           ),
           const SizedBox(width: 14),
@@ -130,22 +129,14 @@ class _LoginBonusCard extends StatelessWidget {
               children: <Widget>[
                 Text(
                   'Day ${bonus.dayIndex + 1}',
-                  style: const TextStyle(
-                    color: AppColors.onSurfaceMuted,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: GlassText.overline,
                 ),
                 const SizedBox(height: 2),
                 Text(
                   isCoins
                       ? '+${bonus.reward.amount} coins'
                       : '${bonus.reward.amount} cosmetic reward',
-                  style: const TextStyle(
-                    color: AppColors.onSurface,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
-                  ),
+                  style: GlassText.heading,
                 ),
               ],
             ),
@@ -153,8 +144,8 @@ class _LoginBonusCard extends StatelessWidget {
           FilledButton(
             onPressed: claimed ? null : onClaim,
             style: FilledButton.styleFrom(
-              backgroundColor: AppColors.gold,
-              foregroundColor: const Color(0xFF231A00),
+              backgroundColor: GlassColors.amber,
+              foregroundColor: GlassColors.base,
               minimumSize: const Size(96, 44),
             ),
             child: Text(claimed ? 'CLAIMED' : 'CLAIM'),
@@ -172,53 +163,26 @@ class _MissionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: AppColors.surfaceHigh),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: Text(
-                  _label(mission),
-                  style: const TextStyle(
-                    color: AppColors.onSurface,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                  ),
-                ),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppColors.gold.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  '+${mission.rewardCoins}',
-                  style: const TextStyle(
-                    color: AppColors.gold,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          LabeledProgressBar(
-            fraction: mission.progressFraction,
-            label: '${mission.progress}/${mission.target}',
-          ),
-        ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: GlassTokens.gap),
+      child: GlassPanel(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(child: Text(_label(mission), style: GlassText.heading)),
+                _RewardPill(coins: mission.rewardCoins),
+              ],
+            ),
+            const SizedBox(height: 10),
+            LabeledProgressBar(
+              fraction: mission.progressFraction,
+              label: '${mission.progress}/${mission.target}',
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -236,5 +200,32 @@ class _MissionTile extends StatelessWidget {
       case DailyMissionType.playWithFriends:
         return 'Play with ${m.target} players';
     }
+  }
+}
+
+/// A small amber pill showing a mission's coin reward.
+class _RewardPill extends StatelessWidget {
+  const _RewardPill({required this.coins});
+
+  final int coins;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: GlassColors.amber.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: GlassColors.amber.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        '+$coins',
+        style: const TextStyle(
+          color: GlassColors.amber,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
+    );
   }
 }
