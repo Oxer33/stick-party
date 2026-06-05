@@ -1,0 +1,40 @@
+name: stick_party
+description: "Stick Party — 2 3 4 Player Games. Local-multiplayer one-touch minigames with procedural stickman art. Offline."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Game loop + rendering
+  flame: ^1.32.0
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # Offline persistence (no codegen — raw boxes)
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.5
+
+  # Navigation
+  go_router: ^14.6.2
+
+  # UI micro-animations (pure dart)
+  flutter_animate: ^4.5.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
