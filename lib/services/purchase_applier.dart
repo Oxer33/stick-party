@@ -69,12 +69,14 @@ class PurchaseGrant {
 
 /// Pure routing from product id to [PurchaseGrant].
 abstract final class PurchaseApplier {
-  /// Cosmetic ids unlocked by the cosmetics bundle. Placeholder ids — the real
-  /// cosmetic catalog is defined elsewhere later.
+  /// Cosmetic ids unlocked by the cosmetics bundle. These MUST match real ids
+  /// in the cosmetics catalog (meta/cosmetics.dart `kCosmetics`); the consumer
+  /// unlocks by id and silently drops unknown ids, so a mismatch means a paid
+  /// purchase grants nothing.
   static const List<String> _bundleCosmeticIds = <String>[
-    'cosmetic_aurora',
-    'cosmetic_ocean',
-    'cosmetic_ember',
+    'skin_gold',
+    'skin_neon',
+    'skin_shadow',
   ];
 
   /// Map [productId] to the grant it confers.

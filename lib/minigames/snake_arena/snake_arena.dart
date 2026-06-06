@@ -415,7 +415,12 @@ class SnakeArena extends MiniGameBase {
       _kill(s);
     }
 
-    if (_aliveCount() <= 1 && _snakes.length > 1) _finishByLength();
+    // End on the last survivor (multi-player) OR when no snake is left alive
+    // (covers a solo snake crashing — otherwise the round would idle on an
+    // empty grid until the time limit).
+    if (_aliveCount() == 0 || (_aliveCount() <= 1 && _snakes.length > 1)) {
+      _finishByLength();
+    }
   }
 
   /// Eat feedback: pop sparks at the pellet + a small score popup + a light wall

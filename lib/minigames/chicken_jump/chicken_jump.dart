@@ -340,11 +340,15 @@ class ChickenJump extends MiniGameBase {
   }
 
   /// Advance per-rung crumble timers; drop a rung once fully crumbled.
+  ///
+  /// A fully-crumbled rung must stay gone: we cap its timer at [total] (instead
+  /// of removing the entry) so [_crumbleProgress] keeps returning 1 and the rung
+  /// stays skipped in render. Removing it would make the entry absent, which
+  /// reads as "solid" again and resurrects the dropped platform.
   void _tickCrumbles(_Climber c, double dt) {
     if (c.crumbling.isEmpty) return;
     final total = _Tuning.crumbleAfterSec + _Tuning.crumbleFallSec;
-    c.crumbling.updateAll((lane, t) => t + dt);
-    c.crumbling.removeWhere((lane, t) => t >= total);
+    c.crumbling.updateAll((lane, t) => math.min(total, t + dt));
   }
 
   void _checkLava(_Climber c) {
