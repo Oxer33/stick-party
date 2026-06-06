@@ -1,23 +1,18 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import '../../art/fx/juice.dart';
 import '../../engine/bots.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
-import '../../art/fx/juice.dart';
+import 'memory_render.dart';
 
-/// The four pad colors players reproduce. Index 0..3 maps to a pad slot.
-const List<Color> _kPalette = [
-  Color(0xFFE5484D), // red
-  Color(0xFF3E8BFF), // blue
-  Color(0xFF46C46A), // green
-  Color(0xFFF2C037), // yellow
-];
-
-/// Round phase. [showing] flashes the sequence; [input] takes reproduction.
+/// Round phase. [showing] flashes the sequence (the light show); [input] takes
+/// each player's one-touch reproduction.
 enum _Phase { showing, input }
 
-/// Per-player reproduction state for the current round.
+/// Per-player reproduction state for the current round. Mutable round-scoped
+/// state (allowed for the duration of one round).
 class _Pad {
   final int playerId;
   final Color accent;
@@ -25,9 +20,25 @@ class _Pad {
   bool done = false; // finished this round's reproduction correctly
   int progress = 0; // correct entries so far this round
   int highlight = 0; // currently highlighted pad (one-touch cursor)
+  double koFlash = 0; // 0..1 elimination flash that fades after a KO
   final ReactionClock? clock;
 
+  /// Per-pad bloom 0..1 (red, blue, green, yellow). Lit pads bloom bright and
+  /// decay for an afterglow; purely cosmetic so it never affects logic.
+  final List<double> bloom = <double>[0, 0, 0, 0];
+
   _Pad({required this.playerId, required this.accent, this.clock});
+
+  void bumpBloom(int slot) {
+    if (slot >= 0 && slot < bloom.length) bloom[slot] = 1.0;
+  }
+
+  void decay(double dt, double perSec) {
+    for (var i = 0; i < bloom.length; i++) {
+      if (bloom[i] > 0) bloom[i] = math.max(0, bloom[i] - perSec * dt);
+    }
+    if (koFlash > 0) koFlash = math.max(0, koFlash - dt);
+  }
 }
 
 /// Color Memory — a Simon-style game on a shared, growing color sequence.
@@ -39,9 +50,9 @@ class _Pad {
 ///   has cleared the round and waits;
 /// - wrong → that player is eliminated ([Juice.ko]).
 ///
-/// Each round the sequence first flashes (showing), then everyone reproduces.
-/// When the round resolves, the sequence grows by one. Last player standing
-/// wins via [finishByOrder].
+/// Each round the sequence first flashes (showing = the light show), then
+/// everyone reproduces. When the round resolves, the sequence grows by one.
+/// Last player standing wins via [finishByOrder].
 ///
 /// Termination is guaranteed several ways: a per-round input deadline
 /// ([_roundDeadlineSec]) eliminates anyone who hasn't finished, a sequence
@@ -58,13 +69,22 @@ class ColorMemory extends MiniGameBase {
         inputHint: 'TAP',
       );
 
+  // ── Rules / timing tuning (no magic numbers inline) ─────────────────────────
   static const int _palette = 4;
   static const double _timeLimit = 45;
   static const double _showStepSec = 0.45; // per-color flash during showing
+  static const double _showLeadSec = 0.35; // calm beat before the light show
   static const double _cycleSec = 0.4; // per-pad highlight dwell during input
   static const double _roundDeadlineSec = 6.0; // hard cap on one input phase
   static const int _maxSeqLen = 24; // absolute cap so it always terminates
   static const int _startSeqLen = 1;
+
+  // ── Feel tuning ─────────────────────────────────────────────────────────────
+  static const double _bloomDecayPerSec = 2.6; // pad afterglow fade rate
+  static const double _flashHoldFrac = 0.55; // share of a step the orb stays lit
+  static const double _koFlashSec = 0.5;
+  static const double _cursorThrobHz = 3.2;
+  static const double _bannerThrobHz = 2.4;
 
   late Juice _juice;
   final List<int> _sequence = [];
@@ -75,9 +95,11 @@ class ColorMemory extends MiniGameBase {
 
   _Phase _phase = _Phase.showing;
   double _elapsed = 0;
+  double _animClock = 0; // real-time clock for pulses (never time-scaled)
   double _phaseTimer = 0; // time spent in the current phase
   double _cycleAcc = 0; // drives the input-highlight cursor
-  int _showIndex = 0; // which sequence color is flashing
+  int _showIndex = -1; // which sequence color is flashing (-1 = lead-in)
+  int _round = 1; // 1-based round counter (== sequence length)
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -103,7 +125,7 @@ class ColorMemory extends MiniGameBase {
   void _enterShowing() {
     _phase = _Phase.showing;
     _phaseTimer = 0;
-    _showIndex = 0;
+    _showIndex = -1; // lead-in beat before the first color lights
   }
 
   void _enterInput() {
@@ -140,12 +162,20 @@ class ColorMemory extends MiniGameBase {
   }
 
   /// Apply a chosen color for [pad]: advance on a match, eliminate on a miss.
+  /// Fires the matching pad's bloom + a hit spark either way so taps feel solid.
   void _commit(_Pad pad, int color) {
+    pad.bumpBloom(color);
     final expected = _sequence[pad.progress];
     if (color == expected) {
       pad.progress += 1;
+      _juice.hit(_padCenter(pad.playerId), pad.accent, sparks: 6);
       if (pad.progress >= _sequence.length) {
         pad.done = true;
+        _juice.popup(
+            _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
+            'NICE!',
+            pad.accent,
+            size: 26);
       }
     } else {
       _eliminate(pad);
@@ -155,6 +185,7 @@ class ColorMemory extends MiniGameBase {
   void _eliminate(_Pad pad) {
     if (!pad.alive) return;
     pad.alive = false;
+    pad.koFlash = _koFlashSec;
     _outOrder.add(pad.playerId);
     _juice.ko(_padCenter(pad.playerId), pad.accent);
   }
@@ -162,10 +193,16 @@ class ColorMemory extends MiniGameBase {
   @override
   void update(double dt) {
     if (status != MiniGameStatus.running) return;
+    if (!dt.isFinite || dt <= 0) return;
     _elapsed += dt;
+    _animClock += dt;
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
     _phaseTimer += sdt;
+
+    for (final pad in _pads) {
+      pad.decay(dt, _bloomDecayPerSec);
+    }
 
     if (_phase == _Phase.showing) {
       _updateShowing();
@@ -176,12 +213,39 @@ class ColorMemory extends MiniGameBase {
     if (_elapsed >= _timeLimit) _finishNow();
   }
 
-  /// Flash through the sequence; advance to input once all colors have shown.
+  /// Flash through the sequence (the light show): each step blooms every alive
+  /// player's matching pad in lockstep + pops a spark at the central orb;
+  /// advance to input once all colors have shown.
   void _updateShowing() {
-    _showIndex = (_phaseTimer ~/ _showStepSec).clamp(0, _sequence.length);
-    if (_phaseTimer >= _sequence.length * _showStepSec) {
-      _enterInput();
+    final total = _showLeadSec + _sequence.length * _showStepSec;
+    // Index of the color currently flashing, or -1 during the lead-in beat.
+    final next = _phaseTimer < _showLeadSec
+        ? -1
+        : ((_phaseTimer - _showLeadSec) ~/ _showStepSec)
+            .clamp(0, _sequence.length - 1);
+    if (next != _showIndex) {
+      _showIndex = next;
+      if (next >= 0) _flashSequenceColor(_sequence[next]);
     }
+    if (_phaseTimer >= total) _enterInput();
+  }
+
+  /// One light-show beat: bloom the color on every alive cluster + a central
+  /// burst + a soft shake so the pattern is satisfying to watch.
+  void _flashSequenceColor(int color) {
+    for (final pad in _pads) {
+      if (pad.alive) pad.bumpBloom(color);
+    }
+    final center = Offset(_lastSize.width / 2, _lastSize.height / 2);
+    _juice.particles.burst(
+      at: center,
+      count: 10,
+      color: MemoryRenderer.palette[color.clamp(0, _palette - 1)],
+      speed: 220,
+      size: 6,
+      life: 0.5,
+    );
+    _juice.shake.light();
   }
 
   /// Drive the highlight cursor + bots, then resolve the round when everyone
@@ -258,6 +322,7 @@ class ColorMemory extends MiniGameBase {
     }
 
     _sequence.add(ctx.rng.intRange(0, _palette));
+    _round += 1;
     _enterShowing();
   }
 
@@ -295,107 +360,107 @@ class ColorMemory extends MiniGameBase {
     final o = _juice.shake.offset;
     canvas.translate(o.dx, o.dy);
 
-    _drawBorder(canvas, size);
+    MemoryRenderer.drawBackground(canvas, size);
+    MemoryRenderer.drawVignette(canvas, size);
+
+    final watching = _phase == _Phase.showing;
+    _drawHud(canvas, size, watching);
+
     for (var i = 0; i < _pads.length; i++) {
-      _drawPlayerPads(canvas, _pads[i], i);
+      _drawCluster(canvas, _pads[i], i, watching);
     }
-    _drawSharedSequence(canvas, size);
 
     _juice.render(canvas);
     canvas.restore();
   }
 
-  void _drawBorder(Canvas canvas, Size size) {
-    final border = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = const Color(0x33FFFFFF);
-    canvas.drawRect(Offset.zero & size, border);
-  }
-
-  /// Draw one player's 2x2 pad block within their region of the screen.
-  void _drawPlayerPads(Canvas canvas, _Pad pad, int index) {
-    final region = _playerRegion(index, _pads.length);
-    final block = _padBlockRect(region);
-    final half = block.width / 2;
-    final gap = half * 0.08;
-
-    for (var slot = 0; slot < _palette; slot++) {
-      final cx = block.left + (slot % 2) * half;
-      final cy = block.top + (slot ~/ 2) * half;
-      final cell =
-          Rect.fromLTWH(cx + gap, cy + gap, half - gap * 2, half - gap * 2);
-      final lit = _phase == _Phase.input &&
-          pad.alive &&
-          !pad.done &&
-          pad.highlight == slot;
-      final base = _kPalette[slot];
-      final color = pad.alive
-          ? base.withValues(alpha: lit ? 1.0 : 0.45)
-          : base.withValues(alpha: 0.12);
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(cell, Radius.circular(half * 0.14)),
-        Paint()..color = color,
-      );
-    }
-
-    // Progress pips under the block in the player's accent.
-    _drawProgress(canvas, pad, block);
-  }
-
-  void _drawProgress(Canvas canvas, _Pad pad, Rect block) {
-    if (_sequence.isEmpty) return;
-    final pipR = block.width * 0.018;
-    final y = block.bottom + pipR * 2;
-    final paint = Paint()..color = pad.accent;
-    final dim = Paint()..color = pad.accent.withValues(alpha: 0.25);
-    final span = block.width;
-    for (var i = 0; i < _sequence.length; i++) {
-      final x = block.left + span * ((i + 0.5) / _sequence.length);
-      canvas.drawCircle(Offset(x, y), pipR, i < pad.progress ? paint : dim);
-    }
-  }
-
-  /// Shared sequence preview: flashes the active color while showing.
-  void _drawSharedSequence(Canvas canvas, Size size) {
-    if (_phase != _Phase.showing || _sequence.isEmpty) return;
-    final idx = _showIndex.clamp(0, _sequence.length - 1);
-    final color = _kPalette[_sequence[idx]];
-    final r = math.min(size.width, size.height) * 0.08;
-    final center = Offset(size.width / 2, size.height / 2);
-    canvas.drawCircle(center, r, Paint()..color = color);
-    canvas.drawCircle(
-      center,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..color = const Color(0x66FFFFFF),
+  void _drawHud(Canvas canvas, Size size, bool watching) {
+    final throb = 0.5 + 0.5 * math.sin(_animClock * _bannerThrobHz);
+    MemoryRenderer.drawPhaseBanner(canvas, size,
+        watching: watching, pulse: throb);
+    MemoryRenderer.drawRoundCounter(canvas, size, _round);
+    MemoryRenderer.drawSharedSequence(
+      canvas,
+      size,
+      _sequence,
+      shownCount: _showIndex + 1,
+      watching: watching,
     );
+    MemoryRenderer.drawFlashCore(
+        canvas, size, _activeFlashColor(), _activeFlashStrength());
+  }
+
+  /// Color of the orb currently flashing during the light show (null otherwise).
+  Color? _activeFlashColor() {
+    if (_phase != _Phase.showing || _showIndex < 0) return null;
+    return MemoryRenderer.palette[_sequence[_showIndex].clamp(0, _palette - 1)];
+  }
+
+  /// Orb brightness during a flash step: bright at the step start, eased to 0
+  /// across [_flashHoldFrac] of the step so each color reads as a distinct beat.
+  double _activeFlashStrength() {
+    if (_phase != _Phase.showing || _showIndex < 0) return 0;
+    final intoStep = (_phaseTimer - _showLeadSec) - _showIndex * _showStepSec;
+    final hold = _showStepSec * _flashHoldFrac;
+    if (intoStep < 0 || intoStep > hold) return 0;
+    return (1.0 - intoStep / hold).clamp(0.0, 1.0);
+  }
+
+  /// Draw one player's Simon cluster + identity tab + progress pips, plus the
+  /// elimination stamp once they are out.
+  void _drawCluster(Canvas canvas, _Pad pad, int index, bool watching) {
+    final block = _padBlockRect(_playerRegion(index, _pads.length));
+    final throb = 0.5 + 0.5 * math.sin(_animClock * _cursorThrobHz);
+    final showCursor = !watching && pad.alive && !pad.done;
+
+    MemoryRenderer.drawCluster(
+      canvas,
+      block,
+      blooms: pad.bloom,
+      alive: pad.alive,
+      done: pad.done,
+      accent: pad.accent,
+      highlightSlot: showCursor ? pad.highlight : -1,
+      cursorPulse: throb,
+    );
+    MemoryRenderer.drawPlayerTab(canvas, block, pad.accent, pad.playerId + 1,
+        alive: pad.alive);
+    MemoryRenderer.drawProgress(
+        canvas, block, _sequence.length, pad.progress, pad.accent,
+        alive: pad.alive);
+
+    if (!pad.alive) {
+      // Stamp fades in over the KO flash window, then holds.
+      final stamp = pad.koFlash > 0
+          ? (1.0 - pad.koFlash / _koFlashSec).clamp(0.0, 1.0)
+          : 1.0;
+      MemoryRenderer.drawEliminated(canvas, block, stamp);
+    }
   }
 
   // ---- Layout helpers -------------------------------------------------------
 
-  /// Normalized region for a player's HUD (mirrors ZoneLayout sensibilities).
+  /// Normalized region for a player's cluster (mirrors ZoneLayout sensibilities;
+  /// reserves the top strip for the HUD).
   Rect _playerRegion(int index, int count) {
     switch (count) {
       case 1:
-        return const Rect.fromLTRB(0.15, 0.35, 0.85, 0.8);
+        return const Rect.fromLTRB(0.18, 0.36, 0.82, 0.82);
       case 2:
         return index == 0
-            ? const Rect.fromLTRB(0.15, 0.55, 0.85, 0.9)
-            : const Rect.fromLTRB(0.15, 0.1, 0.85, 0.45);
+            ? const Rect.fromLTRB(0.18, 0.56, 0.82, 0.92)
+            : const Rect.fromLTRB(0.18, 0.24, 0.82, 0.50);
       case 3:
-        if (index == 0) return const Rect.fromLTRB(0.3, 0.6, 0.7, 0.92);
+        if (index == 0) return const Rect.fromLTRB(0.30, 0.60, 0.70, 0.92);
         return index == 1
-            ? const Rect.fromLTRB(0.06, 0.1, 0.46, 0.42)
-            : const Rect.fromLTRB(0.54, 0.1, 0.94, 0.42);
+            ? const Rect.fromLTRB(0.06, 0.26, 0.46, 0.52)
+            : const Rect.fromLTRB(0.54, 0.26, 0.94, 0.52);
       default:
         final left = index.isEven;
         final bottom = index < 2;
-        final l = left ? 0.06 : 0.54;
-        final t = bottom ? 0.58 : 0.1;
-        return Rect.fromLTRB(l, t, l + 0.4, t + 0.32);
+        final l = left ? 0.07 : 0.55;
+        final t = bottom ? 0.60 : 0.27;
+        return Rect.fromLTRB(l, t, l + 0.38, t + 0.30);
     }
   }
 
@@ -408,6 +473,11 @@ class ColorMemory extends MiniGameBase {
     );
     final side = math.min(px.width, px.height);
     return Rect.fromCenter(center: px.center, width: side, height: side);
+  }
+
+  double _blockSide() {
+    final r = _padBlockRect(_playerRegion(0, _pads.length));
+    return math.min(r.width, r.height);
   }
 
   Offset _padCenter(int playerId) {

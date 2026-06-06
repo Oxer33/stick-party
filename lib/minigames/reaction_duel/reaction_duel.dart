@@ -1,14 +1,36 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import '../../art/fx/juice.dart';
+import '../../art/stick/stick_figure.dart';
+import '../../art/stick/stick_skeleton.dart';
+import '../../art/stick/stick_style.dart';
+import '../../art/stick/weapon_visual.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/reaction_gate.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'reaction_render.dart';
 
-/// Reaction Duel — wait for GO, then be the first to tap. Tapping during the
-/// red "wait" phase is a false start (penalty). The first valid tap after GO
-/// wins; remaining players are ranked by reaction time, penalized players last.
+/// Reaction Duel — a samurai quick-draw standoff at dusk. Every player is a
+/// stickman swordsman in a tense stance, hand on the hilt, facing the center.
+/// The field shows "WAIT…" through a random delay, then a sudden blinding
+/// "STRIKE!" flash + signal (driven by [ReactionGate]). The first valid tap
+/// after the signal lands an instant slash; the loser(s) ragdoll-fly outward in
+/// a hit-stop slow-mo with a KO popup. Tapping BEFORE the signal is a false
+/// start: that duelist is locked out (a "TOO SOON!" stamp) and ranked last.
+///
+/// Depth (still one-touch):
+///  * One clean read — react to the signal, draw first. A late tap still scores
+///    so the whole field is ranked by reaction time, not just first place.
+///  * The winner's blade sweeps a slash arc to each loser; the loser flies as a
+///    real ragdoll, scaled by how decisive the win was, under a slow-mo beat.
+///  * Tension builds visually: the vignette pulses harder the longer the WAIT,
+///    so the calm-before-the-strike is felt, then released in one flash.
+///
+/// Bots draw after the signal on a [BotProfile]-driven reaction delay (+jitter);
+/// per round, a bot may jump the gun (false start) with probability
+/// [BotProfile.errorRate]. A timeout fallback guarantees the round resolves.
 class ReactionDuel extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -20,37 +42,159 @@ class ReactionDuel extends MiniGameBase {
         inputHint: 'TAP',
       );
 
-  // --- Tuning -----------------------------------------------------------------
+  // ── Round tuning (no magic numbers inline) ──────────────────────────────────
   static const double _timeLimit = 12;
-  static const double _minGoDelay = 1.0;
-  static const double _maxGoDelay = 3.5;
-  static const double _lingerAfterWin = 0.6; // let everyone tap once decided
+  static const double _minGoDelay = 1.2;
+  static const double _maxGoDelay = 3.6;
+  static const double _lingerAfterWin = 1.1; // hold the KO beat before finishing
   static const double _goWindow = 3.0; // max seconds in GO before force-ending
   static const double _penaltyScore = -1; // HUD score for false-starters
 
+  // ── Strike / feel tuning ────────────────────────────────────────────────────
+  static const double _strikeFlashSec = 0.45; // blinding flash + screen-flash
+  static const double _strikeWordSec = 0.55; // STRIKE word punch-in then fade
+  static const double _screenFlashMax = 0.4; // peak white screen-flash opacity
+  static const double _slashLifeSec = 0.55; // slash arc + speed-line life
+  static const double _tooSoonLifeSec = 1.4; // "TOO SOON!" stamp life
+  static const double _hitStopSec = 0.22; // slow-mo on the decisive strike
+  static const double _hitStopScale = 0.12;
+  // Ragdoll fling is a velocity in px/s (the ragdoll integrates at g≈1800), so
+  // it is sized off arena height for a dramatic, resolution-independent launch.
+  // The lift dominates and the sideways push is capped so the loser pops UP and
+  // back (a readable KO) instead of sailing off the side of a row.
+  static const double _flingBaseFracH = 0.40; // base fling speed / arena height
+  static const double _flingDecisiveFracH = 0.24; // extra for a decisive win
+  static const double _flingLiftFactor = 1.0; // upward share of the fling
+  static const double _flingSidewaysFactor = 0.5; // capped horizontal share
+  static const double _decisiveRefSec = 0.35; // reaction at/under = max decisive
+
+  // ── Layout tuning (fractions of arena) ──────────────────────────────────────
+  // Duelists stand in a row on the dueling ground (lower band), facing the
+  // central signal that floats above them in the sky.
+  static const double _lineYFrac = 0.66; // foot line for a single duelist
+  static const double _lineSpreadFrac = 0.74; // total horizontal spread / width
+  static const double _lineMarginFrac = 0.18; // edge margin / width
+  static const double _depthStaggerFrac = 0.045; // alt near/far foot-line offset
+  static const double _figureScale = 2.0; // readable swordsmen
+
+  // ── Tension / vignette ──────────────────────────────────────────────────────
+  static const double _vignetteWaitBase = 0.25;
+  static const double _vignetteWaitGain = 0.6; // ramps over the wait
+  static const double _vignettePulseHz = 5.0;
+  static const double _cueCenterFrac = 0.21; // banner in the clean sky above sun
+  static const Color _accentGold = Color(0xFFFFE08A); // confetti highlight
+
   late Juice _juice;
   late ReactionGate _gate;
+  late Size _size;
+  late Offset _center;
+  late StickProportions _proportions;
+  late double _scaleUnit; // ≈ torso width — fx sizing base
+  late double _footReach; // pelvis→foot length at rest (for grounding)
+
   double _elapsed = 0;
   double _sinceDone = 0;
   double _sinceGo = 0;
+  double _animClock = 0; // real-time clock (never scaled) for sway/tension
+  double _strikeFlash = 0; // 1 → 0 over [_strikeFlashSec] after the signal
+  double _strikeWord = 0; // 1 → 0 over [_strikeWordSec]: banner punch then fade
+  bool _signalSeen = false; // the GO signal has fired at least once
   bool _confettiFired = false;
 
   final Map<int, _Reactor> _reactors = <int, _Reactor>{};
+  final List<_Slash> _slashes = <_Slash>[]; // active slash arcs (winner→loser)
 
   @override
   void init(MiniGameContext ctx) {
     prepare(ctx);
     _juice = Juice(rng: ctx.rng);
     _gate = ReactionGate(ctx.rng, minDelay: _minGoDelay, maxDelay: _maxGoDelay);
-    for (final p in ctx.players) {
-      _reactors[p.id] = _Reactor(
-        slot: p,
-        clock: ReactionClock(ctx.botProfile, ctx.rng),
-        falseStarts: p.isBot && ctx.rng.chance(ctx.botProfile.errorRate),
-      );
-    }
+    _size = ctx.arena;
+    _center = Offset(_size.width / 2, _size.height * 0.5);
+
+    _proportions = StickProportions.hero.scaled(_figureScale);
+    _scaleUnit = _proportions.torsoWidth;
+    // Legs are near-vertical at rest, so pelvis→foot ≈ thigh + shin.
+    _footReach = _proportions.thigh + _proportions.shin;
+
+    _buildDuelists();
     begin();
   }
+
+  /// Place one swordsman per player, each facing the center, and build its
+  /// figure (player color, sheathed sword) + reaction clock. With two players we
+  /// stage a classic face-off line; otherwise we ring them around the signal.
+  void _buildDuelists() {
+    final positions = _layoutPositions(ctx.players.length);
+    for (var i = 0; i < ctx.players.length; i++) {
+      final p = ctx.players[i];
+      final foot = positions[i];
+      // Face inward toward the center signal.
+      final facing = foot.dx <= _center.dx ? 1.0 : -1.0;
+      final color = Color(p.colorArgb);
+      _reactors[p.id] = _Reactor(
+        slot: p,
+        foot: foot,
+        figure: StickFigure(
+          proportions: _proportions,
+          style: _styleFor(color),
+          weapon: _swordFor(color),
+          facing: facing,
+        )
+          ..aimAngle = _sheathedAim(facing)
+          ..setLoco(LocoState.idle),
+        clock: ReactionClock(ctx.botProfile, ctx.rng),
+        jumpsTheGun: p.isBot && ctx.rng.chance(ctx.botProfile.errorRate),
+      );
+    }
+  }
+
+  /// Foot-line anchors per player: a row of duelists across the dueling ground,
+  /// evenly spread and facing the central signal. Alternating duelists sit a
+  /// touch nearer/farther (depth stagger) so a full row reads with depth rather
+  /// than as a flat line. 1P stands dead center.
+  List<Offset> _layoutPositions(int n) {
+    final baseY = _size.height * _lineYFrac;
+    if (n <= 1) return [Offset(_center.dx, baseY)];
+
+    final spread = _size.width * _lineSpreadFrac;
+    final left = _size.width * _lineMarginFrac;
+    final stagger = _size.height * _depthStaggerFrac;
+    return [
+      for (var i = 0; i < n; i++)
+        Offset(
+          left + spread * (i / (n - 1)),
+          baseY + (i.isOdd ? -stagger : stagger * 0.4),
+        ),
+    ];
+  }
+
+  /// Bright duelist style: player-color fill with a brightened outline + glow.
+  StickStyle _styleFor(Color color) => StickStyle(
+        fill: color,
+        outline: _brighten(color, 0.5),
+        glowSigma: 5,
+        lineWidth: 1.1,
+        rimAlpha: 0.3,
+        shadowAlpha: 0.0, // we draw our own contact shadow
+        gradientBottom: 0.55,
+        smearAlpha: 0.3,
+      );
+
+  /// A katana whose edge picks up the duelist's color.
+  WeaponVisual _swordFor(Color color) => WeaponVisual(
+        shape: WeaponShape.sword,
+        color: const Color(0xFFCED6E0),
+        edge: _brighten(color, 0.35),
+        length: _scaleUnit * 5.0,
+        width: _scaleUnit * 0.7,
+      );
+
+  /// Sheathed/hand-on-hilt aim: blade angled down-forward so it reads as drawn
+  /// from the hip rather than pointed at the sky.
+  double _sheathedAim(double facing) => facing >= 0 ? 0.5 : math.pi - 0.5;
+
+  // ── Input ───────────────────────────────────────────────────────────────────
 
   @override
   void onInput(PlayerInput input) {
@@ -63,51 +207,73 @@ class ReactionDuel extends MiniGameBase {
   @override
   void update(double dt) {
     if (status != MiniGameStatus.running) return;
+    if (!dt.isFinite || dt <= 0) return;
     _elapsed += dt;
+    _animClock += dt;
+
+    final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
     _gate.update(dt);
 
+    _onSignalEdge();
+    _decayEffects(dt);
     _driveBots(dt);
+    _advanceFigures(sdt);
     _publishLiveScores();
+    _resolveOutcome(dt);
+  }
 
-    if (_gate.phase == ReactionPhase.done) {
-      _sinceDone += dt;
-      if (!_confettiFired && _gate.winner != null) {
-        _confettiFired = true;
-        _juice.confetti(ctx.arena);
-      }
-      if (_sinceDone >= _lingerAfterWin) {
-        _finishFromGate();
-      }
-    }
-
-    // Absolute safety net: never exceed the time limit.
-    if (_elapsed >= _timeLimit && status == MiniGameStatus.running) {
-      _gate.forceDone();
-      _finishFromGate();
+  /// Detect the WAIT→GO transition exactly once and fire the strike telegraph:
+  /// a blinding flash, a sharp shake, and snap every honest duelist into a
+  /// ready/draw cue.
+  void _onSignalEdge() {
+    if (_signalSeen || _gate.phase != ReactionPhase.go) return;
+    _signalSeen = true;
+    _strikeFlash = 1.0;
+    _strikeWord = 1.0;
+    _juice.shake.medium();
+    _juice.hitStop.trigger(0.06);
+    for (final r in _reactors.values) {
+      if (!_gate.penalized.contains(r.slot.id)) r.figure.setLoco(LocoState.run);
     }
   }
 
+  void _decayEffects(double dt) {
+    if (_strikeFlash > 0) {
+      _strikeFlash = (_strikeFlash - dt / _strikeFlashSec).clamp(0.0, 1.0);
+    }
+    if (_strikeWord > 0) {
+      _strikeWord = (_strikeWord - dt / _strikeWordSec).clamp(0.0, 1.0);
+    }
+    for (final r in _reactors.values) {
+      if (r.tooSoon > 0) {
+        r.tooSoon = (r.tooSoon - dt / _tooSoonLifeSec).clamp(0.0, 1.0);
+      }
+    }
+    for (final s in _slashes) {
+      s.life = (s.life - dt / _slashLifeSec).clamp(0.0, 1.0);
+    }
+    _slashes.removeWhere((s) => s.life <= 0);
+  }
+
+  /// Bots: gun-jumpers tap during the wait; honest bots draw after the signal
+  /// on their (jittered) reaction delay. A stalled GO closes its own window so a
+  /// round of all-false-starts still resolves.
   void _driveBots(double dt) {
     final inGo = _gate.phase == ReactionPhase.go;
     if (inGo) {
       _sinceGo += dt;
-      // Everyone false-started (or stalled): close the GO window so we resolve.
-      if (_gate.winner == null && _sinceGo >= _goWindow) {
-        _gate.forceDone();
-      }
+      if (_gate.winner == null && _sinceGo >= _goWindow) _gate.forceDone();
     }
     for (final r in _reactors.values) {
       if (!r.slot.isBot || r.acted) continue;
-      // Gun-jumping bots tap during the wait phase (false start).
-      if (r.falseStarts && _gate.phase == ReactionPhase.waiting) {
+      if (r.jumpsTheGun && _gate.phase == ReactionPhase.waiting) {
         if (r.clock.tick(dt)) {
           _handleTap(r.slot.id);
           r.acted = true;
         }
         continue;
       }
-      // Honest bots react only after GO, using their jittered delay.
       if (inGo && r.clock.tick(dt)) {
         _handleTap(r.slot.id);
         r.acted = true;
@@ -115,20 +281,106 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
+  /// Resolve one tap through the gate and play the matching beat.
   void _handleTap(int id) {
     final reactor = _reactors[id];
     if (reactor == null) return;
     final result = _gate.onTap(id);
-    final color = Color(reactor.slot.colorArgb);
     switch (result) {
       case ReactionTap.valid:
-        _juice.popup(_anchor(id), 'GO!', color, size: 40);
-        _juice.hit(_anchor(id), color);
+        _onStrike(reactor);
       case ReactionTap.early:
-        _juice.popup(_anchor(id), 'EARLY', color);
+        _onFalseStart(reactor);
       case ReactionTap.late:
+        // A valid-but-late draw: a small clash spark, no KO.
+        _juice.hit(_chestOf(reactor), _colorOf(id), sparks: 5);
+        reactor.figure.dash();
       case ReactionTap.ignored:
         break;
+    }
+  }
+
+  /// The winning quick-draw: turn toward the field and whip out a horizontal
+  /// slash that arcs to each loser (KO-flinging them), under a slow-mo beat, with
+  /// a big "STRIKE!" popup.
+  void _onStrike(_Reactor winner) {
+    final reaction = _gate.reactionTimes[winner.slot.id] ?? _decisiveRefSec;
+    final decisive =
+        (1.0 - (reaction / _decisiveRefSec)).clamp(0.0, 1.0); // 0..1
+    final color = _colorOf(winner.slot.id);
+
+    // Face the loser cluster and level the blade at them, then whip the slash.
+    final faceDir = _loserDirection(winner);
+    winner.figure
+      ..facing = faceDir
+      ..aimAngle = faceDir >= 0 ? 0.0 : math.pi
+      ..attack(0);
+
+    _juice.hitStop.trigger(_hitStopSec, scale: _hitStopScale);
+    _juice.shake.heavy();
+    _juice.popup(
+        _chestOf(winner).translate(0, -_scaleUnit * 3.4), 'STRIKE!', color,
+        size: 44);
+
+    final from = _bladeTipOf(winner);
+    for (final r in _reactors.values) {
+      if (r.slot.id == winner.slot.id) continue;
+      if (_gate.penalized.contains(r.slot.id)) continue; // already toppled
+      _fellLoser(r, from, decisive);
+    }
+  }
+
+  /// +1/-1 toward the average position of the duelists the [winner] can topple
+  /// (non-winner, non-penalized); falls back to facing screen center.
+  double _loserDirection(_Reactor winner) {
+    var sumX = 0.0;
+    var count = 0;
+    for (final r in _reactors.values) {
+      if (r.slot.id == winner.slot.id) continue;
+      if (_gate.penalized.contains(r.slot.id)) continue;
+      sumX += r.foot.dx;
+      count++;
+    }
+    final targetX = count > 0 ? sumX / count : _center.dx;
+    return targetX >= winner.foot.dx ? 1.0 : -1.0;
+  }
+
+  /// Topple one loser: a slash arc + speed lines from the winner, then a real
+  /// ragdoll flung away from the strike, with a KO burst + popup.
+  void _fellLoser(_Reactor loser, Offset from, double decisive) {
+    final color = _colorOf(loser.slot.id);
+    final chest = _chestOf(loser);
+    _slashes.add(_Slash(from: from, to: chest, color: color, life: 1.0));
+
+    _juice.ko(chest, color);
+
+    if (loser.figure.isRagdoll) return;
+    // Fling (a velocity in px/s): a capped sideways push away from the strike +
+    // a dominant upward lift so the loser pops up-and-back (classic KO) and
+    // mostly stays in frame, scaled by how decisive the win was.
+    final away = _normalize(chest - from);
+    final dirX = away.dx >= 0 ? 1.0 : -1.0;
+    final mag =
+        _size.height * (_flingBaseFracH + _flingDecisiveFracH * decisive);
+    final fling = Offset(dirX * mag * _flingSidewaysFactor, -mag * _flingLiftFactor);
+    final groundY = loser.foot.dy;
+    loser.figure.enterRagdoll(_rootOf(loser), groundY, fling);
+  }
+
+  /// A false start: the gate already penalized them. Stamp "TOO SOON!", stagger
+  /// them with a hurt pose, and a light shake.
+  void _onFalseStart(_Reactor reactor) {
+    reactor.tooSoon = 1.0;
+    reactor.figure.hurt();
+    _juice.popup(_chestOf(reactor).translate(0, -_scaleUnit * 2.2), 'EARLY',
+        _colorOf(reactor.slot.id),
+        size: 26);
+    _juice.shake.light();
+  }
+
+  void _advanceFigures(double dt) {
+    for (final r in _reactors.values) {
+      r.figure.update(dt);
     }
   }
 
@@ -146,9 +398,31 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
+  // ── Outcome ───────────────────────────────────────────────────────────────
+
+  void _resolveOutcome(double dt) {
+    if (_gate.phase == ReactionPhase.done) {
+      _sinceDone += dt;
+      if (!_confettiFired && _gate.winner != null) {
+        _confettiFired = true;
+        final w = _gate.winner;
+        // Winner-tinted confetti, brightened so it reads clearly as celebration.
+        _juice.confetti(_size,
+            colors: w == null
+                ? const []
+                : [_colorOf(w), _brighten(_colorOf(w), 0.55), _accentGold]);
+      }
+      if (_sinceDone >= _lingerAfterWin) _finishFromGate();
+    }
+    // Absolute safety net: never exceed the time limit.
+    if (_elapsed >= _timeLimit && status == MiniGameStatus.running) {
+      _gate.forceDone();
+      _finishFromGate();
+    }
+  }
+
   /// Build the final ranking from the gate: winner first, then valid reactions
-  /// ascending, then non-reactors, with penalized players last (least-bad by
-  /// stable id order).
+  /// ascending, then non-reactors, with penalized (false-start) players last.
   void _finishFromGate() {
     if (status == MiniGameStatus.finished) return;
     final times = _gate.reactionTimes;
@@ -158,20 +432,16 @@ class ReactionDuel extends MiniGameBase {
     final ranked = <int>[];
     if (winner != null) ranked.add(winner);
 
-    // Other valid reactors by ascending time.
     final others = times.keys
         .where((id) => id != winner && !penalized.contains(id))
         .toList()
       ..sort((a, b) => times[a]!.compareTo(times[b]!));
     ranked.addAll(others);
 
-    // Non-reactors (never tapped, not penalized) in stable id order.
     for (final p in ctx.players) {
       if (ranked.contains(p.id) || penalized.contains(p.id)) continue;
       ranked.add(p.id);
     }
-
-    // Penalized (false-start) players last.
     for (final p in ctx.players) {
       if (penalized.contains(p.id)) ranked.add(p.id);
     }
@@ -183,7 +453,7 @@ class ReactionDuel extends MiniGameBase {
     ));
   }
 
-  // --- Render -----------------------------------------------------------------
+  // ── Render ───────────────────────────────────────────────────────────────
 
   @override
   void render(Canvas canvas, Size size) {
@@ -191,54 +461,152 @@ class ReactionDuel extends MiniGameBase {
     final o = _juice.shake.offset;
     canvas.translate(o.dx, o.dy);
 
-    _drawSignal(canvas, size);
+    ReactionRenderer.drawBackground(canvas, size, _animClock);
+    ReactionRenderer.drawGround(canvas, size);
+    ReactionRenderer.drawVignette(canvas, size, _vignettePulse());
+
+    _drawDuelists(canvas);
+    _drawSlashes(canvas);
+
+    ReactionRenderer.drawCenterCue(
+      canvas,
+      size,
+      struck: _signalSeen,
+      strikeFlash: _strikeFlash,
+      strikeWord: _strikeWord,
+      waitPulse: _waitPulse(),
+      centerFrac: _cueCenterFrac,
+    );
+    ReactionRenderer.drawScreenFlash(canvas, size, _strikeFlash * _screenFlashMax);
+
     _juice.render(canvas);
     canvas.restore();
   }
 
-  /// Full-field wash: red while waiting, green on GO, dimmed once decided.
-  void _drawSignal(Canvas canvas, Size size) {
-    final color = switch (_gate.phase) {
-      ReactionPhase.waiting => const Color(0xFFB3261E), // red
-      ReactionPhase.go => const Color(0xFF1FB85B), // green
-      ReactionPhase.done => const Color(0xFF2A2F3A), // settled
-    };
-    canvas.drawRect(Offset.zero & size, Paint()..color = color);
+  /// Vignette pulse: dark + throbbing during WAIT (rising tension), calm after.
+  double _vignettePulse() {
+    if (_gate.phase != ReactionPhase.waiting) return 0.0;
+    final ramp = (_elapsed / _maxGoDelay).clamp(0.0, 1.0);
+    final throb = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
+    return (_vignetteWaitBase + _vignetteWaitGain * ramp * throb)
+        .clamp(0.0, 1.0);
+  }
 
-    // Center pip per player so multi-player rounds read clearly.
-    final n = ctx.players.length;
-    final pipY = size.height * 0.5;
-    final step = size.width / (n + 1);
-    for (var i = 0; i < n; i++) {
-      final p = ctx.players[i];
-      final penalized = _gate.penalized.contains(p.id);
-      final isWinner = _gate.winner == p.id;
-      final pip = Paint()
-        ..color = Color(p.colorArgb).withValues(alpha: penalized ? 0.25 : 1);
-      final cx = step * (i + 1);
-      canvas.drawCircle(Offset(cx, pipY), isWinner ? 26 : 18, pip);
+  /// WAIT-cue throb in 0..1 (also breathes the center word).
+  double _waitPulse() => 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
+
+  void _drawDuelists(Canvas canvas) {
+    for (final r in _reactors.values) {
+      final fig = r.figure;
+      final locked = _gate.penalized.contains(r.slot.id);
+
+      // Ragdolled losers render their own self-anchored tumbling frame.
+      if (fig.isRagdoll) {
+        ReactionRenderer.drawDuelist(canvas, fig, _rootOf(r));
+        continue;
+      }
+
+      final idx = ctx.players.indexWhere((p) => p.id == r.slot.id);
+      ReactionRenderer.drawContactShadow(canvas, r.foot, _scaleUnit);
+      ReactionRenderer.drawNamePlate(
+        canvas,
+        r.foot,
+        _scaleUnit,
+        _colorOf(r.slot.id),
+        idx + 1,
+        locked: locked,
+      );
+      ReactionRenderer.drawDuelist(canvas, fig, _rootOf(r));
+
+      // Per-duelist readout above the head.
+      final above = _chestOf(r).translate(0, -_scaleUnit * 2.4);
+      ReactionRenderer.drawReadout(
+          canvas, above, _scaleUnit, _readoutFor(r), _colorOf(r.slot.id));
+
+      if (r.tooSoon > 0) {
+        ReactionRenderer.drawTooSoon(canvas, above, _scaleUnit, r.tooSoon);
+      }
     }
   }
 
-  Offset _anchor(int id) {
-    final n = ctx.players.length;
-    final idx = ctx.players.indexWhere((p) => p.id == id).clamp(0, n - 1);
-    final step = ctx.arena.width / (n + 1);
-    return Offset(step * (idx + 1), ctx.arena.height * 0.5);
+  void _drawSlashes(Canvas canvas) {
+    for (final s in _slashes) {
+      ReactionRenderer.drawSlashArc(canvas, s.from, s.to, s.color, s.life);
+      ReactionRenderer.drawSpeedLines(canvas, s.from, s.to, s.color, s.life);
+    }
+  }
+
+  /// The text shown above a duelist: their slash time once they react, "EARLY"
+  /// while penalized, else nothing during the WAIT.
+  String _readoutFor(_Reactor r) {
+    if (_gate.penalized.contains(r.slot.id)) return 'EARLY';
+    final t = _gate.reactionTimes[r.slot.id];
+    if (t != null) return '${(t * 1000).round()} ms';
+    return '';
+  }
+
+  // ── Small pure helpers ──────────────────────────────────────────────────────
+
+  /// Stick render root for a duelist: pelvis lifted by [_footReach] so the feet
+  /// plant on the duelist's foot line.
+  Offset _rootOf(_Reactor r) => Offset(r.foot.dx, r.foot.dy - _footReach);
+
+  /// Chest height for fx anchoring (above the pelvis root).
+  Offset _chestOf(_Reactor r) => _rootOf(r).translate(0, -_footReach * 0.55);
+
+  /// Approximate blade-tip position: in front of the chest along facing, where
+  /// the slash visually originates.
+  Offset _bladeTipOf(_Reactor r) =>
+      _chestOf(r).translate(r.figure.facing * _scaleUnit * 3.2, 0);
+
+  Color _colorOf(int id) {
+    for (final p in ctx.players) {
+      if (p.id == id) return Color(p.colorArgb);
+    }
+    return const Color(0xFFFFFFFF);
+  }
+
+  static Color _brighten(Color c, double t) =>
+      Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
+
+  static Offset _normalize(Offset v) {
+    final d = v.distance;
+    if (d < 1e-6) return const Offset(0, -1);
+    return v / d;
   }
 }
 
-/// Per-player reaction state for one round.
+/// Per-player reaction state for one round. Mutable round-scoped state (allowed
+/// for the duration of a single round).
 class _Reactor {
   final PlayerSlot slot;
+  final Offset foot; // ground anchor (foot line) for this duelist
+  final StickFigure figure;
   final ReactionClock clock;
-  final bool falseStarts; // bot decided to jump the gun this round
+  final bool jumpsTheGun; // bot decided to false-start this round
 
   bool acted = false;
+  double tooSoon = 0; // 1 → 0 life of the "TOO SOON!" stamp
 
   _Reactor({
     required this.slot,
+    required this.foot,
+    required this.figure,
     required this.clock,
-    required this.falseStarts,
+    required this.jumpsTheGun,
+  });
+}
+
+/// A short-lived slash arc from the winner's blade to a loser's chest.
+class _Slash {
+  final Offset from;
+  final Offset to;
+  final Color color;
+  double life; // 1 → 0
+  _Slash({
+    required this.from,
+    required this.to,
+    required this.color,
+    required this.life,
   });
 }

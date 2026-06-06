@@ -1,0 +1,455 @@
+import 'dart:math' as math;
+import 'dart:ui';
+
+/// Pure-Canvas rendering for [BumperBalls]. Holds NO game state and never
+/// mutates the simulation — callers pass plain value snapshots. Kept in its own
+/// file so the gameplay module stays lean and the drawing stays cohesive.
+///
+/// Theme: a neon knockout floor. A dark void backdrop, a glowing hex/grid disc
+/// platform with a bright energized rim and a pulsing red danger band, and
+/// glossy player-colored bumper balls with eyes, a motion trail, squash &
+/// stretch on impact and impact spark rings.
+///
+/// Every method is side-effect free beyond the supplied [Canvas], guards its
+/// own inputs, and never throws (so it is safe to call from `render`).
+class BumperRenderer {
+  BumperRenderer._();
+
+  // ── Palette (no magic colors inline elsewhere) ─────────────────────────────
+  static const Color _bgTop = Color(0xFF0A0E1A);
+  static const Color _bgBottom = Color(0xFF05070E);
+  static const Color _voidGlow = Color(0x223A6BFF);
+  static const Color _floorCore = Color(0xFF16243F);
+  static const Color _floorEdge = Color(0xFF0B1322);
+  static const Color _hexLine = Color(0x2A5FA8FF);
+  static const Color _gridGlow = Color(0x14A9D8FF);
+  static const Color _ringShadow = Color(0x77000000);
+  static const Color _dangerBand = Color(0xFFFF4060);
+  static const Color _white = Color(0xFFFFFFFF);
+  static const Color _black = Color(0xFF050810);
+  static const Color _pupil = Color(0xFF0A0E1A);
+
+  // ── Tuning ─────────────────────────────────────────────────────────────────
+  static const double _voidGlowFactor = 1.7; // backdrop glow radius / ring R
+  static const double _rimWidthFactor = 0.045; // rim stroke / ring radius
+  static const double _shadowDrop = 0.07; // platform drop-shadow / radius
+  static const double _dangerBandFactor = 0.11; // band depth / ring radius
+  static const double _hexRadiusFactor = 0.13; // hex cell radius / ring radius
+  static const double _ballGlowFactor = 1.55; // ball glow radius / ball radius
+  static const double _eyeOffsetFactor = 0.34; // eye spread / ball radius
+  static const double _eyeRadiusFactor = 0.20; // white radius / ball radius
+  static const double _trailMaxFactor = 2.6; // trail length / ball radius
+  static const int _concentricRings = 5;
+
+  // ── Background: void gradient + soft central glow ───────────────────────────
+  static void drawBackground(
+      Canvas canvas, Size size, Offset center, double ringRadius) {
+    final bg = Paint()
+      ..shader = Gradient.linear(
+        Offset(size.width / 2, 0),
+        Offset(size.width / 2, size.height),
+        const [_bgTop, _bgBottom],
+      );
+    canvas.drawRect(Offset.zero & size, bg);
+
+    final glowR = ringRadius * _voidGlowFactor;
+    if (glowR > 0) {
+      final glow = Paint()
+        ..shader = Gradient.radial(
+          center,
+          glowR,
+          const [_voidGlow, Color(0x00000000)],
+        );
+      canvas.drawCircle(center, glowR, glow);
+    }
+  }
+
+  /// Sparse drifting energy motes for depth (positions supplied by the caller so
+  /// they stay deterministic and animate with the sim clock).
+  static void drawAmbientMotes(Canvas canvas, List<Offset> motes, double t) {
+    if (motes.isEmpty) return;
+    final paint = Paint()
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+    for (var i = 0; i < motes.length; i++) {
+      final m = motes[i];
+      final drift = Offset(0, math.sin(t * 0.6 + i) * 6);
+      final twinkle = 0.16 + 0.18 * (0.5 + 0.5 * math.sin(t * 1.9 + i * 1.3));
+      paint.color = _gridGlow.withValues(alpha: twinkle.clamp(0.0, 1.0));
+      canvas.drawCircle(m + drift, 1.6 + (i % 3) * 0.7, paint);
+    }
+  }
+
+  /// The platform: drop shadow → energized floor gradient → hex lattice + faint
+  /// concentric grid → glowing danger band → bright neon rim + inner lip.
+  /// [accent] tints the rim; [dangerPulse] in 0..1 brightens the danger band.
+  static void drawPlatform(
+    Canvas canvas,
+    Offset center,
+    double ringRadius, {
+    required Color accent,
+    required double dangerPulse,
+    required double t,
+  }) {
+    if (ringRadius <= 1) return;
+
+    // Soft drop shadow so the disc floats above the void.
+    final shadow = Paint()
+      ..color = _ringShadow
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22);
+    canvas.drawCircle(
+        center + Offset(0, ringRadius * _shadowDrop), ringRadius * 1.03, shadow);
+
+    // Energized floor body.
+    final floor = Paint()
+      ..shader = Gradient.radial(
+        center.translate(-ringRadius * 0.12, -ringRadius * 0.16),
+        ringRadius * 1.18,
+        const [_floorCore, _floorEdge],
+        const [0.0, 1.0],
+      );
+    canvas.drawCircle(center, ringRadius, floor);
+
+    // Clip the lattice to the disc so lines never spill past the rim.
+    canvas.save();
+    canvas.clipPath(Path()
+      ..addOval(Rect.fromCircle(center: center, radius: ringRadius)));
+    _drawHexLattice(canvas, center, ringRadius);
+    _drawConcentricGrid(canvas, center, ringRadius, t);
+    canvas.restore();
+
+    _drawDangerBand(canvas, center, ringRadius, dangerPulse);
+    _drawRim(canvas, center, ringRadius, accent);
+  }
+
+  /// A hexagonal grid filling the disc, drawn as glowing strokes.
+  static void _drawHexLattice(Canvas canvas, Offset center, double ringRadius) {
+    final cell = ringRadius * _hexRadiusFactor;
+    if (cell <= 2) return;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.0, cell * 0.05)
+      ..color = _hexLine;
+
+    // Axial hex layout: column step 1.5*r, row step sqrt(3)*r (offset cols).
+    final colStep = cell * 1.5;
+    final rowStep = cell * math.sqrt(3.0);
+    final cols = (ringRadius / colStep).ceil() + 1;
+    final rows = (ringRadius / rowStep).ceil() + 1;
+    for (var q = -cols; q <= cols; q++) {
+      for (var r = -rows; r <= rows; r++) {
+        final cx = center.dx + q * colStep;
+        final cy = center.dy + r * rowStep + (q.isEven ? 0 : rowStep / 2);
+        final c = Offset(cx, cy);
+        if ((c - center).distance > ringRadius + cell) continue;
+        canvas.drawPath(_hexPath(c, cell * 0.96), paint);
+      }
+    }
+  }
+
+  static Path _hexPath(Offset center, double radius) {
+    final path = Path();
+    for (var i = 0; i < 6; i++) {
+      final a = math.pi / 3 * i; // pointy-right orientation
+      final p = center + Offset(math.cos(a) * radius, math.sin(a) * radius);
+      if (i == 0) {
+        path.moveTo(p.dx, p.dy);
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
+    }
+    return path..close();
+  }
+
+  /// A few slowly breathing concentric rings for a "scanline" energy feel.
+  static void _drawConcentricGrid(
+      Canvas canvas, Offset center, double ringRadius, double t) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.0, ringRadius * 0.005);
+    for (var i = 1; i <= _concentricRings; i++) {
+      final base = i / (_concentricRings + 1);
+      final breathe = 0.5 + 0.5 * math.sin(t * 1.2 + i);
+      paint.color = _gridGlow.withValues(alpha: (0.08 + 0.07 * breathe));
+      canvas.drawCircle(center, ringRadius * base, paint);
+    }
+  }
+
+  /// Glowing red danger band just inside the rim: a soft halo + a crisp core
+  /// line so it clearly reads as "the edge will knock you out".
+  static void _drawDangerBand(
+      Canvas canvas, Offset center, double ringRadius, double pulse) {
+    final bandDepth = ringRadius * _dangerBandFactor;
+    final bandR = ringRadius - bandDepth * 0.7;
+    final alpha = (0.28 + 0.5 * pulse.clamp(0.0, 1.0));
+    final halo = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = bandDepth * 1.15
+      ..color = _dangerBand.withValues(alpha: (alpha * 0.5).clamp(0.0, 1.0))
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, bandDepth * 0.6);
+    canvas.drawCircle(center, bandR, halo);
+    final core = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(2.0, bandDepth * 0.4)
+      ..color = _dangerBand.withValues(alpha: alpha.clamp(0.0, 1.0));
+    canvas.drawCircle(center, bandR, core);
+  }
+
+  /// Bright neon rim: a controlled outer glow, a vertical gradient core stroke,
+  /// and an inner highlight lip for a thick 3-D energized edge.
+  static void _drawRim(
+      Canvas canvas, Offset center, double ringRadius, Color accent) {
+    final rimW = math.max(3.0, ringRadius * _rimWidthFactor);
+    final glow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = rimW * 1.5
+      ..color = accent.withValues(alpha: 0.42)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, rimW * 0.8);
+    canvas.drawCircle(center, ringRadius, glow);
+
+    final rim = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = rimW
+      ..shader = Gradient.linear(
+        center.translate(0, -ringRadius),
+        center.translate(0, ringRadius),
+        [_blend(accent, _white, 0.55), accent],
+      );
+    canvas.drawCircle(center, ringRadius, rim);
+
+    final lip = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.0, rimW * 0.35)
+      ..color = _white.withValues(alpha: 0.2);
+    canvas.drawCircle(center, ringRadius - rimW * 0.55, lip);
+  }
+
+  /// Soft contact shadow ellipse beneath a ball at ground level.
+  static void drawContactShadow(Canvas canvas, Offset ground, double ballR) {
+    final paint = Paint()
+      ..color = _black.withValues(alpha: 0.36)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, ballR * 0.3);
+    canvas.drawOval(
+      Rect.fromCenter(center: ground, width: ballR * 2.1, height: ballR * 0.55),
+      paint,
+    );
+  }
+
+  /// A short directional motion trail behind a moving ball. [strength] 0..1 and
+  /// [speedFrac] 0..1 (share of max speed) scale length and opacity.
+  static void drawTrail(
+    Canvas canvas,
+    Offset pos,
+    Offset dir,
+    double ballR,
+    Color color,
+    double strength,
+    double speedFrac,
+  ) {
+    final s = strength.clamp(0.0, 1.0) * speedFrac.clamp(0.0, 1.0);
+    if (s <= 0.02) return;
+    final len = ballR * _trailMaxFactor * s;
+    final tail = pos - dir * len;
+    canvas.drawLine(
+      tail,
+      pos,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = ballR * (0.7 + 0.9 * s)
+        ..color = color.withValues(alpha: 0.32 * s)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, ballR * 0.35),
+    );
+  }
+
+  /// A glossy energized bumper ball with squash & stretch.
+  ///
+  /// [squash] in roughly [-0.5, 0.5]: positive stretches along [stretchDir]
+  /// (and thins across it); negative flattens. [lookDir] aims the pupils.
+  /// [ready] adds a bright charge ring telegraphing a dash is available.
+  static void drawBall(
+    Canvas canvas,
+    Offset pos,
+    double ballR,
+    Color color, {
+    required double squash,
+    required Offset stretchDir,
+    required Offset lookDir,
+    required bool ready,
+    required int displayNumber,
+  }) {
+    if (ballR <= 0) return;
+
+    // Outer glow (drawn in world space, unaffected by the squash transform).
+    final glow = Paint()
+      ..color = color.withValues(alpha: 0.34)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, ballR * 0.6);
+    canvas.drawCircle(pos, ballR * _ballGlowFactor, glow);
+
+    final sq = squash.clamp(-0.5, 0.5);
+    final along = 1.0 + sq;
+    final across = 1.0 - sq * 0.6;
+    final ang = math.atan2(stretchDir.dy, stretchDir.dx);
+
+    canvas.save();
+    canvas.translate(pos.dx, pos.dy);
+    canvas.rotate(ang);
+    canvas.scale(along, across);
+    canvas.rotate(-ang);
+    canvas.translate(-pos.dx, -pos.dy);
+
+    // Body with a top-lit radial gradient (glossy sphere shading).
+    final body = Paint()
+      ..shader = Gradient.radial(
+        pos.translate(-ballR * 0.3, -ballR * 0.36),
+        ballR * 1.35,
+        [_blend(color, _white, 0.45), color, _blend(color, _black, 0.42)],
+        const [0.0, 0.5, 1.0],
+      );
+    canvas.drawCircle(pos, ballR, body);
+
+    // Rim light along the edge for a glassy bead.
+    canvas.drawCircle(
+      pos,
+      ballR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, ballR * 0.1)
+        ..color = _white.withValues(alpha: 0.28),
+    );
+
+    // Charge ring when a dash is ready.
+    if (ready) {
+      canvas.drawCircle(
+        pos,
+        ballR * 1.12,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.2, ballR * 0.08)
+          ..color = _blend(color, _white, 0.5).withValues(alpha: 0.6),
+      );
+    }
+
+    _drawFace(canvas, pos, ballR, lookDir, displayNumber);
+
+    // Specular highlight blob, last so it sits on top.
+    canvas.drawCircle(
+      pos + Offset(-ballR * 0.32, -ballR * 0.38),
+      ballR * 0.22,
+      Paint()..color = _white.withValues(alpha: 0.7),
+    );
+
+    canvas.restore();
+  }
+
+  static void _drawFace(
+      Canvas canvas, Offset pos, double ballR, Offset lookDir, int number) {
+    final lean = _normalize(lookDir) * (ballR * 0.16);
+    final eyeOffset = ballR * _eyeOffsetFactor;
+    final eyeR = ballR * _eyeRadiusFactor;
+    final white = Paint()..color = _white;
+    final pupilPaint = Paint()..color = _pupil;
+
+    for (final sign in const [-1.0, 1.0]) {
+      final eye = pos + Offset(sign * eyeOffset, -ballR * 0.08);
+      canvas.drawCircle(eye, eyeR, white);
+      canvas.drawCircle(eye + lean, eyeR * 0.55, pupilPaint);
+      // Tiny catchlight for life.
+      canvas.drawCircle(
+        eye + Offset(-eyeR * 0.3, -eyeR * 0.3),
+        eyeR * 0.22,
+        Paint()..color = _white.withValues(alpha: 0.9),
+      );
+    }
+
+    // Determined little mouth.
+    final mouth = Rect.fromCenter(
+      center: pos + Offset(0, ballR * 0.3),
+      width: ballR * 0.62,
+      height: ballR * 0.42,
+    );
+    canvas.drawArc(
+      mouth,
+      0.12 * math.pi,
+      0.76 * math.pi,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.6, ballR * 0.09)
+        ..strokeCap = StrokeCap.round
+        ..color = _pupil,
+    );
+
+    // Player number badge tucked at the top of the ball.
+    _drawNumber(canvas, pos.translate(0, -ballR * 0.46), '$number',
+        ballR * 0.4, _white.withValues(alpha: 0.85));
+  }
+
+  /// A crisp impact spark ring at a collision point — an expanding ring + a star
+  /// flash. [progress] in 0..1 drives radius/fade.
+  static void drawImpactRing(
+    Canvas canvas,
+    Offset at,
+    double maxRadius,
+    Color color,
+    double progress,
+  ) {
+    final p = progress.clamp(0.0, 1.0);
+    if (p >= 1.0) return;
+    final r = maxRadius * _easeOut(p);
+    final fade = 1.0 - p;
+
+    canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, maxRadius * 0.12 * fade)
+        ..color = _blend(color, _white, 0.4).withValues(alpha: 0.7 * fade)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, maxRadius * 0.06),
+    );
+
+    // Quick cross-flash early in the impact.
+    if (p < 0.5) {
+      final flashAlpha = (1.0 - p * 2).clamp(0.0, 1.0);
+      final arm = maxRadius * 0.7 * _easeOut(p * 2);
+      final flash = Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.5, maxRadius * 0.08)
+        ..color = _white.withValues(alpha: 0.8 * flashAlpha);
+      canvas.drawLine(at - Offset(arm, 0), at + Offset(arm, 0), flash);
+      canvas.drawLine(at - Offset(0, arm), at + Offset(0, arm), flash);
+    }
+  }
+
+  // ── Small private helpers ──────────────────────────────────────────────────
+
+  static double _easeOut(double t) {
+    final x = t.clamp(0.0, 1.0);
+    return 1 - (1 - x) * (1 - x);
+  }
+
+  static Color _blend(Color a, Color b, double t) =>
+      Color.lerp(a, b, t.clamp(0.0, 1.0)) ?? a;
+
+  static Offset _normalize(Offset v) {
+    final d = v.distance;
+    if (d < 1e-6) return Offset.zero;
+    return v / d;
+  }
+
+  static void _drawNumber(
+      Canvas canvas, Offset center, String text, double fontSize, Color color) {
+    final builder = ParagraphBuilder(ParagraphStyle(
+      textAlign: TextAlign.center,
+      fontSize: fontSize,
+      fontWeight: FontWeight.w900,
+    ))
+      ..pushStyle(TextStyle(color: color))
+      ..addText(text);
+    final paragraph = builder.build()
+      ..layout(ParagraphConstraints(width: fontSize * 3));
+    canvas.drawParagraph(
+      paragraph,
+      Offset(center.dx - fontSize * 1.5, center.dy - fontSize * 0.62),
+    );
+  }
+}
