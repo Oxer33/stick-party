@@ -22,8 +22,9 @@ void main() {
       zones: ZoneLayout.forPlayers(4),
     );
     final g = ButtonMasher()..init(ctx);
-    for (var i = 0; i < 130; i++) {
-      g.update(1 / 60); // ~2.2s of frantic mashing
+    // ~4.5s: past the bot warmup with pucks climbing + combo badges lit.
+    for (var i = 0; i < 270; i++) {
+      g.update(1 / 60);
     }
 
     final rec = ui.PictureRecorder();

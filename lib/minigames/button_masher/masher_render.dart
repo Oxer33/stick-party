@@ -701,6 +701,51 @@ class MasherRenderer {
     }
   }
 
+  // ── Combo badge ───────────────────────────────────────────────────────────
+  /// A live "xN" combo multiplier badge floating above the striker. [combo] is
+  /// the current streak (0 hides it until the player chains a couple), [comboMax]
+  /// scales the gold "fired up" tint, and [pulse] 0..1 animates a heartbeat
+  /// scale so a hot streak visibly throbs. Centered at [anchor].
+  static void drawComboBadge(
+    Canvas canvas,
+    Offset anchor,
+    int combo,
+    int comboMax,
+    Color color, {
+    double pulse = 0,
+  }) {
+    if (combo < 2 || !anchor.dx.isFinite || !anchor.dy.isFinite) return;
+    final t = (combo / math.max(1, comboMax)).clamp(0.0, 1.0);
+    final p = pulse.clamp(0.0, 1.0);
+    final hot = Color.lerp(color, bellGold, t)!;
+    final fontSize = 18.0 + 16.0 * t + 3.0 * p;
+
+    // Glow puck behind the text so it reads over the busy carnival background.
+    canvas.drawCircle(
+      anchor,
+      fontSize * (0.9 + 0.2 * p),
+      Paint()
+        ..color = hot.withValues(alpha: 0.28 + 0.22 * t)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, fontSize * 0.6),
+    );
+    _drawText(
+      canvas,
+      'x$combo',
+      anchor,
+      fontSize,
+      _white,
+      bold: true,
+    );
+    // A thin colored under-stroke via a slightly offset tinted copy for punch.
+    _drawText(
+      canvas,
+      'x$combo',
+      anchor.translate(0, fontSize * 0.06),
+      fontSize,
+      hot.withValues(alpha: 0.55),
+    );
+  }
+
   // ── Contact shadow ──────────────────────────────────────────────────────────
   static void drawContactShadow(Canvas canvas, Offset groundCenter, double w) {
     canvas.drawOval(

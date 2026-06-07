@@ -50,6 +50,18 @@ class ButtonMasher extends MiniGameBase {
   static const double _powerDecayPerSec = 0.85; // bleeds when you slack off
   static const double _powerKickBoost = 1.6; // +160% puck kick at full power
 
+  // ── Combo multiplier (the skill layer) ──────────────────────────────────────
+  // Taps landed within a steady cadence window grow a combo streak; a tap that
+  // comes too fast (mash-spam) or too slow (a stall) snaps it back to 0. The
+  // puck kick is multiplied by the combo tier, so holding a clean rhythm climbs
+  // far faster than a flat-out button-mash — that is the skill, shown as a live
+  // "xN" combo badge.
+  static const double _comboWindowLo = 0.07; // good-cadence gap (sec) lower edge
+  static const double _comboWindowHi = 0.26; // good-cadence gap (sec) upper edge
+  static const int _comboMax = 12; // cap on the combo streak
+  static const double _comboMultPerStep = 0.12; // +12% kick per combo step
+  static const double _comboBreakGraceSec = 0.5; // miss this long → combo resets
+
   // ── Puck climb ──────────────────────────────────────────────────────────────
   static const double _baseKickPerTap = 0.018; // puck height per tap at 0 power
   static const double _puckGravityPerSec = 0.16; // puck eases back down if idle
@@ -66,6 +78,9 @@ class ButtonMasher extends MiniGameBase {
   static const double _botBaseInterval = 0.155;
   static const double _botAccuracyBonus = 0.075; // faster at high accuracy
   static const double _botJitterBase = 0.05; // sloppier at low accuracy
+  // Bots wait a beat before they start hammering so a human gets a fair head
+  // start and an idle player is never instantly buried at the gun.
+  static const double _botWarmupSec = 1.5;
 
   late Juice _juice;
   late Size _size;
@@ -173,6 +188,9 @@ class ButtonMasher extends MiniGameBase {
     s.puckHeight += (s.targetHeight - s.puckHeight) * follow;
     s.peakHeight = math.max(s.peakHeight, s.puckHeight);
 
+    // Combo breaks if the player stalls past the grace window.
+    if (s.combo > 0 && s.sinceTap + dt > _comboBreakGraceSec) s.combo = 0;
+
     // Hammer swing + tap-flash clocks.
     if (s.swing > 0) s.swing = math.max(0.0, s.swing - dt);
     for (final f in s.flashes) {
@@ -190,12 +208,23 @@ class ButtonMasher extends MiniGameBase {
     final s = _strikers[id];
     if (s == null) return;
 
+    // Combo: a tap inside the cadence window extends the streak; a too-fast or
+    // too-slow tap snaps it. This is the skill layer — rhythm beats raw speed.
+    final gap = s.sinceTap;
+    if (gap >= _comboWindowLo && gap <= _comboWindowHi) {
+      s.combo = math.min(_comboMax, s.combo + 1);
+    } else {
+      s.combo = 0;
+    }
+
     s.meter.tap();
     s.sinceTap = 0;
 
-    // Build power (capped), then kick the puck target scaled by current power.
+    // Build power (capped), then kick the puck target scaled by current power
+    // AND the combo multiplier, so a clean rhythm run climbs far faster.
     s.power = math.min(1.0, s.power + _powerPerTap);
-    final kick = _baseKickPerTap * (1.0 + _powerKickBoost * s.power);
+    final comboMult = 1.0 + _comboMultPerStep * s.combo;
+    final kick = _baseKickPerTap * (1.0 + _powerKickBoost * s.power) * comboMult;
     s.targetHeight = math.min(1.0, s.targetHeight + kick);
 
     // Swing the hammer down-stroke + a chop drives the lever.
@@ -264,6 +293,7 @@ class ButtonMasher extends MiniGameBase {
   /// they read as steady (hard) or sloppy (easy) without branching beyond "is
   /// this slot a bot?". The guard caps catch-up taps for huge frame steps.
   void _driveBots(double dt) {
+    if (_elapsed < _botWarmupSec) return; // let the human get a head start
     for (final s in _strikers.values) {
       if (!s.slot.isBot) continue;
       s.botClock += dt;
@@ -357,6 +387,17 @@ class ButtonMasher extends MiniGameBase {
       tower.width * 1.7,
       s.power,
       color,
+    );
+
+    // Live combo multiplier badge above the striker (the skill readout). Pops +
+    // goes gold as the streak climbs; hidden until the player chains a couple.
+    MasherRenderer.drawComboBadge(
+      canvas,
+      Offset(feet.dx, root.dy - s.footReach * 0.35),
+      s.combo,
+      _comboMax,
+      color,
+      pulse: 0.5 + 0.5 * math.sin(_animClock * 12.0 + s.slot.id),
     );
   }
 
@@ -472,6 +513,7 @@ class _Striker {
   final double botJitter;
 
   double power = 0; // 0..1 cadence-built power
+  int combo = 0; // current rhythm streak (drives the puck-kick multiplier)
   double puckHeight = 0; // 0..1 current rendered puck height
   double targetHeight = 0; // 0..1 height the puck eases toward
   double peakHeight = 0; // best height reached (high-water mark)

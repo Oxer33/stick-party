@@ -22,8 +22,10 @@ void main() {
       zones: ZoneLayout.forPlayers(4),
     );
     final g = TapSprint()..init(ctx);
-    for (var i = 0; i < 130; i++) {
-      g.update(1 / 60); // ~2.2s of action — mid-race with full body language
+    // ~6s: past the bot warmup and mid-track — full body language, dust, speed
+    // lines and scrolled distance markers.
+    for (var i = 0; i < 360; i++) {
+      g.update(1 / 60);
     }
 
     final rec = ui.PictureRecorder();

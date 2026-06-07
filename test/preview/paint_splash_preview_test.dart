@@ -21,9 +21,10 @@ void main() {
       zones: ZoneLayout.forPlayers(4),
     );
     final g = PaintSplash()..init(ctx);
-    for (var i = 0; i < 150; i++) {
+    // ~9s: past the bot warmup with the zones well covered for a lush preview.
+    for (var i = 0; i < 540; i++) {
       g.update(1 / 60);
-    } // ~2.5s of splatting
+    }
     final rec = ui.PictureRecorder();
     final canvas = Canvas(rec, Offset.zero & size);
     g.render(canvas, size);

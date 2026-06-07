@@ -349,11 +349,12 @@ class PaintRenderer {
 
   // ── Reticle marker: spray-can / roller in the player's color ───────────────
 
-  /// Draw a player's aiming marker. [charge] in 0..1 (how big the next splat
-  /// will be) grows a target ring + a charge bead so a "loaded" slow reticle
-  /// reads clearly. [isRoller] swaps the spray-can silhouette for a roller, so
-  /// up to four players are instantly distinguishable by tool + color. [pulse]
-  /// in 0..1 animates a recent-splat flash.
+  /// Draw a player's steering brush marker. [charge] in 0..1 (the dwell bonus —
+  /// how big the next splat will be) grows a target ring so a "loaded" lingering
+  /// brush reads clearly. [isRoller] swaps the spray-can silhouette for a
+  /// roller, so up to four players are instantly distinguishable by tool +
+  /// color. [pulse] in 0..1 animates a recent-splat flash. [spraying] true draws
+  /// an active paint burst at the nozzle so a held brush visibly lays paint.
   static void drawReticle(
     Canvas canvas,
     Size size,
@@ -362,6 +363,7 @@ class PaintRenderer {
     required double charge,
     required bool isRoller,
     double pulse = 0,
+    bool spraying = false,
   }) {
     if (!center.dx.isFinite || !center.dy.isFinite) return;
     final unit = math.min(size.width, size.height) * _reticleRingFactor;
@@ -369,11 +371,31 @@ class PaintRenderer {
     final c = charge.clamp(0.0, 1.0);
 
     _drawTargetRing(canvas, center, unit, color, c, pulse.clamp(0.0, 1.0));
+    if (spraying) _drawSprayBurst(canvas, center, unit, color, c);
     if (isRoller) {
       _drawRoller(canvas, center, unit, color);
     } else {
       _drawSprayCan(canvas, center, unit, color);
     }
+  }
+
+  /// A soft puff of colored mist at the brush centre while it is actively
+  /// spraying, so a held/steering brush clearly reads as laying down paint.
+  static void _drawSprayBurst(
+      Canvas canvas, Offset center, double unit, Color color, double charge) {
+    final r = unit * (1.1 + 0.8 * charge);
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..color = color.withValues(alpha: 0.30)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.7),
+    );
+    canvas.drawCircle(
+      center,
+      r * 0.5,
+      Paint()..color = color.withValues(alpha: 0.5),
+    );
   }
 
   /// Pulsing target ring sized to the pending splat radius.
@@ -523,6 +545,45 @@ class PaintRenderer {
       Paint()..color = _steelDark,
     );
     canvas.restore();
+  }
+
+  // ── Zone borders (whose canvas is whose) ───────────────────────────────────
+
+  /// Faint player-tinted borders around each player's paintable zone so the
+  /// split of the canvas reads instantly. [zones] pairs each normalized rect
+  /// with that player's color. A single full-screen zone (solo play) is skipped
+  /// since there is nothing to divide.
+  static void drawZoneBorders(
+    Canvas canvas,
+    Size size,
+    List<({Rect rect, Color color})> zones,
+  ) {
+    if (size.width <= 1 || size.height <= 1 || zones.length < 2) return;
+    for (final z in zones) {
+      final r = Rect.fromLTRB(
+        z.rect.left * size.width,
+        z.rect.top * size.height,
+        z.rect.right * size.width,
+        z.rect.bottom * size.height,
+      ).deflate(2);
+      // Soft tinted halo just inside the seam.
+      canvas.drawRect(
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, math.min(size.width, size.height) * 0.01)
+          ..color = z.color.withValues(alpha: 0.16)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6),
+      );
+      // Crisp thin border.
+      canvas.drawRect(
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, math.min(size.width, size.height) * 0.003)
+          ..color = z.color.withValues(alpha: 0.5),
+      );
+    }
   }
 
   // ── Coverage bars (live HUD) ───────────────────────────────────────────────

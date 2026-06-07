@@ -29,6 +29,12 @@ void main() {
     expect(g.winResult, isNotNull);
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
     expect(g.winResult!.winner, isNotNull);
+
+    // Sim-length floor + ceiling: the all-bot race must outlast the bot warmup
+    // (no instant finish) and still resolve inside the hard time limit (~30s).
+    final simSeconds = n / 60.0;
+    expect(simSeconds, greaterThan(1.5));
+    expect(simSeconds, lessThanOrEqualTo(31.0));
   });
 
   test('tap sprint solo player finishes', () {

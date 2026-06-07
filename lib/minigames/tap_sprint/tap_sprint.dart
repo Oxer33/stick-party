@@ -74,6 +74,9 @@ class TapSprint extends MiniGameBase {
   static const double _botBaseInterval = 0.15;
   static const double _botAccuracyBonus = 0.07; // faster at high accuracy
   static const double _botJitterBase = 0.05; // sloppier (worse rhythm) when weak
+  // Bots hold at the blocks for a beat so the start is fair and a human can get
+  // off the line first — they never sprint away before the player reacts.
+  static const double _botWarmupSec = 1.5;
 
   // ── Figure / feel tuning ────────────────────────────────────────────────────
   static const double _figureScale = 1.9; // readable sprinters
@@ -288,6 +291,7 @@ class TapSprint extends MiniGameBase {
   /// they read as steady (hard) or sloppy (easy) without ever branching beyond
   /// "is this slot a bot?". The guard caps catch-up taps for huge frame steps.
   void _driveBots(double dt) {
+    if (_elapsed < _botWarmupSec) return; // hold bots at the blocks for a beat
     for (final r in _runners.values) {
       if (!r.slot.isBot || r.finished) continue;
       r.botClock += dt;
