@@ -31,6 +31,25 @@ void main() {
     expect(g.winResult!.ranking.length, 4);
   });
 
+  test('all-bot 4p round lasts >1.5s and finishes within the time limit', () {
+    // Guards both failure modes: a bug that ends the round instantly (<1.5s) and
+    // one that never resolves. 60s of frames comfortably exceeds the 45s cap.
+    const dt = 1 / 60;
+    for (final seed in [1, 2, 3, 7, 13, 42, 99]) {
+      final g = ColorMemory()..init(ctxFor(4, seed));
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+        g.update(dt);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      expect(frames * dt, greaterThan(1.5),
+          reason: 'seed=$seed ended in ${(frames * dt).toStringAsFixed(2)}s '
+              '(too fast — a sub-1.5s finish reads as a bug)');
+      expect(frames * dt, lessThanOrEqualTo(46.0),
+          reason: 'seed=$seed exceeded the time limit');
+    }
+  });
+
   test('always terminates across player counts and seeds', () {
     for (final n in [1, 2, 3, 4]) {
       for (final seed in [1, 2, 5, 42, 99]) {

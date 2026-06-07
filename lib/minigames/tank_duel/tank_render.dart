@@ -38,6 +38,7 @@ class TankView {
   final double muzzle; // 0..1 muzzle-flash amount
   final double invuln; // 0..1 invulnerability blink phase (0 = none)
   final double scale; // body scale factor (fits the arena)
+  final bool precision; // true while the player holds to slow-aim (fine-tune)
 
   const TankView({
     required this.base,
@@ -51,6 +52,7 @@ class TankView {
     required this.muzzle,
     required this.invuln,
     required this.scale,
+    this.precision = false,
   });
 }
 
@@ -329,20 +331,26 @@ class TankRenderer {
   }
 
   // ── Aim guide / reticle from the barrel ────────────────────────────────────
+  /// A dashed fading guide line + reticle along the barrel. While the player
+  /// holds to slow-aim ([t.precision]) the guide reaches further and brightens
+  /// and the reticle gains crosshair ticks, so a deliberate precision shot reads
+  /// clearly distinct from the idle sweep.
   static void drawAimGuide(Canvas canvas, TankView t) {
     final dir = Offset(math.cos(t.aimAngle), math.sin(t.aimAngle));
     final muzzle = _muzzlePoint(t);
-    final end = muzzle + dir * _aimGuideLen;
-    // Dashed fading guide line.
-    const steps = 14;
+    final reach = _aimGuideLen * (t.precision ? 1.5 : 1.0);
+    final end = muzzle + dir * reach;
+    final boost = t.precision ? 1.0 : 0.0;
+    // Dashed fading guide line (brighter + longer dashes while precision-aiming).
+    final steps = t.precision ? 18 : 14;
     final paint = Paint()
-      ..strokeWidth = 2
+      ..strokeWidth = 2 + boost
       ..strokeCap = StrokeCap.round;
     for (var i = 0; i < steps; i++) {
       if (i.isOdd) continue;
       final a = i / steps;
       final b = (i + 1) / steps;
-      final fade = (1 - a) * 0.5;
+      final fade = (1 - a) * (0.5 + 0.4 * boost);
       paint.color = t.color.withValues(alpha: fade.clamp(0.0, 1.0));
       canvas.drawLine(
         Offset.lerp(muzzle, end, a)!,
@@ -350,12 +358,24 @@ class TankRenderer {
         paint,
       );
     }
-    // Small reticle ring at the end.
+    // Reticle ring at the end (brighter while precision-aiming).
+    final ringR = 7 * t.scale * (t.precision ? 1.15 : 1.0);
     final ring = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = t.color.withValues(alpha: 0.45);
-    canvas.drawCircle(end, 7 * t.scale, ring);
+      ..strokeWidth = 2 + boost
+      ..color = t.color.withValues(alpha: (0.45 + 0.45 * boost).clamp(0.0, 1.0));
+    canvas.drawCircle(end, ringR, ring);
+    // Crosshair ticks only when locked in for a careful shot.
+    if (t.precision) {
+      final tick = ringR * 0.85;
+      final perp = Offset(-dir.dy, dir.dx);
+      final p = Paint()
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round
+        ..color = _white.withValues(alpha: 0.7);
+      canvas.drawLine(end - dir * tick, end + dir * tick, p);
+      canvas.drawLine(end - perp * tick, end + perp * tick, p);
+    }
   }
 
   // ── Tank ───────────────────────────────────────────────────────────────────
@@ -605,15 +625,24 @@ class TankRenderer {
 
   // ── Shell + trail ───────────────────────────────────────────────────────────
   static void drawShell(Canvas canvas, ShellView s) {
-    // Smoke/spark trail (oldest faintest).
+    // Smoke/spark trail (oldest faintest). A bright hot core over a wider, soft
+    // glow streak so the shell reads as a fast tracer.
     final n = s.trail.length;
     if (n >= 2) {
+      final glow = Paint()
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
       final paint = Paint()..strokeCap = StrokeCap.round;
       for (var i = 0; i < n - 1; i++) {
         final f = 1 - i / n; // newest strongest
+        glow
+          ..color =
+              _blend(s.color, _shellHot, 0.5).withValues(alpha: (0.35 * f).clamp(0.0, 1.0))
+          ..strokeWidth = (3 + 8 * f);
+        canvas.drawLine(s.trail[i], s.trail[i + 1], glow);
         paint
-          ..color = _blend(s.color, _shellHot, 0.4)
-              .withValues(alpha: (0.5 * f).clamp(0.0, 1.0))
+          ..color = _blend(s.color, _shellHot, 0.5)
+              .withValues(alpha: (0.7 * f).clamp(0.0, 1.0))
           ..strokeWidth = (1.5 + 5 * f);
         canvas.drawLine(s.trail[i], s.trail[i + 1], paint);
       }

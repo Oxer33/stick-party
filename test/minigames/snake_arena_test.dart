@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -25,6 +26,37 @@ void main() {
     expect(g.winResult, isNotNull);
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
     expect(g.winResult!.ranking.length, 4);
+  });
+
+  test('all-bot 4p round lasts >1.5s and finishes within the time limit', () {
+    // PACING contract: a round must not collapse instantly (>1.5s of play) and
+    // must always resolve well within the round time limit (never just idle out)
+    // across difficulties and seeds.
+    const minTicks = 90; // 1.5s at 60 fps
+    const maxTicks = 60 * 38; // ~38s: the 35s limit + a small resolution buffer
+    for (final diff in BotDifficulty.values) {
+      for (final seed in const [1, 7, 13, 21, 34]) {
+        final ctx = MiniGameContext(
+          players: [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(seed),
+          zones: ZoneLayout.forPlayers(4),
+          difficulty: diff,
+        );
+        final g = SnakeArena()..init(ctx);
+        var ticks = 0;
+        while (g.status != MiniGameStatus.finished && ticks < 60 * 120) {
+          g.update(1 / 60);
+          ticks++;
+        }
+        expect(g.status, MiniGameStatus.finished,
+            reason: 'diff=$diff seed=$seed must finish');
+        expect(ticks, greaterThan(minTicks),
+            reason: 'diff=$diff seed=$seed lasted ${ticks / 60}s (<1.5s)');
+        expect(ticks, lessThanOrEqualTo(maxTicks),
+            reason: 'diff=$diff seed=$seed lasted ${ticks / 60}s (over limit)');
+      }
+    }
   });
 
   test('terminates for 1, 2 and 3 players across seeds', () {

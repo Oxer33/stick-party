@@ -30,6 +30,23 @@ void main() {
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
   });
 
+  test('all-bot 4p round lasts >1.5s and finishes within the time limit', () {
+    // Guards a regression that would end the round early or never. The round is
+    // a fixed 30s sprint, so we assert it spans (1.5s, 31s].
+    const dt = 1 / 60;
+    for (final seed in [1, 2, 3, 7, 21]) {
+      final g = CatchTheStar()..init(ctxFor(4, seed));
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 45) {
+        g.update(dt);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      expect(frames * dt, greaterThan(1.5), reason: 'seed=$seed ended too fast');
+      expect(frames * dt, lessThanOrEqualTo(31.0),
+          reason: 'seed=$seed exceeded the time limit');
+    }
+  });
+
   test('finishes for 1..3 players', () {
     for (final n in [1, 2, 3]) {
       final g = CatchTheStar()..init(ctxFor(n, 13 + n));

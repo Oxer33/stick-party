@@ -45,6 +45,15 @@ class SoccerActor {
   /// 0..1 lunge charge used to brighten/scale the ground ring on a kick.
   final double kickFlash;
 
+  /// Origin of the active dash trail (null when none). Drawn behind the figure.
+  final Offset? trailFrom;
+
+  /// Unit direction of the active dash trail (zero when none).
+  final Offset trailDir;
+
+  /// 0..1 remaining strength of the dash trail (0 when none).
+  final double trailStrength;
+
   const SoccerActor({
     required this.figure,
     required this.root,
@@ -53,6 +62,9 @@ class SoccerActor {
     required this.color,
     required this.number,
     this.kickFlash = 0,
+    this.trailFrom,
+    this.trailDir = Offset.zero,
+    this.trailStrength = 0,
   });
 }
 
@@ -93,6 +105,15 @@ class SoccerRenderer {
   static const double _shadowDropFactor = 1.1; // ball shadow drop / radius
   static const double _scoreboardHeightFactor = 0.052; // of pitch height
   static const double _twoPi = math.pi * 2;
+
+  // Aim arrow geometry (multiples of the striker's body radius).
+  static const double _aimBaseFactor = 0.95; // gap before the shaft starts
+  static const double _aimLenBase = 2.4; // shaft length at zero charge
+  static const double _aimLenCharge = 2.6; // + this at full charge
+  static const double _aimWidthBase = 0.26; // shaft width at zero charge
+  static const double _aimWidthCharge = 0.26; // + this at full charge
+  static const double _aimHeadBase = 0.62; // arrowhead size at zero charge
+  static const double _aimHeadCharge = 0.34; // + this at full charge
 
   // ── Background: stadium gradient + dark crowd haze ─────────────────────────
   static void drawBackground(Canvas canvas, Size size) {
@@ -329,6 +350,119 @@ class SoccerRenderer {
   /// Render the stick player itself (figure owns its own pose state).
   static void drawActor(Canvas canvas, SoccerActor a) {
     a.figure.render(canvas, a.root);
+  }
+
+  /// A short directional motion streak behind a dashing / kicking striker, drawn
+  /// from [SoccerActor.trailFrom] along [SoccerActor.trailDir]. No-op when there
+  /// is no active trail.
+  static void drawDashTrail(Canvas canvas, SoccerActor a) {
+    final from = a.trailFrom;
+    final s = a.trailStrength.clamp(0.0, 1.0);
+    if (from == null || s <= 0.01 || a.trailDir == Offset.zero) return;
+    final r = a.radius;
+    final to = from + a.trailDir * (r * 2.4);
+    canvas.drawLine(
+      from,
+      to,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = r * (0.55 + 0.8 * s)
+        ..color = a.color.withValues(alpha: 0.26 * s)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.3),
+    );
+  }
+
+  /// The player's control, drawn on top of the striker: a player-colored AIM
+  /// ARROW that sweeps around the body, growing + brightening with [charge] so
+  /// the player sees exactly where and how hard they will dash / kick. A charge
+  /// ring sweeps under the feet while [charging]. Nothing here is auto-aimed —
+  /// it is a pure readout of the striker's chosen aim + charge.
+  static void drawAim(
+    Canvas canvas,
+    Offset center,
+    double bodyR,
+    Color color, {
+    required double aim,
+    required double charge,
+    required bool charging,
+    required bool ready,
+    required double clock,
+  }) {
+    final c = charge.clamp(0.0, 1.0);
+    final dir = Offset(math.cos(aim), math.sin(aim));
+    final base = bodyR * _aimBaseFactor;
+    final len = bodyR * (_aimLenBase + _aimLenCharge * c) * (ready ? 1.0 : 0.55);
+    final start = center + dir * base;
+    final end = center + dir * (base + len);
+
+    final pulse = ready ? (0.85 + 0.15 * math.sin(clock * 6)) : 0.4;
+    final alpha = (charging ? 1.0 : pulse).clamp(0.0, 1.0);
+    final w = bodyR * (_aimWidthBase + _aimWidthCharge * c);
+
+    // Soft glow shaft.
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = color.withValues(alpha: (alpha * 0.7).clamp(0.0, 1.0))
+        ..strokeWidth = w * 1.8
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 6 * c),
+    );
+    // Crisp colored shaft + a white core so it pops over the turf.
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = color.withValues(alpha: alpha)
+        ..strokeWidth = w
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = _white.withValues(alpha: alpha * 0.6)
+        ..strokeWidth = w * 0.4
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // Arrowhead (color + white outline).
+    final perp = Offset(-dir.dy, dir.dx);
+    final head = bodyR * (_aimHeadBase + _aimHeadCharge * c);
+    final tip = end + dir * head;
+    final left = end + perp * head * 0.66;
+    final right = end - perp * head * 0.66;
+    final headPath = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo(left.dx, left.dy)
+      ..lineTo(right.dx, right.dy)
+      ..close();
+    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: alpha));
+    canvas.drawPath(
+      headPath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, bodyR * 0.08)
+        ..color = _white.withValues(alpha: alpha * 0.7),
+    );
+
+    // Charge ring sweeping under the feet while holding.
+    if (charging && c > 0.02) {
+      final groundCenter = center.translate(0, bodyR);
+      final ring = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = bodyR * 0.18
+        ..strokeCap = StrokeCap.round
+        ..color = (Color.lerp(color, _white, c) ?? color).withValues(alpha: 0.9);
+      canvas.drawArc(
+        Rect.fromCircle(center: groundCenter, radius: bodyR * 1.25),
+        -math.pi / 2,
+        _twoPi * c,
+        false,
+        ring,
+      );
+    }
   }
 
   /// The ball: motion trail → contact shadow → white body with a faint

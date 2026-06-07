@@ -15,20 +15,42 @@ import 'falling_render.dart';
 /// Numeric tuning — no magic numbers inline. All times in seconds, speeds px/s.
 class _Tuning {
   // Round length. Well under the test's 80s safety cap; escalation guarantees
-  // it converges far sooner.
-  static const double timeLimit = 38;
+  // it converges far sooner. Tuned for a ~12-22s round in practice.
+  static const double timeLimit = 26;
 
   static const int laneCount = 4; // horizontal lanes per player band
   static const double laneMargin = 0.14; // fraction inset of lanes in a band
 
-  // Fall speed: starts brisk and ramps so the round always resolves.
-  static const double fallSpeedStart = 250; // px/s
-  static const double fallAccel = 30; // px/s^2
+  // Fall speed: starts at a fair, readable pace and ramps so the round always
+  // resolves. Slower start than before so an undecided player still has time to
+  // pick a side and commit; the ramp gets punishing late so even sharp bots get
+  // caught and the round resolves by elimination, not just the time cap.
+  static const double fallSpeedStart = 210; // px/s
+  static const double fallAccel = 46; // px/s^2
 
-  // Spawn cadence: shrinks over time (more hazards as it escalates).
-  static const double spawnEveryStart = 1.0; // s between hazards (per band)
-  static const double spawnMin = 0.34; // floor on spawn interval
-  static const double spawnRamp = 0.013; // interval shrink per second
+  // Spawn cadence: shrinks over time (more hazards as it escalates). Late game
+  // the floor is tight enough that two hazards can stack in a band, so there is
+  // eventually no safe lane to hop into.
+  static const double spawnEveryStart = 1.15; // s between hazards (per band)
+  static const double spawnMin = 0.26; // floor on spawn interval
+  static const double spawnRamp = 0.05; // interval shrink per second
+
+  // Fairness windows (satisfy the "idle player survives ~8s" rule):
+  //  * No hazard can land before [spawnWarmupSec] (first spawn is delayed), so
+  //    the round can never end in the first ~2s.
+  //  * For the first [idleGraceSec] the spawner never targets a runner's CURRENT
+  //    lane, so simply standing still cannot get you crushed early — you still
+  //    must choose a direction to bank near-miss style points and to survive the
+  //    escalation once grace ends.
+  static const double spawnWarmupSec = 1.6;
+  static const double idleGraceSec = 8.0;
+
+  // Sudden death: once the round is this far along, every spawn drops a SECOND
+  // hazard in a different lane, so two of the four lanes are threatened at once
+  // and even a perfectly-timed dodge can get pinched — this resolves the round
+  // by elimination instead of leaning on the time cap. Well after the grace
+  // window, so it never affects the idle-survival guarantee.
+  static const double suddenDeathFrac = 0.62; // fraction of timeLimit
 
   // Hazard sizing relative to lane spacing (kept clear of neighbours).
   static const double hazardSizeBase = 0.62; // size / lane spacing
@@ -70,6 +92,12 @@ class _Tuning {
   // is within this lead time (scaled by accuracy: better bots react earlier).
   static const double botLeadBase = 0.22; // base lead seconds
   static const double botLeadPerAccuracy = 0.55; // extra lead at accuracy 1
+  // Grace before any bot reacts, mirroring the human's read time so bots never
+  // dodge a hazard the player has not even seen yet (keeps them beatable).
+  static const double botWarmupSec = 1.5;
+
+  // Hop hint chevrons flanking the runner (the control affordance).
+  static const double hintPulseHz = 3.2; // hint breathing rate
 
   static const double spinPerSec = 2.4; // hazard tumble rate (visual)
   static const double scrollPerSec = 220; // band texture scroll rate (visual)
@@ -144,15 +172,26 @@ class _Track {
 }
 
 /// Falling Dodge: telegraphed hazards (boulders, anvils, spike-crates) rain
-/// down each player's lane band; one tap hops the runner toward safety. A
-/// stylish near-miss rewards brief slow-mo + sparks + a "NICE!" popup; getting
+/// down each player's lane band.
+///
+/// CONTROL (the heart of it — full player agency, one touch):
+///  * Tapping the LEFT of the runner hops it one lane LEFT; tapping the RIGHT
+///    hops it RIGHT (read from the full-screen [PlayerInput.normPos] x against
+///    the runner's screen-x). Small left/right chevrons flank the runner as the
+///    affordance. The PLAYER decides which way to dodge each telegraphed hazard —
+///    nothing auto-aims a "safe" lane for them.
+///
+/// A stylish near-miss rewards brief slow-mo + sparks + a "NICE!" popup; getting
 /// crushed ragdolls + eliminates you. Fall speed and spawn rate escalate so the
 /// round always converges — last runner standing wins, with a time-limit
 /// fallback ranked by survival score.
 ///
-/// Bots read the same ground telegraphs and dodge on a reaction clock; their
-/// [BotProfile] accuracy sets how early they react and [errorRate] makes them
-/// occasionally mistime and take a hit, so they feel reactive, not scripted.
+/// Fairness: a warmup delays the first hazard, and for an early grace window the
+/// spawner never targets a runner's current lane, so an idle player survives the
+/// opening ~8s. Bots read the same ground telegraphs and make a REAL directional
+/// choice on a reaction clock; [BotProfile] accuracy sets how early they react
+/// and [errorRate] makes them sometimes commit the WRONG way and take a hit, so
+/// they feel reactive and beatable, not scripted.
 class FallingDodge extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -256,14 +295,30 @@ class FallingDodge extends MiniGameBase {
     if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
       return;
     }
-    _hopToSafety(input.playerId);
+    _hopDirected(input.playerId, input.normPos);
   }
 
-  /// Tap: hop toward the safest adjacent lane (away from the nearest threat).
-  void _hopToSafety(int id) {
+  /// One touch with a DIRECTIONAL choice (the heart of the rework): the player
+  /// taps the LEFT side of the runner to hop left, the RIGHT side to hop right.
+  /// [normPos] is the full-screen 0..1 touch; bands span the full width, so its
+  /// x maps straight across the runner's lanes. The player decides which way to
+  /// dodge — nothing is auto-aimed.
+  void _hopDirected(int id, Offset normPos) {
     final t = _trackOf(id);
     if (t == null || !t.alive) return;
-    _commitHop(t, _safeDirection(t));
+    _commitHop(t, _dirFromTouch(t, normPos));
+  }
+
+  /// Resolve a touch to a hop direction. A tap to the left of the runner's
+  /// current screen-x hops left (-1), to the right hops right (+1). A tap dead-on
+  /// the runner keeps the last direction so it still does something sensible.
+  int _dirFromTouch(_Track t, Offset normPos) {
+    final touchX = normPos.dx * ctx.arena.width;
+    final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
+    final delta = touchX - runnerX;
+    const deadZonePx = 1.0;
+    if (delta.abs() <= deadZonePx) return t.hopDir;
+    return delta < 0 ? -1 : 1;
   }
 
   void _commitHop(_Track t, int dir) {
@@ -288,9 +343,11 @@ class FallingDodge extends MiniGameBase {
     );
   }
 
-  /// Pick a hop direction that moves away from the most imminent hazard while
-  /// staying inside the lane range.
-  int _safeDirection(_Track t) {
+  /// A bot's chosen dodge direction: a REAL decision toward the safer adjacent
+  /// lane (away from the most imminent threat), kept inside the lane range. This
+  /// is what the bot "decides" — [_driveBots] may then flip it on a mistake so a
+  /// fallible bot can dive the wrong way.
+  int _botDodgeDir(_Track t) {
     final lane = t.hopper.lane;
     final threatLane = _nearestThreatLane(t);
     var dir = t.hopDir;
@@ -343,6 +400,9 @@ class FallingDodge extends MiniGameBase {
   }
 
   void _spawnTick(_Track t, double dt) {
+    // Warmup: nothing falls until the player has had a beat to read the board,
+    // so the round can never resolve in the first ~2s.
+    if (_elapsed < _Tuning.spawnWarmupSec) return;
     t.spawnTimer -= dt;
     if (t.spawnTimer > 0) return;
     final interval = (_Tuning.spawnEveryStart - _Tuning.spawnRamp * _elapsed)
@@ -352,7 +412,17 @@ class FallingDodge extends MiniGameBase {
   }
 
   void _spawnHazard(_Track t) {
-    final lane = ctx.rng.intRange(0, _Tuning.laneCount);
+    final lane = _spawnLaneFor(t);
+    _dropHazard(t, lane);
+    // Sudden death: add a second hazard in a different lane so two lanes are
+    // threatened at once and a perfect dodger can be pinched.
+    if (_elapsed >= _Tuning.timeLimit * _Tuning.suddenDeathFrac) {
+      final second = _otherLane(lane);
+      _dropHazard(t, second);
+    }
+  }
+
+  void _dropHazard(_Track t, int lane) {
     final kind = _pickKind();
     final spacing = t.lanes.spacing.abs();
     final sizeFrac = (_Tuning.hazardSizeBase +
@@ -367,6 +437,26 @@ class FallingDodge extends MiniGameBase {
       spinPhase: ctx.rng.range(0, math.pi * 2),
       y: t.band.top - size,
     ));
+  }
+
+  /// A lane other than [lane] (uniform among the remaining lanes).
+  int _otherLane(int lane) {
+    final pick = ctx.rng.intRange(0, _Tuning.laneCount - 1);
+    return pick < lane ? pick : pick + 1;
+  }
+
+  /// Choose the target lane for a new hazard. During the early grace window the
+  /// runner's CURRENT lane is never targeted, so an idle player cannot be crushed
+  /// in the first [idleGraceSec]; once grace ends every lane is fair game and the
+  /// escalation forces a decision. After grace it's a flat random lane.
+  int _spawnLaneFor(_Track t) {
+    if (_elapsed >= _Tuning.idleGraceSec) {
+      return ctx.rng.intRange(0, _Tuning.laneCount);
+    }
+    final avoid = t.hopper.lane;
+    // Pick uniformly among the lanes that are not the runner's current lane.
+    final pick = ctx.rng.intRange(0, _Tuning.laneCount - 1);
+    return pick < avoid ? pick : pick + 1;
   }
 
   HazardKind _pickKind() {
@@ -464,40 +554,41 @@ class FallingDodge extends MiniGameBase {
 
   // ── Bots ─────────────────────────────────────────────────────────────────────
 
-  /// Bots read the ground telegraph and dodge on their reaction clock. Better
-  /// accuracy → react with more lead time; [errorRate] → occasionally freeze.
+  /// Bots read the same ground telegraph and make a REAL directional choice on
+  /// their reaction clock — just like the player picks a side. Better accuracy →
+  /// react with more lead time. On a mistake ([errorRate]) the bot commits the
+  /// WRONG way instead of the safe way, so a weak bot can dodge straight into a
+  /// hazard — they feel fallible, not scripted, and stay beatable on easy.
   void _driveBots(double dt) {
+    if (_elapsed < _Tuning.botWarmupSec) return; // mirror the human's read time
     for (final t in _tracks) {
       final clock = t.clock;
       if (clock == null || !t.alive) continue;
       if (!clock.tick(dt)) continue;
-      if (_botShouldDodge(t)) {
-        _hopToSafety(t.playerId);
-      }
       clock.arm(ctx.botProfile, ctx.rng);
+
+      if (!_botThreatImminent(t)) continue;
+      var dir = _botDodgeDir(t);
+      // A fumbled reaction flips the choice → the bot dives the wrong way.
+      if (ctx.rng.chance(ctx.botProfile.errorRate)) dir = -dir;
+      _commitHop(t, dir);
     }
   }
 
   /// True when a hazard is bearing down on the bot's current lane within its
-  /// (accuracy-scaled) lead window and it does not fumble the reaction.
-  bool _botShouldDodge(_Track t) {
+  /// (accuracy-scaled) lead window — i.e. the moment a real player would react.
+  bool _botThreatImminent(_Track t) {
     final lane = t.hopper.lane;
     final lead = _Tuning.botLeadBase +
         _Tuning.botLeadPerAccuracy * ctx.botProfile.accuracy.clamp(0.0, 1.0);
-    var imminent = false;
     for (final h in t.hazards) {
       if (h.lane != lane || h.counted || h.y > t.runnerY) continue;
       final speed = _fallSpeed * h.speedMul;
       if (speed <= 0) continue;
       final eta = (t.runnerY - h.y) / speed;
-      if (eta <= lead) {
-        imminent = true;
-        break;
-      }
+      if (eta <= lead) return true;
     }
-    if (!imminent) return false;
-    // Skill gate: weak bots sometimes mistime and eat the hazard.
-    return !ctx.rng.chance(ctx.botProfile.errorRate);
+    return false;
   }
 
   // ── Elimination / outcome ────────────────────────────────────────────────────
@@ -635,6 +726,23 @@ class FallingDodge extends MiniGameBase {
         t.alive,
       );
     }
+
+    // Directional control affordance: small left/right hop hints flanking the
+    // live runner so the player sees that tapping a side hops that way. A side
+    // dims when it's blocked by a wall (already at the end lane).
+    if (t.alive && !t.figure.isRagdoll) {
+      final pulse = 0.5 + 0.5 * math.sin(_animClock * _Tuning.hintPulseHz);
+      FallingRenderer.drawHopHints(
+        canvas,
+        Offset(runnerX, t.runnerY),
+        t.lanes.spacing.abs(),
+        t.color,
+        pulse,
+        canLeft: t.hopper.lane > 0,
+        canRight: t.hopper.lane < _Tuning.laneCount - 1,
+      );
+    }
+
     FallingRenderer.drawRunner(
       canvas,
       t.figure,

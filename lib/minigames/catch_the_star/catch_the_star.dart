@@ -42,16 +42,23 @@ class CatchTheStar extends MiniGameBase {
 
   // ── Round tuning (no magic numbers inline) ─────────────────────────────────
   static const double _timeLimit = 30;
-  static const double _snatchRadius = 0.15; // normalized snatch distance
+  static const double _snatchRadius = 0.17; // normalized snatch distance
 
   // ── Star motion tuning (normalized units / sec) ────────────────────────────
-  static const double _maxSpeed = 0.62; // top speed
+  // The star is a touch slower than a pure chase so the catchable window over a
+  // catcher feels generous (you can still miss it), and its waypoints are biased
+  // to FLY THROUGH catchers (see [_nextWaypoint]) so it constantly teases each
+  // player instead of wandering empty sky — many more snatch chances, fairly
+  // shared, which is what makes the round feel alive rather than sparse.
+  static const double _maxSpeed = 0.52; // top speed
   static const double _goldenSpeedBoost = 1.18; // golden stars are friskier
   static const double _accel = 2.4; // steering acceleration
   static const double _retargetSec = 1.0; // force a new waypoint after this
   static const double _arriveDist = 0.05; // waypoint reached threshold
   static const double _margin = 0.1; // keep the star off the edges
   static const double _wallDamp = 0.4; // velocity kept on a wall bounce
+  static const double _visitCatcherChance = 0.6; // waypoint aims near a catcher
+  static const double _visitJitter = 0.12; // sweep offset around a visited zone
 
   // ── Trail tuning ───────────────────────────────────────────────────────────
   static const double _trailSampleSec = 1 / 60; // sample cadence
@@ -153,6 +160,25 @@ class CatchTheStar extends MiniGameBase {
         ctx.rng.range(_margin, 1 - _margin),
       );
 
+  /// Pick the star's next waypoint. Most of the time ([_visitCatcherChance]) it
+  /// aims at a random catcher's zone with a small sweep offset so the star
+  /// arcs *through* that catch zone (a real snatch chance) rather than parking on
+  /// it; otherwise a free roam point keeps the path unpredictable. This is what
+  /// turns the round from sparse wandering into a constant tease past every
+  /// player — and it is identical for humans and bots, so it stays fair.
+  Offset _nextWaypoint() {
+    if (_catchers.isNotEmpty && ctx.rng.chance(_visitCatcherChance)) {
+      final target = ctx.rng.pick(_catchers).pos;
+      final jittered = target +
+          Offset(ctx.rng.jitter(_visitJitter), ctx.rng.jitter(_visitJitter));
+      return Offset(
+        jittered.dx.clamp(_margin, 1 - _margin),
+        jittered.dy.clamp(_margin, 1 - _margin),
+      );
+    }
+    return _randomPoint();
+  }
+
   @override
   void onInput(PlayerInput input) {
     if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
@@ -213,7 +239,9 @@ class CatchTheStar extends MiniGameBase {
   /// waypoint so the comet immediately reads as "zipping away".
   void _respawnStar() {
     _star = _farRespawn();
-    _target = _randomPoint();
+    // Aim straight back toward a catcher so the star re-enters the action fast
+    // after popping in far away, instead of drifting through empty sky first.
+    _target = _nextWaypoint();
     _golden = ctx.rng.chance(_goldenChance);
     _spawnPop = 1;
     final toTarget = _target - _star;
@@ -254,7 +282,7 @@ class CatchTheStar extends MiniGameBase {
     _retargetAcc += dt;
     final toTarget = _target - _star;
     if (toTarget.distance <= _arriveDist || _retargetAcc >= _retargetSec) {
-      _target = _randomPoint();
+      _target = _nextWaypoint();
       _retargetAcc = 0;
     }
 

@@ -210,6 +210,9 @@ class ChickenRenderer {
   /// A stone/neon platform centered at [center]. [crumbly] platforms get a
   /// cracked face; [crumble] in 0..1 makes a leaving rung tilt, sink and fade
   /// (1 = gone). [lit] highlights the rung the climber currently stands on.
+  /// [anticipate] in 0..1 marks the rung the climber will hop to NEXT: a pulsing
+  /// player-colored halo + chevrons so the target is always readable (it swells
+  /// as the lava nears, screaming "jump here now").
   static void drawPlatform(
     Canvas canvas,
     Offset center,
@@ -218,6 +221,7 @@ class ChickenRenderer {
     required bool crumbly,
     required double crumble,
     required bool lit,
+    double anticipate = 0,
   }) {
     if (columnWidth <= 1) return;
     final cr = crumble.clamp(0.0, 1.0);
@@ -226,6 +230,12 @@ class ChickenRenderer {
     final w = columnWidth * _platWidthFactor;
     final h = math.max(6.0, columnWidth * _platHeightFactor);
     final fade = 1.0 - cr;
+
+    // Next-rung target cue, drawn beneath the platform so the stone reads on top.
+    final ant = anticipate.clamp(0.0, 1.0);
+    if (ant > 0.01) {
+      _drawNextRungCue(canvas, center, w, h, color, ant);
+    }
 
     canvas.save();
     // Crumbling rungs tilt and sink as they go.
@@ -243,6 +253,19 @@ class ChickenRenderer {
         Paint()
           ..color = color.withValues(alpha: 0.28)
           ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.7),
+      );
+    }
+
+    // The anticipated next rung also gets a bright colored rim so it pops even
+    // against a busy background.
+    if (ant > 0.01) {
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, h * 0.16)
+          ..color = _blend(color, _white, 0.3)
+              .withValues(alpha: (0.35 + 0.45 * ant) * fade),
       );
     }
 
@@ -291,6 +314,53 @@ class ChickenRenderer {
           Offset(w * 0.22, -h * 0.4), Offset(w * 0.3, h * 0.35), crack);
     }
     canvas.restore();
+  }
+
+  /// The "hop here next" cue under a target rung: a soft halo plus a stack of
+  /// chevrons pointing up at the rung. [pulse] in 0..1 scales the brightness and
+  /// how high the chevrons float, so it reads calm when safe and urgent when the
+  /// lava is close.
+  static void _drawNextRungCue(
+    Canvas canvas,
+    Offset center,
+    double w,
+    double h,
+    Color color,
+    double pulse,
+  ) {
+    final p = pulse.clamp(0.0, 1.0);
+
+    // Soft halo hugging the rung.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: center, width: w * (1.05 + 0.15 * p), height: h * 2.4),
+      Paint()
+        ..color = color.withValues(alpha: 0.18 + 0.32 * p)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * (0.6 + 0.5 * p)),
+    );
+
+    // Two chevrons floating just above the rung, pointing up at the target.
+    final chevColor =
+        _blend(color, _white, 0.35).withValues(alpha: 0.5 + 0.5 * p);
+    final cw = w * 0.22;
+    final lift = h * (0.9 + 0.6 * p); // float higher when urgent
+    for (var i = 0; i < 2; i++) {
+      final cy = center.dy - lift - i * h * 0.8;
+      final path = Path()
+        ..moveTo(center.dx - cw, cy + h * 0.45)
+        ..lineTo(center.dx, cy - h * 0.15)
+        ..lineTo(center.dx + cw, cy + h * 0.45);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.4, h * 0.16)
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = chevColor.withValues(
+              alpha: chevColor.a * (i == 0 ? 1.0 : 0.55)),
+      );
+    }
   }
 
   // ── Lava ──────────────────────────────────────────────────────────────────

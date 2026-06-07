@@ -30,6 +30,29 @@ void main() {
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
   });
 
+  test('all-bot 4p round lasts >1.5s and finishes within the time limit', () {
+    // The quick-draw must never end in a sub-1.5s flicker (the min GO delay plus
+    // the post-win linger keeps it dramatic) nor blow past its 12s cap.
+    const dt = 1 / 60;
+    for (final seed in [1, 2, 3, 7, 13, 42, 99]) {
+      final ctx = MiniGameContext(
+        players: [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(4),
+      );
+      final g = ReactionDuel()..init(ctx);
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 30) {
+        g.update(dt);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      expect(frames * dt, greaterThan(1.5), reason: 'seed=$seed ended too fast');
+      expect(frames * dt, lessThanOrEqualTo(13.0),
+          reason: 'seed=$seed exceeded the time limit');
+    }
+  });
+
   test('reaction duel: early human tap is penalized and ranked last', () {
     final ctx = MiniGameContext(
       players: [

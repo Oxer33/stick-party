@@ -13,7 +13,7 @@ void main() {
     final players = [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)];
     final ctx = MiniGameContext(players: players, arena: size, rng: SeededRng(3), zones: ZoneLayout.forPlayers(4));
     final g = BumperBalls()..init(ctx);
-    for (var i = 0; i < 130; i++) { g.update(1 / 60); } // ~2.2s of action
+    for (var i = 0; i < 190; i++) { g.update(1 / 60); } // ~3.2s: past bot warmup, balls bumping
     final rec = ui.PictureRecorder();
     final canvas = Canvas(rec, Offset.zero & size);
     g.render(canvas, size);

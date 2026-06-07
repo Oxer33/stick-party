@@ -8,7 +8,9 @@ import 'dart:ui';
 /// Theme: a neon knockout floor. A dark void backdrop, a glowing hex/grid disc
 /// platform with a bright energized rim and a pulsing red danger band, and
 /// glossy player-colored bumper balls with eyes, a motion trail, squash &
-/// stretch on impact and impact spark rings.
+/// stretch on impact and impact spark rings. Each ball also carries a bold
+/// player-colored aim arrow (the player's control) and a numbered ground id
+/// ring so it is always identifiable.
 ///
 /// Every method is side-effect free beyond the supplied [Canvas], guards its
 /// own inputs, and never throws (so it is safe to call from `render`).
@@ -40,6 +42,10 @@ class BumperRenderer {
   static const double _eyeRadiusFactor = 0.20; // white radius / ball radius
   static const double _trailMaxFactor = 2.6; // trail length / ball radius
   static const int _concentricRings = 5;
+  static const double _idRingWidthFactor = 0.12; // id stroke width / ball radius
+  static const double _idRingWFactor = 2.4; // id ellipse width / ball radius
+  static const double _idRingHFactor = 0.78; // id ellipse height / ball radius
+  static const double _idPipFactor = 0.42; // id number pip radius / ball radius
 
   // ── Background: void gradient + soft central glow ───────────────────────────
   static void drawBackground(
@@ -420,6 +426,139 @@ class BumperRenderer {
     }
   }
 
+  /// A player-colored ground id ring + small numbered pip beneath a ball, so
+  /// every ball is identifiable at a glance even when bunched together.
+  static void drawIdRing(
+    Canvas canvas,
+    Offset ground,
+    double ballR,
+    Color color,
+    int displayNumber,
+  ) {
+    if (ballR <= 0) return;
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.5, ballR * _idRingWidthFactor)
+      ..color = color.withValues(alpha: 0.9);
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: ground,
+        width: ballR * _idRingWFactor,
+        height: ballR * _idRingHFactor,
+      ),
+      ring,
+    );
+
+    // Number pip sits at the front (bottom) of the ground ring.
+    final pipCenter = ground.translate(0, ballR * 0.05);
+    final r = ballR * _idPipFactor;
+    canvas.drawCircle(pipCenter, r, Paint()..color = color);
+    canvas.drawCircle(
+      pipCenter,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, r * 0.18)
+        ..color = _white.withValues(alpha: 0.85),
+    );
+    _drawNumber(
+        canvas, pipCenter, '$displayNumber', r * 1.25, _readableText(color));
+  }
+
+  /// The player's control made visible: a player-colored aim arrow sweeping
+  /// around the ball. It grows + brightens while [charging] so the player sees
+  /// exactly where and how hard they will bump; a charge ground-arc fills as the
+  /// hold deepens. [aim] is the heading in radians, [charge] 0..1.
+  static void drawAim(
+    Canvas canvas,
+    Offset center,
+    double ballR,
+    Color color, {
+    required double aim,
+    required double charge,
+    required bool charging,
+    required bool ready,
+    required double t,
+  }) {
+    if (ballR <= 0) return;
+    final c = charge.clamp(0.0, 1.0);
+    final dir = Offset(math.cos(aim), math.sin(aim));
+    final base = ballR * 1.0;
+    final len = ballR * (2.3 + 2.7 * c) * (ready ? 1.0 : 0.55);
+    final start = center + dir * base;
+    final end = center + dir * (base + len);
+
+    final pulse = ready ? (0.85 + 0.15 * math.sin(t * 6)) : 0.4;
+    final a = (charging ? 1.0 : pulse).clamp(0.0, 1.0);
+    final w = ballR * (0.24 + 0.26 * c);
+
+    // Soft glow shaft (widens + blurs more with charge).
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = color.withValues(alpha: (a * 0.7).clamp(0.0, 1.0))
+        ..strokeWidth = w * 1.8
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 6 * c),
+    );
+    // Crisp colored shaft with a white core so it pops over the neon floor.
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = color.withValues(alpha: a)
+        ..strokeWidth = w
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = _white.withValues(alpha: a * 0.6)
+        ..strokeWidth = w * 0.4
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // Arrowhead (color fill + white outline).
+    final perp = Offset(-dir.dy, dir.dx);
+    final head = ballR * (0.6 + 0.34 * c);
+    final tip = end + dir * head;
+    final left = end + perp * head * 0.66;
+    final right = end - perp * head * 0.66;
+    final headPath = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo(left.dx, left.dy)
+      ..lineTo(right.dx, right.dy)
+      ..close();
+    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: a));
+    canvas.drawPath(
+      headPath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, ballR * 0.08)
+        ..color = _white.withValues(alpha: a * 0.7),
+    );
+
+    // Charge ground-arc beneath the ball while holding.
+    if (charging && c > 0.02) {
+      final groundCenter = center.translate(0, ballR);
+      final arc = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ballR * 0.18
+        ..strokeCap = StrokeCap.round
+        ..color =
+            _blend(color, _white, c).withValues(alpha: 0.9);
+      canvas.drawArc(
+        Rect.fromCircle(center: groundCenter, radius: ballR * 1.25),
+        -math.pi / 2,
+        math.pi * 2 * c,
+        false,
+        arc,
+      );
+    }
+  }
+
   // ── Small private helpers ──────────────────────────────────────────────────
 
   static double _easeOut(double t) {
@@ -429,6 +568,12 @@ class BumperRenderer {
 
   static Color _blend(Color a, Color b, double t) =>
       Color.lerp(a, b, t.clamp(0.0, 1.0)) ?? a;
+
+  /// Pick black or white text for legibility against [bg].
+  static Color _readableText(Color bg) {
+    final luma = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    return luma > 0.6 ? _black : _white;
+  }
 
   static Offset _normalize(Offset v) {
     final d = v.distance;

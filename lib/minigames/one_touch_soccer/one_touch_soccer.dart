@@ -10,29 +10,36 @@ import '../../engine/helpers/push_arena.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'soccer_render.dart';
+import 'striker.dart';
 
 /// One-Touch Soccer — a rect-bounded pitch with a neutral ball (id -1) and one
-/// stick player per seat. A tap LUNGES your player at the ball: a kick-dash.
+/// stick striker per seat, scored into a goal at each end.
 ///
-/// Depth (still one-touch):
-///  * **Kick power** scales with the player's approach speed plus a strong
-///    proximity bonus, so a well-timed lunge into the ball is a satisfying
-///    "thwack" (squash + spark burst + hit-stop) while a far lunge is a gentle
-///    nudge. The ball carries spin, leaves a motion trail and bounces off the
-///    walls with restitution.
-///  * **Teams / goals**: even ids / [Team.a] attack the RIGHT goal, odd ids /
-///    [Team.b] attack the LEFT goal (duel1v1 and team2v2). A goal is scored when
-///    the ball crosses a goal mouth (centered, ~42% of the wall height) and
-///    awards a point to every player on the scoring side.
-///  * **Goal celebration**: net-bulge flash + big "GOAL!" popup + confetti +
-///    slow-mo (hit-stop) + a crowd-roar popup, then a brief kickoff pause before
-///    the ball resets to center.
-///  * Most goals when the 45 s timer expires wins ([finishByScore]); the round
-///    always resolves.
+/// CONTROL (the heart of it — full player agency, never auto-aimed):
+///  * Each striker has an AIM ARROW (in the player's color) that constantly
+///    SWEEPS around it. The player decides WHERE to go by timing that sweep.
+///  * Quick TAP  → a snappy DASH in the arrow's current direction (reposition,
+///    intercept, chase a loose ball — your call, not the game's).
+///  * HOLD then release → the aim LOCKS and a charge meter fills; releasing
+///    fires a powerful POWER-KICK LUNGE in the locked direction (power ∝ charge).
+///    Drive into the ball mid-lunge to launch it — a charged strike near the
+///    ball is a satisfying "thwack" toward the goal you aimed at.
+///  So the player chooses the run AND the shot: nothing homes onto the ball.
 ///
-/// Bots chase the ball, but the rear player on each side drops back to guard its
-/// own goal; [BotProfile] drives reaction timing and aim error so positioning
-/// reads as intentional rather than a swarm.
+/// PACING: a real back-and-forth match — first to [_goalsToWin] goals or the
+/// [_timeLimit] expires. The ball starts dead at center, there is a brief
+/// kickoff pause after every goal, and bots warm up before engaging, so the
+/// ball is never instantly scored and the midfield is genuinely contested.
+///
+/// Feel: the ball is light so kicks fly, carries spin, leaves a motion trail and
+/// bounces off the walls. Goals trigger a net-bulge flash + big "GOAL!" popup +
+/// confetti + slow-mo + crowd roar.
+///
+/// Teams / goals: even ids / [Team.a] attack the RIGHT goal, odd ids / [Team.b]
+/// attack the LEFT goal. A goal awards a point to every player on the scoring
+/// side (aggregated for 2v2). Bots warm up, then position toward the ball and
+/// aim a charged strike at the opponent goal with [BotProfile]-scaled error;
+/// the rear player on a 2-player side drops back to guard its own net.
 class OneTouchSoccer extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -41,29 +48,35 @@ class OneTouchSoccer extends MiniGameBase {
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.duel1v1, GameMode.team2v2],
-        inputHint: 'TAP',
+        inputHint: 'TAP / HOLD',
       );
 
-  // ── Arena / sim tuning (no magic numbers inline) ───────────────────────────
-  static const double _timeLimit = 45;
+  // ── Match / arena / sim tuning (no magic numbers inline) ────────────────────
+  static const double _timeLimit = 40;
+  static const int _goalsToWin = 3; // first side to this many goals wins early
   static const int _ballId = -1;
   static const double _pitchInsetFactor = 0.055;
-  static const double _ballRadiusFactor = 0.026;
+  static const double _ballRadiusFactor = 0.028;
   static const double _playerRadiusFactor = 0.05;
-  static const double _ballMass = 0.55; // lighter than pucks so kicks fly
-  static const double _pitchFriction = 0.99; // glides on grass
+  static const double _ballMass = 0.5; // lighter than strikers so kicks fly
+  static const double _pitchFriction = 0.985; // grass: ball coasts then settles
   static const double _ballRestitution = 0.78; // wall bounce damping
   static const double _goalMouthFraction = 0.42; // of pitch height, centered
   static const double _figureScale = 0.95;
 
-  // ── Kick / lunge tuning ─────────────────────────────────────────────────────
-  static const double _lungePerSecond = 3.0; // base lunge impulse ≈ pitch*3 /s
-  static const double _approachBonus = 0.55; // + share scaled by own speed
-  static const double _approachSpeedRef = 520.0; // speed mapped to full bonus
-  static const double _proximityRangeFactor = 2.4; // “close” = within this*radii
-  static const double _proximityBonus = 0.9; // +90% impulse at point-blank
-  static const double _kickCooldownSec = 0.22; // min gap between own lunges
-  static const double _directKickScale = 1.7; // explicit ball impulse on contact
+  // ── Aim + charge control tuning (mirrors Sumo's striker feel) ───────────────
+  static const double _aimSweepSpeed = 2.0; // rad/s, ~3.1s per revolution
+  static const double _chargeTimeSec = 0.55; // hold time to full charge
+  static const double _cooldownSec = 0.2; // snappy recovery between actions
+  static const double _dashPerSecond = 2.2; // quick tap ≈ pitch.w*2.2 /s impulse
+  static const double _kickPerSecond = 4.8; // full charge lunge impulse
+  static const double _selfPushback = 0.05; // tiny recoil opposite a kick
+  static const double _trailLifeSec = 0.22;
+
+  // ── Ball-strike tuning (driving the ball with a lunge) ──────────────────────
+  static const double _strikeRangeFactor = 2.6; // “near ball” = within this*radii
+  static const double _strikeBaseScale = 1.3; // dash contact kick strength
+  static const double _strikeChargeScale = 3.4; // + this*charge at point-blank
   static const double _spinPerSpeed = 0.012; // ball spin gain / speed
   static const double _spinDecayPerSec = 1.6;
   static const double _squashDecayPerSec = 4.5;
@@ -77,17 +90,21 @@ class OneTouchSoccer extends MiniGameBase {
   static const double _goalHitStopScale = 0.18;
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
+  static const double _botWarmupSec = 1.5; // grace before bots engage
   static const double _botGuardDepthFactor = 0.22; // keeper x offset from wall
   static const double _botGuardLaneGain = 0.7; // how hard keeper tracks ball y
-  static const double _botStrikeRangeFactor = 6.0; // commit within this*radii
-  static const double _botAimErrorRad = 0.55; // aim jitter at accuracy 0
-  static const double _botCarrySpeed = 110.0; // skip lunge while already fast
+  static const double _botStrikeRangeFactor = 3.2; // charge a kick within this
+  static const double _botChaseRangeFactor = 9.0; // dash to close within this
+  static const double _botAimErrorRad = 0.5; // aim jitter at accuracy 0
+  static const double _botCarrySpeed = 150.0; // skip action while already fast
 
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _leftAccent = Color(0xFF4D9BFF); // left goal / side B
   static const Color _rightAccent = Color(0xFFFF5A5A); // right goal / side A
   static const Color _confettiA = Color(0xFFFFC93C);
   static const Color _confettiB = Color(0xFF54E08A);
+  static const Color _dust = Color(0xFFDFF3E4);
+  static const Color _spark = Color(0xFFFFFFFF);
   static const double _runSpeed = 55.0;
 
   late Juice _juice;
@@ -95,6 +112,7 @@ class OneTouchSoccer extends MiniGameBase {
   late Rect _pitch;
   late Size _size;
   double _elapsed = 0;
+  double _animClock = 0;
   double _kickoffPause = 0; // > 0 while the post-goal pause runs
   double _leftBulge = 0; // net ripple timers
   double _rightBulge = 0;
@@ -104,7 +122,7 @@ class OneTouchSoccer extends MiniGameBase {
 
   final Map<int, ReactionClock> _botClocks = <int, ReactionClock>{};
   final Map<int, StickFigure> _figures = <int, StickFigure>{};
-  final Map<int, _KickState> _kick = <int, _KickState>{};
+  final Map<int, Striker> _strikers = <int, Striker>{};
 
   /// True if this player attacks the RIGHT goal (else the LEFT goal).
   final Map<int, bool> _attacksRight = <int, bool>{};
@@ -194,7 +212,8 @@ class OneTouchSoccer extends MiniGameBase {
           ? _pitch.left + _pitch.width * 0.27
           : _pitch.right - _pitch.width * 0.27;
       final y = _pitch.top + _pitch.height * lane;
-      _arena.add(Body(id: p.id, pos: Offset(x, y), radius: _playerRadius));
+      final pos = Offset(x, y);
+      _arena.add(Body(id: p.id, pos: pos, radius: _playerRadius));
 
       _figures[p.id] = StickFigure(
         proportions: StickProportions.hero.scaled(_figureScale),
@@ -202,7 +221,10 @@ class OneTouchSoccer extends MiniGameBase {
         facing: attacksRight ? 1.0 : -1.0,
       )..setLoco(LocoState.idle);
 
-      _kick[p.id] = _KickState();
+      // Aim starts pointing up-field (toward the opponent goal) so the first
+      // tap is sensible before the player takes over the sweep.
+      final towardGoal = attacksRight ? 0.0 : math.pi;
+      _strikers[p.id] = Striker(aim: towardGoal);
       if (p.isBot) {
         _botClocks[p.id] = ReactionClock(ctx.botProfile, ctx.rng);
       }
@@ -228,12 +250,29 @@ class OneTouchSoccer extends MiniGameBase {
     return p.id.isEven;
   }
 
+  // ── Input: hold to charge + aim, release to dash / power-kick ────────────────
+
   @override
   void onInput(PlayerInput input) {
-    if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
-      return;
+    if (status != MiniGameStatus.running) return;
+    final s = _strikers[input.playerId];
+    final body = _bodyOf(input.playerId);
+    if (s == null || body == null) return;
+    // Inputs queued during the kickoff pause would fire on a frozen ball; ignore.
+    if (_kickoffPause > 0) return;
+
+    switch (input.phase) {
+      case InputPhase.down:
+        if (s.ready) s.charging = true; // lock aim, begin charging
+      case InputPhase.up:
+        if (s.charging) {
+          s.charging = false;
+          _commitAction(input.playerId, body, s.aim, s.charge);
+          s.charge = 0;
+        }
+      case InputPhase.holdTick:
+        break; // charge accrues in update() for frame-rate independence
     }
-    _act(input.playerId);
   }
 
   @override
@@ -241,30 +280,28 @@ class OneTouchSoccer extends MiniGameBase {
     if (status != MiniGameStatus.running) return;
     if (!dt.isFinite || dt <= 0) return;
     _elapsed += dt;
+    _animClock += dt;
 
     // Juice always runs on real dt; the sim runs on hit-stop-scaled dt.
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
     _tickTimers(dt);
+    _tickStrikers(dt);
 
     // During the kickoff pause the world is frozen (only juice + timers run).
     if (_kickoffPause > 0) {
       _syncFigures(0);
-      if (_elapsed >= _timeLimit) finishByScore();
+      _resolveOutcome();
       return;
     }
 
-    _tickKickStates(dt);
     _driveBots(dt);
     _arena.update(sdt);
 
     _updateBall(sdt);
     _syncFigures(sdt);
     _checkGoals();
-
-    if (_elapsed >= _timeLimit) {
-      finishByScore();
-    }
+    _resolveOutcome();
   }
 
   void _tickTimers(double dt) {
@@ -273,8 +310,15 @@ class OneTouchSoccer extends MiniGameBase {
     if (_rightBulge > 0) _rightBulge = math.max(0, _rightBulge - dt);
   }
 
-  void _tickKickStates(double dt) {
-    for (final s in _kick.values) {
+  /// Sweep the aim when idle, fill charge while held, recover cooldown + trail.
+  void _tickStrikers(double dt) {
+    final frozen = _kickoffPause > 0;
+    for (final s in _strikers.values) {
+      if (s.charging && !frozen) {
+        s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
+      } else if (!frozen) {
+        s.aim = _wrap(s.aim + _aimSweepSpeed * dt);
+      }
       s.tick(dt);
     }
   }
@@ -297,7 +341,10 @@ class OneTouchSoccer extends MiniGameBase {
     _ballSquash = (_ballSquash - _squashDecayPerSec * dt).clamp(0.0, 1.0);
   }
 
+  // ── Bots ────────────────────────────────────────────────────────────────────
+
   void _driveBots(double dt) {
+    if (_elapsed < _botWarmupSec) return; // let the human get a beat first
     for (final entry in _botClocks.entries) {
       final id = entry.key;
       if (!entry.value.tick(dt)) continue;
@@ -306,37 +353,56 @@ class OneTouchSoccer extends MiniGameBase {
     }
   }
 
-  /// Bot decision: the rear player on a side guards its goal (steers back toward
-  /// the keeper slot); everyone else commits a lunge at the ball when it is in
-  /// range and they are not already carrying speed. [BotProfile] adds hesitation
-  /// (errorRate) and aim jitter (accuracy) so positioning feels deliberate.
+  /// Bot decision (no hold simulation — it picks an aim + charge and commits):
+  ///  * the rear player on a 2-player side guards its goal (eases back into the
+  ///    keeper slot, tracking the ball's vertical position);
+  ///  * otherwise it AIMS at the opponent goal when near the ball and fires a
+  ///    charged power-kick, or dashes toward the ball to close the gap.
+  /// [BotProfile] adds hesitation (errorRate) and aim jitter (accuracy) so it
+  /// reads as deliberate and is beatable on easy.
   void _botDecide(int playerId) {
     final self = _bodyOf(playerId);
-    final state = _kick[playerId];
-    if (self == null || state == null || !state.ready) return;
+    final s = _strikers[playerId];
+    if (self == null || s == null || !s.ready) return;
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // deliberate hesitate
 
     if (_isKeeper(playerId)) {
-      _botGuard(playerId, self);
+      _botGuard(playerId, self, s);
       return;
     }
 
-    final toBall = _ball.pos - self.pos;
-    final inRange = toBall.distance <= _playerRadius * _botStrikeRangeFactor;
-    final alreadyFast = self.vel.distance > _botCarrySpeed;
-    if (!inRange || alreadyFast) return;
+    if (self.vel.distance > _botCarrySpeed) return; // ride out current motion
 
-    var dir = _normalize(toBall);
-    if (dir == Offset.zero) dir = const Offset(0, -1);
-    final err =
-        (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
-    final a = math.atan2(dir.dy, dir.dx) + ctx.rng.jitter(err);
-    _commitLunge(playerId, self, Offset(math.cos(a), math.sin(a)));
+    final toBall = _ball.pos - self.pos;
+    final dist = toBall.distance;
+    final err = (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
+
+    // Near the ball: aim a charged strike at the opponent goal mouth.
+    if (dist <= _playerRadius * _botStrikeRangeFactor) {
+      final target = _opponentGoalTarget(playerId);
+      final toGoal = target - _ball.pos;
+      final aim = math.atan2(toGoal.dy, toGoal.dx) + ctx.rng.jitter(err);
+      final charge =
+          (ctx.botProfile.accuracy * ctx.rng.range(0.55, 1.0)).clamp(0.0, 1.0);
+      s.aim = aim;
+      _commitAction(playerId, self, aim, charge);
+      return;
+    }
+
+    // Far but worth chasing: dash toward the ball (a quick, low-charge move).
+    if (dist <= _playerRadius * _botChaseRangeFactor) {
+      var dir = _normalize(toBall);
+      if (dir == Offset.zero) dir = const Offset(0, -1);
+      final aim = math.atan2(dir.dy, dir.dx) + ctx.rng.jitter(err * 0.5);
+      s.aim = aim;
+      _commitAction(playerId, self, aim, 0.0); // 0 charge ⇒ a dash
+    }
   }
 
   /// Keeper behaviour: ease toward a guard slot in front of its own goal,
-  /// tracking the ball's vertical position so it covers shots on goal.
-  void _botGuard(int playerId, Body self) {
+  /// tracking the ball's vertical position so it covers shots on goal. Uses a
+  /// quiet dash (no power-kick) so it repositions without launching the ball.
+  void _botGuard(int playerId, Body self, Striker s) {
     final attacksRight = _attacksRight[playerId] ?? true;
     final guardX = attacksRight
         ? _pitch.left + _pitch.width * _botGuardDepthFactor
@@ -348,7 +414,9 @@ class OneTouchSoccer extends MiniGameBase {
     if ((target - self.pos).distance < _playerRadius * 0.8) return;
     final dir = _normalize(target - self.pos);
     if (dir == Offset.zero) return;
-    _commitLunge(playerId, self, dir, lunge: false);
+    final aim = math.atan2(dir.dy, dir.dx);
+    s.aim = aim;
+    _commitAction(playerId, self, aim, 0.0); // dash-only reposition
   }
 
   /// The rear-most player on a side (closest to its own goal) keeps net. A lone
@@ -377,65 +445,47 @@ class OneTouchSoccer extends MiniGameBase {
     return rear == playerId;
   }
 
-  /// Human/bot tap → lunge toward the ball if off cooldown.
-  void _act(int playerId) {
-    final self = _bodyOf(playerId);
-    final state = _kick[playerId];
-    if (self == null || state == null || !state.ready) return;
-    var dir = _normalize(_ball.pos - self.pos);
-    if (dir == Offset.zero) dir = const Offset(1, 0);
-    _commitLunge(playerId, self, dir);
+  /// Center of the goal this player is attacking (where a strike should aim).
+  Offset _opponentGoalTarget(int playerId) {
+    final attacksRight = _attacksRight[playerId] ?? true;
+    final x = attacksRight ? _rightLine : _leftLine;
+    return Offset(x, _goalMouth.center.dy);
   }
 
-  /// Shared lunge commit: kick-power impulse (approach speed + proximity bonus),
-  /// an explicit "thwack" on the ball when point-blank, cooldown, figure dash
-  /// pose, dust kick and contact juice. [lunge] false = a quiet repositioning
-  /// nudge (used by the keeper) with no thwack/dust.
-  void _commitLunge(int playerId, Body self, Offset dir, {bool lunge = true}) {
-    final state = _kick[playerId];
-    if (state == null || !state.ready) return;
+  // ── Action: dash (tap) or power-kick lunge (charged release) ─────────────────
 
-    final ownSpeed = self.vel.distance;
-    final distToBall = (_ball.pos - self.pos).distance;
-    final closeRange = (_playerRadius + _ballRadius) * _proximityRangeFactor;
-    final proximity =
-        (1.0 - (distToBall / closeRange)).clamp(0.0, 1.0); // 1 at point-blank
-    final approach =
-        (ownSpeed / _approachSpeedRef).clamp(0.0, 1.0); // 1 at full sprint
+  /// Apply an aimed move of the given [charge] (0..1) in [aimAngle].
+  /// Charge 0 = a quick dash; higher charge = a stronger power-kick lunge. When
+  /// the move starts near the ball, an explicit directional kick drives the ball
+  /// in the aim direction (scaled by charge) for a crisp "thwack".
+  void _commitAction(int playerId, Body self, double aimAngle, double charge) {
+    final s = _strikers[playerId];
+    if (s == null || !s.ready) return;
 
-    final power = lunge
-        ? 1.0 + _approachBonus * approach + _proximityBonus * proximity
-        : 0.55; // gentle keeper reposition
-    final magnitude = _pitch.width * _lungePerSecond * power;
+    final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
+    final perSecond = _dashPerSecond + (_kickPerSecond - _dashPerSecond) * charge;
+    final magnitude = _pitch.width * perSecond;
     _arena.impulse(playerId, dir * magnitude);
+    if (charge > 0) {
+      _arena.impulse(playerId, -dir * magnitude * _selfPushback);
+    }
 
-    state.fire(_kickCooldownSec, charge: lunge ? power : 0);
+    s.fire(_cooldownSec, charge: charge);
+    s.trail = DashTrail(from: self.pos, dir: dir, life: _trailLifeSec);
 
     final fig = _figures[playerId];
     if (fig != null) {
       fig.facing = dir.dx >= 0 ? 1.0 : -1.0;
-      if (lunge) fig.dash();
+      fig.dash();
     }
 
-    if (!lunge) return;
+    _tryStrikeBall(self, dir, charge);
 
-    // Explicit ball kick when the lunge starts point-blank: a crisp "thwack"
-    // on top of the physical collision so close kicks feel powerful.
-    if (proximity > 0.0) {
-      final kickDir = _normalize(_ball.pos - self.pos);
-      if (kickDir != Offset.zero) {
-        final kickMag =
-            _pitch.width * _lungePerSecond * _directKickScale * proximity;
-        _arena.impulse(_ballId, kickDir * kickMag);
-        _onBallKicked(proximity);
-      }
-    }
-
-    // Dust kick behind the lunge + a light spark telegraph.
+    // Dust kick behind the move + a light spark telegraph.
     _juice.particles.burst(
       at: self.pos - dir * _playerRadius,
-      count: 6,
-      color: const Color(0xFFDFF3E4),
+      count: (5 + 5 * charge).round(),
+      color: _dust,
       speed: 150,
       baseAngle: math.atan2(-dir.dy, -dir.dx),
       spread: math.pi * 0.7,
@@ -443,16 +493,32 @@ class OneTouchSoccer extends MiniGameBase {
       gravity: 220,
       life: 0.32,
     );
+    if (charge > 0.6) _juice.shake.light();
   }
 
-  /// React to a hard ball contact: squash the ball + spark + hit-stop + a small
-  /// crowd "THWACK" pop on the very hardest strikes.
+  /// If [self] is near the ball, drive it in the move's [dir] (NOT toward the
+  /// ball — the player aimed this). Strength scales with charge + proximity.
+  void _tryStrikeBall(Body self, Offset dir, double charge) {
+    final toBall = _ball.pos - self.pos;
+    final dist = toBall.distance;
+    final closeRange = (_playerRadius + _ballRadius) * _strikeRangeFactor;
+    if (dist > closeRange) return;
+    final proximity = (1.0 - (dist / closeRange)).clamp(0.0, 1.0);
+
+    final scale = _strikeBaseScale + _strikeChargeScale * charge;
+    final kickMag = _pitch.width * _dashPerSecond * scale * proximity;
+    _arena.impulse(_ballId, dir * kickMag);
+    _onBallKicked(proximity);
+  }
+
+  /// React to a ball strike: squash the ball + spark + hit-stop + a "THWACK!"
+  /// pop on the hardest strikes.
   void _onBallKicked(double proximity) {
     final speed = _ball.vel.distance;
     _ballSquash =
         (proximity * 0.8 + (speed / _hardKickSpeed) * 0.4).clamp(0.0, 1.0);
     if (speed >= _hardKickSpeed) {
-      _juice.hit(_ball.pos, const Color(0xFFFFFFFF), sparks: 10);
+      _juice.hit(_ball.pos, _spark, sparks: 10);
       _juice.shake.light();
       _juice.popup(_ball.pos.translate(0, -_ballRadius * 2.4), 'THWACK!',
           const Color(0xFFFFE08A), size: _ballRadius * 1.8);
@@ -460,7 +526,7 @@ class OneTouchSoccer extends MiniGameBase {
       _juice.particles.burst(
         at: _ball.pos,
         count: 5,
-        color: const Color(0xFFFFFFFF),
+        color: _spark,
         speed: 180,
         size: 4,
         life: 0.28,
@@ -479,6 +545,8 @@ class OneTouchSoccer extends MiniGameBase {
       fig.update(dt);
     }
   }
+
+  // ── Goals + outcome ─────────────────────────────────────────────────────────
 
   /// Award a goal when the ball reaches a goal line within the goal mouth.
   void _checkGoals() {
@@ -534,6 +602,16 @@ class OneTouchSoccer extends MiniGameBase {
       ..add(_ball.pos);
   }
 
+  /// Finish early when a side reaches [_goalsToWin], or when time expires.
+  void _resolveOutcome() {
+    final leftScore = _sideScore(attacksRight: false);
+    final rightScore = _sideScore(attacksRight: true);
+    final reached = leftScore >= _goalsToWin || rightScore >= _goalsToWin;
+    if (reached || _elapsed >= _timeLimit) {
+      finishByScore();
+    }
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   @override
@@ -572,25 +650,48 @@ class OneTouchSoccer extends MiniGameBase {
 
   void _drawPlayers(Canvas canvas) {
     for (final entry in _figures.entries) {
-      final body = _bodyOf(entry.key);
+      final id = entry.key;
+      final body = _bodyOf(id);
       if (body == null) continue;
-      final actor = _actorFor(entry.key, body, entry.value);
+      final s = _strikers[id];
+      final color = Color(_colorOf(id));
+      final actor = _actorFor(id, body, entry.value, color, s);
+      SoccerRenderer.drawDashTrail(canvas, actor);
       SoccerRenderer.drawActorGround(canvas, actor);
       SoccerRenderer.drawActor(canvas, actor);
+      // The aim arrow + charge — the player's control, drawn on top of the body.
+      if (s != null && _kickoffPause <= 0) {
+        SoccerRenderer.drawAim(
+          canvas,
+          body.pos,
+          _playerRadius,
+          color,
+          aim: s.aim,
+          charge: s.charge,
+          charging: s.charging,
+          ready: s.ready,
+          clock: _animClock,
+        );
+      }
     }
   }
 
-  SoccerActor _actorFor(int id, Body body, StickFigure fig) {
+  SoccerActor _actorFor(
+      int id, Body body, StickFigure fig, Color color, Striker? s) {
     final feet = Offset(body.pos.dx, body.pos.dy + body.radius);
+    final trail = s?.trail;
     return SoccerActor(
       figure: fig,
       // Figure pelvis anchors at feet so the stick stands on its disc.
       root: feet,
       feet: feet,
       radius: body.radius,
-      color: Color(_colorOf(id)),
+      color: color,
       number: id + 1,
-      kickFlash: _kick[id]?.flash ?? 0,
+      kickFlash: s?.flash ?? 0,
+      trailFrom: trail?.from,
+      trailDir: trail?.dir ?? Offset.zero,
+      trailStrength: trail?.strength ?? 0,
     );
   }
 
@@ -659,27 +760,12 @@ class OneTouchSoccer extends MiniGameBase {
     if (d < 1e-6) return Offset.zero;
     return v / d;
   }
-}
 
-/// Per-player kick bookkeeping: lunge cooldown + a short ground-ring flash.
-/// Mutable round-scoped state (allowed for the duration of one round).
-class _KickState {
-  static const double _flashDecayPerSec = 5.0;
-  double _cooldown = 0; // seconds until the next lunge is allowed
-  double _flash = 0; // 0..1 ground-ring brighten on a recent kick
-
-  bool get ready => _cooldown <= 0;
-
-  /// 0..1 kick-charge flash for the ground ring.
-  double get flash => _flash.clamp(0.0, 1.0);
-
-  void tick(double dt) {
-    if (_cooldown > 0) _cooldown = math.max(0, _cooldown - dt);
-    if (_flash > 0) _flash = math.max(0, _flash - _flashDecayPerSec * dt);
-  }
-
-  void fire(double cooldownSec, {double charge = 0}) {
-    _cooldown = cooldownSec;
-    if (charge > _flash) _flash = charge.clamp(0.0, 1.0);
+  static double _wrap(double a) {
+    const twoPi = math.pi * 2;
+    var r = a % twoPi;
+    if (r > math.pi) r -= twoPi;
+    if (r < -math.pi) r += twoPi;
+    return r;
   }
 }

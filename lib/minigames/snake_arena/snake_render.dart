@@ -44,6 +44,12 @@ class SnakeRenderer {
   static const double _pipRadius = 4.0;
   static const double _speedTintMax = 0.16; // max red screen tint alpha
 
+  // Turn indicator (the clockwise "tap = turn" hint that orbits a head).
+  static const double _turnArcRadiusFactor = 0.95; // arc radius / cell
+  static const double _turnArcSweep = 1.5; // radians of the guide arc
+  static const double _turnArcWidthFactor = 0.12; // stroke width / cell
+  static const double _turnGhostFactor = 0.30; // ghost-dot radius / cell
+
   /// Arena backdrop: vertical gradient + soft top-down vignette. Drawn first,
   /// fills the whole surface so the neon reads against deep black.
   static void drawBackground(Canvas canvas, Size size) {
@@ -269,6 +275,84 @@ class SnakeRenderer {
       canvas.drawCircle(
           eye + dir * eyeR * 0.4, math.max(0.6, eyeR * 0.55), pupil);
     }
+  }
+
+  /// The "tap = turn CLOCKWISE" affordance: a curved arrow that orbits the head
+  /// from its current facing toward the next clockwise facing, plus a faint
+  /// ghost dot on the cell the snake would step into after one tap. Drawn for the
+  /// human's snake so the one rule of the game is unmistakable. [forward] is the
+  /// current unit heading; [next] is the unit heading after one clockwise turn.
+  /// [pulse] (0..1) breathes the brightness; [emphasis] (0..1) fades it in at the
+  /// round start then settles to a calm idle level.
+  static void drawTurnHint(
+    Canvas canvas,
+    Offset head,
+    Offset forward,
+    Offset next,
+    double cell,
+    Color color, {
+    double pulse = 1.0,
+    double emphasis = 1.0,
+  }) {
+    if (cell <= 0) return;
+    var fwd = forward;
+    if (fwd.distance < 1e-3) fwd = const Offset(0, -1);
+    fwd = fwd / fwd.distance;
+    var nxt = next;
+    if (nxt.distance < 1e-3) nxt = const Offset(1, 0);
+    nxt = nxt / nxt.distance;
+
+    final em = emphasis.clamp(0.0, 1.0);
+    if (em <= 0.01) return;
+    final a = (0.30 + 0.45 * pulse.clamp(0.0, 1.0)) * em;
+    final r = cell * _turnArcRadiusFactor;
+
+    // The arc sweeps CLOCKWISE from the current heading by [_turnArcSweep].
+    final startAngle = math.atan2(fwd.dy, fwd.dx);
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.5, cell * _turnArcWidthFactor)
+      ..color = color.withValues(alpha: a.clamp(0.0, 1.0));
+    canvas.drawArc(
+      Rect.fromCircle(center: head, radius: r),
+      startAngle,
+      _turnArcSweep, // positive = clockwise in screen space (y-down)
+      false,
+      paint,
+    );
+
+    // Arrowhead at the end of the arc, tangent to the sweep (points clockwise).
+    final endA = startAngle + _turnArcSweep;
+    final tipPos = head + Offset(math.cos(endA), math.sin(endA)) * r;
+    final tangent = Offset(-math.sin(endA), math.cos(endA)); // clockwise tangent
+    final headLen = cell * 0.30;
+    final perp = Offset(-tangent.dy, tangent.dx);
+    final tip = tipPos + tangent * headLen * 0.5;
+    final back = tipPos - tangent * headLen * 0.5;
+    final headPath = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo((back + perp * headLen * 0.5).dx, (back + perp * headLen * 0.5).dy)
+      ..lineTo((back - perp * headLen * 0.5).dx, (back - perp * headLen * 0.5).dy)
+      ..close();
+    canvas.drawPath(
+        headPath, Paint()..color = color.withValues(alpha: (a * 1.1).clamp(0.0, 1.0)));
+
+    // Ghost dot: where the head lands after one tap (one cell along [next]).
+    final ghost = head + nxt * cell;
+    final ghostR = cell * _turnGhostFactor;
+    canvas.drawCircle(
+      ghost,
+      ghostR,
+      Paint()
+        ..color = color.withValues(alpha: (0.22 * em).clamp(0.0, 1.0))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, ghostR * 0.6),
+    );
+    canvas.drawCircle(
+      ghost,
+      ghostR * 0.5,
+      Paint()..color = _white.withValues(alpha: (0.30 * em).clamp(0.0, 1.0)),
+    );
   }
 
   /// Per-player status strip: a colored chip with a length/score readout and a

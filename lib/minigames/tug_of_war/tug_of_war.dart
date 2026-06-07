@@ -20,14 +20,15 @@ enum _Side { left, right }
 ///
 /// Sides split by [Team] when set (duel / 2v2), else by even/odd player id.
 ///
-/// Depth (still one-touch):
+/// Skill layer (still one-touch) — rhythm beats blind spam:
 ///  * Each side has a decaying [TapMashMeter]: a tap adds effort, idle bleeds it
 ///    away — so you must keep mashing to hold a lead. Effort scales both the
 ///    pull strength and how far back the team leans (premium body language).
-///  * **Rhythm heave**: tapping in a good cadence window grows a per-player
-///    heave charge; once it crosses a threshold it fires a brief "HEAVE!" power
-///    surge (pull multiplier) with a shockwave cue — rewarding rhythm, not just
-///    speed. Spammed / sloppy cadence lets the charge bleed off.
+///  * **Visible HEAVE beat**: a shared metronome marker sweeps back and forth
+///    across a rhythm track with a highlighted SWEET-SPOT window. Tapping while
+///    the marker is inside the window lands a HEAVE — a big bonus pull with a
+///    "HEAVE!" popup + shockwave; mistimed taps give a weak pull. So timing the
+///    beat (not mashing fastest) wins the rope.
 ///  * The net of both sides' effort drives the marker; first side past
 ///    ±threshold wins, and at the time limit the side nearer its goal wins, so
 ///    the round ALWAYS resolves.
@@ -35,8 +36,9 @@ enum _Side { left, right }
 ///    into the pit with a big SPLASH (mud + lava particles), "SPLASH!" / "WIN!"
 ///    popups, slow-mo and a heavy shake.
 ///
-/// Bots mash on a cadence scaled by [BotProfile] — harder bots are faster and
-/// steadier, so they land in the rhythm window more often and earn more heave.
+/// Bots warm up (~1s grace) then tap on a [BotProfile] cadence; their timing
+/// scatters around the beat by accuracy, so easy bots hit the sweet spot rarely
+/// (beatable) while hard bots land it often.
 class TugOfWar extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -49,28 +51,37 @@ class TugOfWar extends MiniGameBase {
       );
 
   // ── Round / marker tuning (no magic numbers inline) ─────────────────────────
-  static const double _timeLimit = 30;
+  // ~20s cap; back-and-forth play means an all-bot round still runs several
+  // seconds before one side edges past its goal, so it never resolves instantly.
+  static const double _timeLimit = 20;
   static const double _winThreshold = 1.0; // |marker| to win
-  static const double _markerCenterPullPerSec = 0.05; // idle bleed toward 0
-  static const double _basePullPerTap = 0.018; // marker shift per effective tap
-  static const double _effortPullBonus = 0.012; // extra pull at full side effort
+  static const double _markerCenterPullPerSec = 0.03; // idle bleed toward 0
+  // The rope moves ONLY on a HEAVE; off-beat taps do nothing to the marker (they
+  // just feed the effort meter / body language). A HEAVE's pull scales with
+  // timing precision, so a steady on-the-center rhythm out-pulls frantic spam
+  // that catches windows at random points — rhythm beats button-mashing.
+  static const double _heavePullMin = 0.014; // pull for a sloppy edge HEAVE
+  static const double _heavePullMax = 0.060; // pull for a dead-center HEAVE
 
   // ── Effort meter (per side) tuning ──────────────────────────────────────────
   static const double _effortPerTap = 0.12; // meter bump per tap
   static const double _effortDecayPerSec = 0.55; // bleeds so you must keep going
 
-  // ── Rhythm heave tuning ─────────────────────────────────────────────────────
-  static const double _heaveCadenceLo = 0.10; // good-cadence window (sec) lo
-  static const double _heaveCadenceHi = 0.26; // good-cadence window (sec) hi
-  static const double _heaveGainInWindow = 0.34; // charge added per good tap
-  static const double _heaveDecayPerSec = 0.7; // charge bleed
-  static const double _heaveFireThreshold = 1.0; // charge needed to surge
-  static const double _heaveSurgeSec = 0.6; // surge duration
-  static const double _heaveSurgeMult = 1.9; // pull multiplier during surge
-  static const double _heaveCueSec = 0.45; // cue animation life
+  // ── Visible HEAVE beat (a sweeping sweet-spot you tap ON) ────────────────────
+  // A HEAVE is rate-limited to one per window pass (a human can't double-dip a
+  // single beat), so total pull tracks *timing*, not raw tap rate — blind spam
+  // off the beat goes almost nowhere.
+  static const double _beatPeriodSec = 1.05; // one full left→right→left sweep
+  static const double _beatWindowHalf = 0.13; // sweet-spot half-width (0..1 pos)
+  static const double _heaveGainInWindow = 0.5; // heave charge per good hit
+  static const double _heaveDecayPerSec = 0.7; // charge bleed when missing
+  static const double _heaveFireThreshold = 1.0; // charge full = bar tip glows
+  static const double _heaveSurgeSec = 0.34; // pull-surge window (body twitch)
+  static const double _heaveCueSec = 0.45; // shockwave cue life
 
   // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
-  static const double _botBaseInterval = 0.20;
+  static const double _botWarmupSec = 1.0; // grace before bots engage
+  static const double _botBaseInterval = 0.22;
   static const double _botAccuracyBonus = 0.07; // faster at high accuracy
   static const double _botJitterBase = 0.06; // sloppier at low accuracy
 
@@ -85,6 +96,8 @@ class TugOfWar extends MiniGameBase {
   static const double _pitHeightFrac = 0.11; // pit ellipse height / height
   static const double _groundTopFrac = 0.4; // ground slab starts here (frac h)
   static const double _effortBarFrac = 0.22; // effort bar width / width
+  static const double _beatTrackFrac = 0.6; // HEAVE beat track width / width
+  static const double _beatTrackYFrac = 0.2; // beat track height (frac h)
 
   // ── Figure / feel tuning ────────────────────────────────────────────────────
   static const double _figureScale = 2.0; // bigger, readable pullers
@@ -99,6 +112,9 @@ class TugOfWar extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for shimmer/dust
   double _marker = 0; // [-1, 1]; -1 = left wins, +1 = right wins
+  double _beatPos = 0.5; // 0..1 sweep position of the shared HEAVE beat
+  double _beatClock = 0; // phase accumulator for the ping-pong sweep
+  bool _beatWasInWindow = true; // edge-detect to re-arm HEAVE once per pass
   bool _resolved = false;
 
   late double _midY;
@@ -222,6 +238,7 @@ class TugOfWar extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
+    _tickBeat(dt); // real-time so the sweet-spot reads the same regardless of hitstop
     _driveBots(sdt);
     _tickHeave(sdt);
     _tickEffort(sdt);
@@ -234,47 +251,80 @@ class TugOfWar extends MiniGameBase {
     _resolveIfDecided();
   }
 
-  // ── Tap → effort + rhythm heave + marker pull ───────────────────────────────
+  // ── Beat: a shared metronome marker ping-ponging across the rhythm track ─────
 
-  void _tap(int id) {
+  /// Advance the ping-pong sweep. [_beatPos] runs 0→1→0 over [_beatPeriodSec],
+  /// so the marker visibly slides through the centered sweet-spot twice a cycle.
+  /// Each time the marker leaves the window we re-arm every puller's HEAVE latch,
+  /// so the next window pass grants exactly one fresh HEAVE per player.
+  void _tickBeat(double dt) {
+    _beatClock = (_beatClock + dt) % _beatPeriodSec;
+    final tri = _beatClock / _beatPeriodSec; // 0..1
+    _beatPos = tri < 0.5 ? tri * 2 : 2 - tri * 2; // triangle wave 0→1→0
+
+    final inWindow = _beatInWindow;
+    if (!inWindow && _beatWasInWindow) {
+      for (final pl in _pullers.values) {
+        pl.heaveArmed = true;
+      }
+    }
+    _beatWasInWindow = inWindow;
+  }
+
+  /// True when the beat marker currently sits inside the centered sweet-spot.
+  bool get _beatInWindow => (_beatPos - 0.5).abs() <= _beatWindowHalf;
+
+  /// 0..1 precision of the current beat position: 1 = dead-center, 0 = window
+  /// edge. Drives how strong an on-beat HEAVE is, so aiming for the center beats
+  /// slapping the moment you enter the window.
+  double get _beatPrecision =>
+      1.0 - ((_beatPos - 0.5).abs() / _beatWindowHalf).clamp(0.0, 1.0);
+
+  // ── Tap → effort + on-beat HEAVE + marker pull ──────────────────────────────
+
+  void _tap(int id) => _doTap(id, onBeat: _beatInWindow, precision: _beatPrecision);
+
+  /// Shared tap path. The rope moves ONLY on a HEAVE — the first in-window tap of
+  /// each window pass (the [heaveArmed] latch re-arms when the beat leaves the
+  /// window) — with pull scaled by timing [precision] (center > edge). Off-beat
+  /// taps just feed the effort meter, so a tidy on-the-center rhythm out-pulls
+  /// random spam. Bots run the same path gated by accuracy → identical rhythm.
+  void _doTap(int id, {required bool onBeat, required double precision}) {
     final pl = _pullers[id];
     if (pl == null) return;
 
-    // Rhythm: measure the gap since this player's last tap.
-    final gap = pl.sinceTap;
-    pl.sinceTap = 0;
-    var mult = 1.0;
-    if (gap >= _heaveCadenceLo && gap <= _heaveCadenceHi) {
-      pl.heaveCharge =
-          (pl.heaveCharge + _heaveGainInWindow).clamp(0.0, _heaveFireThreshold);
-      if (pl.heaveCharge >= _heaveFireThreshold && pl.surge <= 0) {
-        _fireHeave(pl);
-      }
-    }
-    if (pl.surge > 0) mult *= _heaveSurgeMult;
-
-    // Effort meter for this side (decays, so mashing must continue).
+    // Effort meter for this side (decays, so mashing reads as continuous effort).
     _effort[pl.side]?.tap();
 
-    // Marker pull: base + side-effort bonus, boosted by an active surge.
+    if (!(onBeat && pl.heaveArmed)) return; // off-beat / already-spent: no pull
+    pl.heaveArmed = false; // consume this window pass
+
+    final prec = precision.clamp(0.0, 1.0);
     final effort = _effort[pl.side]?.progress ?? 0.0;
-    final pull = (_basePullPerTap + _effortPullBonus * effort) * mult;
+    pl.heaveCharge =
+        (pl.heaveCharge + _heaveGainInWindow).clamp(0.0, _heaveFireThreshold);
+    _fireHeave(pl, prec);
+
+    // Stronger side-effort gives a small bonus, so holding a fast rhythm helps.
+    final pull = lerpD(_heavePullMin, _heavePullMax, prec) * (1.0 + 0.25 * effort);
     _marker += pl.side == _Side.left ? -pull : pull;
     _marker = clampD(_marker, -_winThreshold, _winThreshold);
   }
 
-  void _fireHeave(_Puller pl) {
+  void _fireHeave(_Puller pl, double precision) {
     pl.surge = _heaveSurgeSec;
     pl.cue = _heaveCueSec;
-    pl.heaveCharge = 0;
+    final prec = precision.clamp(0.0, 1.0);
     final at = _runnerRoot(pl).translate(0, -_footReach * 0.9);
-    _juice.popup(at, 'HEAVE!', _accent, size: 26);
-    _juice.shake.light();
+    // A dead-center HEAVE shouts louder than a sloppy edge one.
+    _juice.popup(at, prec > 0.66 ? 'HEAVE!' : 'heave', _accent,
+        size: 22 + 10 * prec);
+    if (prec > 0.66) _juice.shake.light();
     _juice.particles.burst(
       at: at,
-      count: 6,
+      count: (4 + 6 * prec).round(),
       color: _colorOf(pl.slot.id),
-      speed: 180,
+      speed: 150 + 90 * prec,
       size: 5,
       life: 0.4,
     );
@@ -282,11 +332,9 @@ class TugOfWar extends MiniGameBase {
 
   void _tickHeave(double dt) {
     for (final pl in _pullers.values) {
-      pl.sinceTap += dt;
-      if (pl.surge > 0) {
-        pl.surge = math.max(0, pl.surge - dt);
-      } else if (pl.heaveCharge > 0) {
-        // Charge only bleeds when not currently surging.
+      if (pl.surge > 0) pl.surge = math.max(0, pl.surge - dt);
+      // Charge always bleeds toward 0 between on-beat hits (drives bar glow).
+      if (pl.heaveCharge > 0) {
         pl.heaveCharge = math.max(0, pl.heaveCharge - _heaveDecayPerSec * dt);
       }
       if (pl.cue > 0) pl.cue = math.max(0, pl.cue - dt);
@@ -311,18 +359,38 @@ class TugOfWar extends MiniGameBase {
 
   /// Bots mash on a cadence clock with [BotProfile]-driven interval + jitter, so
   /// they read as steady (hard) or sloppy (easy) without ever branching beyond
-  /// "is this slot a bot?". The guard caps catch-up taps for huge frame steps.
+  /// "is this slot a bot?". A short warmup gives the human the first beat. Each
+  /// bot tap rolls its own on-beat chance from accuracy, so weak bots rarely
+  /// HEAVE (beatable) and strong bots land it often. The guard caps catch-up
+  /// taps for huge frame steps.
   void _driveBots(double dt) {
+    if (_elapsed < _botWarmupSec) return;
     for (final pl in _pullers.values) {
       if (!pl.slot.isBot) continue;
       pl.botClock += dt;
       var guard = 0;
       while (pl.botClock >= pl.nextTapAt && guard++ < 8) {
         pl.botClock -= pl.nextTapAt;
-        _tap(pl.slot.id);
+        // Bots are bound by the *real* beat just like a human: they can only
+        // HEAVE while the marker is in the window, and even then only if their
+        // accuracy roll lands — so weak bots fluff the timing and are beatable.
+        final onBeat = _beatInWindow && _botHitsBeat();
+        // A landing bot uses real precision scaled down by sloppiness; a missing
+        // bot taps off-beat (weak nudge + burns its own upcoming heave).
+        final prec = onBeat
+            ? _beatPrecision * ctx.botProfile.accuracy.clamp(0.0, 1.0)
+            : 0.0;
+        _doTap(pl.slot.id, onBeat: onBeat, precision: prec);
         pl.nextTapAt = _nextBotInterval(pl);
       }
     }
+  }
+
+  /// A bot's chance of nailing the sweet spot scales with accuracy, so HEAVE
+  /// timing is what separates tiers — easy bots mostly mistime it.
+  bool _botHitsBeat() {
+    final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    return ctx.rng.chance(0.25 + 0.7 * acc);
   }
 
   double _nextBotInterval(_Puller pl) =>
@@ -440,6 +508,7 @@ class TugOfWar extends MiniGameBase {
 
     _drawTeamsAndRope(canvas);
     _drawEffortBars(canvas);
+    _drawBeatTrack(canvas);
 
     // Vignette over the field, intensifying as the marker nears an edge.
     TugRenderer.drawVignette(canvas, size, _markerEdgeProximity());
@@ -545,6 +614,24 @@ class TugOfWar extends MiniGameBase {
     );
   }
 
+  /// The shared HEAVE beat: a centered rhythm track with a sweet-spot window and
+  /// a sweeping marker. Tapping while the marker is inside the window lands a
+  /// HEAVE — this is the visible rhythm cue the whole skill layer hangs on.
+  void _drawBeatTrack(Canvas canvas) {
+    final width = _size.width * _beatTrackFrac;
+    final center = Offset(_centerX, _size.height * _beatTrackYFrac);
+    TugRenderer.drawBeatTrack(
+      canvas,
+      center,
+      width,
+      _beatPos,
+      _beatWindowHalf,
+      inWindow: _beatInWindow,
+      accent: _accent,
+      t: _animClock,
+    );
+  }
+
   /// Peak active surge/charge strength on a side (0..1) for the effort-bar glow.
   double _heaveOfSide(_Side side) {
     var best = 0.0;
@@ -629,9 +716,9 @@ class _Puller {
   double botClock = 0;
   double nextTapAt;
 
-  // Rhythm-heave bookkeeping.
-  double sinceTap = 1e9; // seconds since this player's last tap
-  double heaveCharge = 0; // 0.._heaveFireThreshold
+  // On-beat HEAVE bookkeeping.
+  bool heaveArmed = true; // true = a HEAVE is available this window pass
+  double heaveCharge = 0; // 0.._heaveFireThreshold (drives effort-bar tip glow)
   double surge = 0; // seconds of active pull surge remaining
   double cue = 0; // seconds of HEAVE shockwave cue remaining
 

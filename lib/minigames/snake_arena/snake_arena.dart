@@ -96,16 +96,21 @@ class SnakeArena extends MiniGameBase {
   // ── Grid / sim tuning (no magic numbers inline) ─────────────────────────────
   static const int _cols = 23;
   static const int _rows = 30;
-  static const double _stepSecStart = 0.13; // initial tick interval
-  static const double _stepSecMin = 0.075; // floor as the round heats up
-  static const double _stepRampSec = 38.0; // time to reach the floor
-  static const double _timeLimit = 45;
+  static const double _stepSecStart = 0.18; // initial tick interval (calm start)
+  static const double _stepSecMin = 0.09; // floor as the round heats up
+  static const double _warmupSec = 4.0; // calm spell before the speed ramp
+  static const double _stepRampSec = 20.0; // time (after warmup) to reach floor
+  static const double _timeLimit = 35;
   static const int _startLength = 3;
   static const int _growPerFood = 2;
-  static const int _foodCount = 3; // simultaneous pellets on the board
+  static const int _foodCount = 4; // simultaneous pellets on the board
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botFoodBias = 0.55; // chance to chase food when safe
+  static const int _botLookahead = 5; // cells of free space a bot wants ahead
+  static const int _botFloodCap = 24; // max cells counted by the safety flood
+  static const double _botSpaceWeight = 1.6; // free-space vs food-distance weight
+  static const double _botHeadOnPenalty = 40.0; // dodge cells a rival can enter
 
   // ── Layout tuning (pixels / fractions) ──────────────────────────────────────
   static const double _marginFactor = 0.04; // arena margin / min(w,h)
@@ -114,7 +119,11 @@ class SnakeArena extends MiniGameBase {
 
   // ── Juice tuning ────────────────────────────────────────────────────────────
   static const int _eatSparks = 10;
+  static const int _nearMissSparks = 5;
   static const double _wallFlareDecay = 2.4; // per-second flare falloff
+  static const double _nearMissCooldownSec = 0.18; // throttle near-miss sparks
+  static const double _hintFadeSec = 1.6; // turn-hint settle time at round start
+  static const double _hintIdleLevel = 0.55; // resting turn-hint brightness
 
   late Juice _juice;
   final List<_Snake> _snakes = [];
@@ -127,6 +136,7 @@ class SnakeArena extends MiniGameBase {
   double _stepAcc = 0;
   double _animClock = 0; // real-time clock for pulses (never time-scaled)
   double _wallFlare = 0; // 0..1 neon wall flare, decays over time
+  double _nearMissCd = 0; // near-miss spark throttle (real-time)
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -225,6 +235,7 @@ class SnakeArena extends MiniGameBase {
     _elapsed += dt;
     _animClock += dt;
     _wallFlare = math.max(0, _wallFlare - _wallFlareDecay * dt);
+    _nearMissCd = math.max(0, _nearMissCd - dt);
 
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
@@ -242,80 +253,119 @@ class SnakeArena extends MiniGameBase {
     if (_elapsed >= _timeLimit) _finishByLength();
   }
 
-  /// Tick interval shrinks linearly from [_stepSecStart] to [_stepSecMin] over
+  /// Tick interval holds at [_stepSecStart] through [_warmupSec] (a calm spell
+  /// to read the board), then shrinks linearly to [_stepSecMin] over
   /// [_stepRampSec] so snakes speed up and rounds converge.
-  double _currentStepSec() {
-    final t = (_elapsed / _stepRampSec).clamp(0.0, 1.0);
-    return _stepSecStart + (_stepSecMin - _stepSecStart) * t;
-  }
+  double _currentStepSec() =>
+      _stepSecStart + (_stepSecMin - _stepSecStart) * _speedHeat();
 
-  /// How "hot" the round is (0..1) — drives the speed-up screen tint.
-  double _speedHeat() => (_elapsed / _stepRampSec).clamp(0.0, 1.0);
+  /// How "hot" the round is (0..1): zero during warmup, then ramps to 1.
+  double _speedHeat() =>
+      ((_elapsed - _warmupSec) / _stepRampSec).clamp(0.0, 1.0);
 
   // ── Bots ────────────────────────────────────────────────────────────────────
 
-  /// Bots look one cell ahead. If their current heading is blocked they steer to
-  /// the safest free neighbor (preferring one toward the nearest pellet); when
-  /// safe they lightly chase food. [BotProfile.errorRate] injects an occasional
-  /// worse turn so they read as fallible players.
+  /// Bots look SEVERAL cells ahead, not one. On each reaction tick a bot scores
+  /// every non-reverse heading by how much open space it opens up (a capped
+  /// flood-fill so it won't drive into a pocket it can't escape) plus a pull
+  /// toward the nearest pellet, and steers to the best one. This makes them read
+  /// as competent — they hug walls, weave through trails and grab food — without
+  /// being psychic. [BotProfile.errorRate] makes them occasionally take a worse
+  /// (but still legal) turn, so easy bots fumble and a human can win.
   void _driveBots(double dt) {
     for (final s in _snakes) {
       if (!s.alive || s.clock == null) continue;
       if (!s.clock!.tick(dt)) continue;
       s.clock!.arm(ctx.botProfile, ctx.rng);
-
-      if (_isBlocked(s, s.heading)) {
-        _steerToSafe(s);
-      } else if (ctx.rng.chance(ctx.botProfile.errorRate)) {
-        // Deliberate mistake: a clockwise turn that may or may not be safe.
-        s.heading = _Heading.values[(s.heading.index + 1) % 4];
-      } else if (ctx.rng.chance(_botFoodBias)) {
-        _seekFood(s);
-      }
+      _steerBot(s);
     }
   }
 
-  /// Pick a free heading that steps closest to the nearest pellet (preferring a
-  /// safe turn); fall back to the first safe clockwise heading. Leaves the
-  /// heading unchanged if boxed in (it will crash, which is correct).
-  void _steerToSafe(_Snake s) {
+  /// Choose this bot's heading. Considers straight + both turns (reverse is
+  /// illegal by design). Picks the highest-scoring legal heading; on an error
+  /// roll it instead picks a random *legal* heading (a misjudgment, not instant
+  /// suicide). Leaves the heading unchanged only when fully boxed in.
+  void _steerBot(_Snake s) {
+    final options = <_Heading>[];
+    var best = s.heading;
+    var bestScore = -double.infinity;
     final target = _nearestFood(s.head);
-    _Heading? best;
-    var bestDist = 1 << 30;
-    for (var i = 1; i <= 3; i++) {
+
+    for (final i in const [0, 1, 3]) {
+      // 0 = straight, 1 = clockwise, 3 = counter-clockwise (2 = reverse, skip).
       final h = _Heading.values[(s.heading.index + i) % 4];
       if (_isBlocked(s, h)) continue;
-      if (target == null) {
-        s.heading = h; // first safe option when there is no food to chase
-        return;
-      }
-      final d = _manhattan(s.head.plus(_kStep[h]!), target);
-      if (d < bestDist) {
-        bestDist = d;
+      options.add(h);
+      final score = _headingScore(s, h, target);
+      if (score > bestScore) {
+        bestScore = score;
         best = h;
       }
     }
-    if (best != null) s.heading = best;
+
+    if (options.isEmpty) return; // boxed in — it will crash (correct).
+    if (options.length > 1 && ctx.rng.chance(ctx.botProfile.errorRate)) {
+      s.heading = ctx.rng.pick(options); // believable misjudgment
+      return;
+    }
+    s.heading = best;
   }
 
-  /// While already safe ahead, optionally turn toward the nearest pellet if that
-  /// turn is also safe (light, opportunistic food-seeking).
-  void _seekFood(_Snake s) {
-    final target = _nearestFood(s.head);
-    if (target == null) return;
-    var bestDist = _manhattan(s.head.plus(_kStep[s.heading]!), target);
-    _Heading? turn;
-    for (final i in const [1, 3]) {
-      // clockwise + counter-clockwise (2 = reverse, impossible anyway).
-      final h = _Heading.values[(s.heading.index + i) % 4];
-      if (_isBlocked(s, h)) continue;
-      final d = _manhattan(s.head.plus(_kStep[h]!), target);
-      if (d < bestDist) {
-        bestDist = d;
-        turn = h;
-      }
+  /// Higher is better. Reward open space reachable after the step (so the bot
+  /// avoids trapping itself) and, when food bias fires, reward getting closer to
+  /// the nearest pellet. Penalise stepping into a cell a rival head could also
+  /// enter next tick (a likely fatal head-on). Space dominates so survival beats
+  /// greed, and dodging beats both.
+  double _headingScore(_Snake s, _Heading h, _Cell? target) {
+    final next = s.head.plus(_kStep[h]!);
+    var score = _reachableSpace(next, s).toDouble() * _botSpaceWeight;
+    if (target != null && ctx.rng.chance(_botFoodBias)) {
+      // Closer pellet → higher score (negative distance), modestly weighted.
+      score += (_cols + _rows) - _manhattan(next, target);
     }
-    if (turn != null) s.heading = turn;
+    if (_rivalCanEnter(next, s)) score -= _botHeadOnPenalty;
+    return score;
+  }
+
+  /// True if some OTHER living snake's head is one cell away from [cell] — i.e.
+  /// it could move into [cell] on the same tick, killing both. Lets bots steer
+  /// out of head-on standoffs instead of trading kills (smarter, fairer, and it
+  /// keeps rounds from collapsing in the first seconds).
+  bool _rivalCanEnter(_Cell cell, _Snake self) {
+    for (final o in _snakes) {
+      if (!o.alive || identical(o, self)) continue;
+      if (_manhattan(o.head, cell) == 1) return true;
+    }
+    return false;
+  }
+
+  /// Capped flood-fill: how many free cells are reachable starting from [from],
+  /// treating living snake bodies (except [mover]'s about-to-move tail) and the
+  /// walls as solid. Counts at most [_botFloodCap] cells and explores at most
+  /// [_botLookahead] rings deep — cheap, deterministic, enough to tell "roomy"
+  /// from "dead end". Returns 0 if [from] itself is solid.
+  int _reachableSpace(_Cell from, _Snake mover) {
+    if (_hitsWall(from) || _hitsAnyBody(from, ignoreTailOf: mover)) return 0;
+    final seen = <_Cell>{from};
+    var frontier = <_Cell>[from];
+    var count = 1;
+    for (var depth = 0; depth < _botLookahead && count < _botFloodCap; depth++) {
+      final next = <_Cell>[];
+      for (final cell in frontier) {
+        for (final step in _kStep.values) {
+          final n = cell.plus(step);
+          if (seen.contains(n)) continue;
+          if (_hitsWall(n) || _hitsAnyBody(n, ignoreTailOf: mover)) continue;
+          seen.add(n);
+          next.add(n);
+          if (++count >= _botFloodCap) break;
+        }
+        if (count >= _botFloodCap) break;
+      }
+      if (next.isEmpty) break;
+      frontier = next;
+    }
+    return count;
   }
 
   _Cell? _nearestFood(_Cell from) {
@@ -415,12 +465,72 @@ class SnakeArena extends MiniGameBase {
       _kill(s);
     }
 
+    // Phase 4: near-miss feedback — a survivor whose head is now one cell from a
+    // wall or another body just had a close shave; spark it (throttled).
+    for (final s in living) {
+      if (!s.alive) continue;
+      _maybeNearMiss(s);
+    }
+
     // End on the last survivor (multi-player) OR when no snake is left alive
     // (covers a solo snake crashing — otherwise the round would idle on an
     // empty grid until the time limit).
     if (_aliveCount() == 0 || (_aliveCount() <= 1 && _snakes.length > 1)) {
       _finishByLength();
     }
+  }
+
+  /// Spark + tiny shake when [s]'s head sits adjacent to a hazard it did not hit
+  /// (a wall, another snake, or its own deeper body) — a "phew" beat that makes
+  /// dodging feel earned. Throttled by [_nearMissCooldownSec] so a snake gliding
+  /// along a wall doesn't fizz every tick.
+  void _maybeNearMiss(_Snake s) {
+    if (_nearMissCd > 0) return;
+    final ahead = s.head.plus(_kStep[s.heading]!); // the cell it's about to enter
+    var hazard = false;
+    Offset? toward;
+    for (final step in _kStep.values) {
+      final n = s.head.plus(step);
+      if (n == ahead) continue; // that's its path, not a near miss
+      if (_hitsWall(n) || _isHazardBody(n, s)) {
+        hazard = true;
+        toward = Offset(step.col.toDouble(), step.row.toDouble());
+        break;
+      }
+    }
+    if (!hazard) return;
+    _nearMissCd = _nearMissCooldownSec;
+    final at = _cellCenter(s.head, _lastSize);
+    final dir = toward ?? const Offset(0, -1);
+    _juice.particles.burst(
+      at: at + dir * (_cell() * 0.4),
+      count: _nearMissSparks,
+      color: Color.lerp(s.color, const Color(0xFFFFFFFF), 0.4) ?? s.color,
+      speed: 150,
+      baseAngle: math.atan2(dir.dy, dir.dx),
+      spread: math.pi * 0.5,
+      size: 3.5,
+      gravity: 60,
+      life: 0.3,
+    );
+    _juice.shake.light();
+  }
+
+  /// True if cell [c] holds a body segment that is a real hazard to [self] — any
+  /// other snake's body, or [self]'s own body beyond the neck (ignores the head
+  /// and the segment right behind it, which can never be a "near miss").
+  bool _isHazardBody(_Cell c, _Snake self) {
+    for (final o in _snakes) {
+      if (!o.alive) continue;
+      if (identical(o, self)) {
+        for (var i = 2; i < o.body.length; i++) {
+          if (o.body[i] == c) return true;
+        }
+      } else if (o.body.contains(c)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Eat feedback: pop sparks at the pellet + a small score popup + a light wall
@@ -522,6 +632,11 @@ class SnakeArena extends MiniGameBase {
       _drawSnake(canvas, s, size);
     }
 
+    // The clockwise "tap = turn" hint, on top of the snakes so it always reads.
+    for (final s in _snakes.where((s) => s.alive)) {
+      _drawTurnHint(canvas, s, size);
+    }
+
     _juice.render(canvas);
     canvas.restore();
 
@@ -540,6 +655,29 @@ class SnakeArena extends MiniGameBase {
       _cell(),
       s.color,
       alive: s.alive,
+    );
+  }
+
+  /// Draw the clockwise turn affordance over [s]'s head. Humans (no bot clock)
+  /// get a bold hint that fades from full to a calm idle level over [_hintFadeSec]
+  /// so the rule lands at the start without nagging forever; bots show a faint
+  /// version so every snake visibly obeys the same rule.
+  void _drawTurnHint(Canvas canvas, _Snake s, Size size) {
+    final isHuman = s.clock == null;
+    final fadeIn = (1.0 - _elapsed / _hintFadeSec).clamp(0.0, 1.0);
+    final emphasis = isHuman
+        ? _hintIdleLevel + (1.0 - _hintIdleLevel) * fadeIn
+        : _hintIdleLevel * 0.5;
+    final next = _Heading.values[(s.heading.index + 1) % 4]; // one tap clockwise
+    SnakeRenderer.drawTurnHint(
+      canvas,
+      _cellCenter(s.head, size),
+      _headingPixelDir(s.heading),
+      _headingPixelDir(next),
+      _cell(),
+      s.color,
+      pulse: _gridPulse(),
+      emphasis: emphasis,
     );
   }
 

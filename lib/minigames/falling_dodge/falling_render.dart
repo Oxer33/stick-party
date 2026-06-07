@@ -50,6 +50,12 @@ class FallingRenderer {
   static const double _telegraphMaxH = 0.55; // marker height / hazard size
   static const double _dropShadowMax = 0.9; // hazard shadow width / size at land
 
+  // Directional hop-hint chevrons flanking the runner.
+  static const double _hintReachFactor = 0.46; // gap from runner / lane spacing
+  static const double _hintSizeFactor = 0.18; // chevron arm length / lane spacing
+  static const double _hintLiftFactor = 0.55; // lift above ground / lane spacing
+  static const double _hintGlideFactor = 0.06; // outward breathe travel / spacing
+
   // ── Background ──────────────────────────────────────────────────────────────
 
   /// Full-arena vertical gradient backdrop. Drawn once under every band.
@@ -497,6 +503,79 @@ class FallingRenderer {
       Paint()
         ..color = _black.withValues(alpha: 0.34)
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, width * 0.18),
+    );
+  }
+
+  // ── Directional hop hints (the control affordance) ─────────────────────────
+
+  /// Draw the player's directional control cue: a small chevron on each side of
+  /// the runner pointing the way a tap on that side will hop. [laneSpacing] sizes
+  /// them to the lane gap; [pulse] in 0..1 gently breathes them; a side fades when
+  /// its [canLeft]/[canRight] is false (the runner is against that wall).
+  static void drawHopHints(
+    Canvas canvas,
+    Offset runnerGround,
+    double laneSpacing,
+    Color color,
+    double pulse, {
+    required bool canLeft,
+    required bool canRight,
+  }) {
+    final reach = laneSpacing * _hintReachFactor;
+    final s = laneSpacing * _hintSizeFactor;
+    final y = runnerGround.dy - laneSpacing * _hintLiftFactor;
+    final p = pulse.clamp(0.0, 1.0);
+    final glide = laneSpacing * _hintGlideFactor * p;
+
+    if (canLeft) {
+      _drawChevron(
+          canvas, Offset(runnerGround.dx - reach - glide, y), s, color, -1, p);
+    }
+    if (canRight) {
+      _drawChevron(
+          canvas, Offset(runnerGround.dx + reach + glide, y), s, color, 1, p);
+    }
+  }
+
+  /// One double-stroke chevron pointing toward [dir] (-1 left / +1 right).
+  static void _drawChevron(
+      Canvas canvas, Offset tip, double size, Color color, int dir, double p) {
+    final back = -dir.toDouble();
+    // Two arms meeting at the tip, opening away from the travel direction.
+    final path = Path()
+      ..moveTo(tip.dx + back * size, tip.dy - size * 0.62)
+      ..lineTo(tip.dx, tip.dy)
+      ..lineTo(tip.dx + back * size, tip.dy + size * 0.62);
+    // Soft glow underlay.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(2.0, size * 0.5)
+        ..color = color.withValues(alpha: 0.18 + 0.22 * p)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, size * 0.4),
+    );
+    // Crisp color stroke so it reads over the dark band.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.6, size * 0.28)
+        ..color = color.withValues(alpha: (0.6 + 0.35 * p).clamp(0.0, 1.0)),
+    );
+    // White core highlight.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(0.8, size * 0.1)
+        ..color = _white.withValues(alpha: (0.45 + 0.3 * p).clamp(0.0, 1.0)),
     );
   }
 

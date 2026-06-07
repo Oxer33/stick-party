@@ -16,10 +16,17 @@ import 'archer_render.dart';
 /// that auto-sweeps an aiming arc. One tap LOOSES a gravity-arced arrow at the
 /// balloons drifting up the field. Most balloons popped at the 30 s limit wins.
 ///
-/// Depth (still one-touch):
-///  * **Charge read**: the bow's draw fills with the sweep so the archer visibly
-///    nocks deeper toward the ends of the arc — the tap looses at that draw with
-///    a string-snap, riser kick, muzzle puff and short hit-stop.
+/// CONTROL (the heart of it — full agency, still one touch):
+///  * The bow AIM sweeps an arc continuously at a learnable speed; the draw fills
+///    toward the ends of the arc so the archer visibly nocks deeper.
+///  * Quick TAP → loose immediately at the angle (and draw) the bow is showing.
+///  * HOLD → the sweep slows to a crawl so you can settle the aim on a balloon;
+///    the arrow looses the moment you RELEASE. A tap is a snap shot, a hold is a
+///    led, careful shot — nothing is auto-aimed. (A one-frame down→up still
+///    looses, so tap-to-fire is intact.) Release punches a string-snap, riser
+///    kick, muzzle puff and a short hit-stop.
+///
+/// Depth:
 ///  * **Wind**: a slowly-varying crosswind drifts every arrow in flight; a top
 ///    banner + rushing streaks telegraph its heading + strength so a good archer
 ///    leads the shot. Bots read the wind and lead for it too.
@@ -30,10 +37,12 @@ import 'archer_render.dart';
 ///    more), player-colored, bobbing and drifting; rare **golden** bonus
 ///    balloons are worth a burst of points with a metallic shine + sparkle.
 ///
-/// Bots loose when their swept aim lines up (accuracy-scaled cone) with the
-/// lead-corrected bearing to a live balloon, on a [ReactionClock] cadence, with
-/// occasional deliberate misses via [BotProfile.errorRate]. Always finishes on
-/// the time limit and never throws for 1..4 players.
+/// FAIR BOTS: they loose when their swept aim lines up (accuracy-scaled cone)
+/// with the wind-lead-corrected bearing to a live balloon, on a [ReactionClock]
+/// cadence — but only after a warm-up grace, and with a [BotProfile] accuracy
+/// error plus a per-shot flinch so easy bots genuinely MISS often and are
+/// beatable. Always finishes on the time limit and never throws for 1..4
+/// players.
 class ArcherPop extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -68,7 +77,7 @@ class ArcherPop extends MiniGameBase {
   static const double _figureScale = 1.7; // readable archer bodies
   static const double _edgeInsetFactor = 0.10; // edge inset / min(arena side)
   static const double _sweepHalfBand = 0.62; // half sweep arc (radians)
-  static const double _sweepSpeed = 1.85; // sweep angular speed (rad/s)
+  static const double _sweepSpeed = 1.55; // sweep angular speed (rad/s) — learnable
   static const double _looseFadeSec = 0.18; // loose-flash decay
   static const double _muzzleReach = 28; // bow-hand → arrow spawn (× scale)
 

@@ -496,6 +496,99 @@ class TugRenderer {
     );
   }
 
+  /// The shared HEAVE beat track: a rounded rail with a highlighted centered
+  /// sweet-spot band and a sweeping marker at [pos] (0..1 across the rail).
+  /// [windowHalf] is the sweet-spot half-width in the same 0..1 space.
+  /// [inWindow] flips the whole cue bright + tags it "HEAVE!" so the player sees
+  /// the exact instant to tap. Self-contained and side-effect free.
+  static void drawBeatTrack(
+    Canvas canvas,
+    Offset center,
+    double width,
+    double pos,
+    double windowHalf, {
+    required bool inWindow,
+    required Color accent,
+    required double t,
+  }) {
+    if (width <= 4) return;
+    final p = pos.clamp(0.0, 1.0);
+    final half = windowHalf.clamp(0.02, 0.5);
+    final left = center.dx - width / 2;
+    const railH = 14.0;
+
+    // Rail track.
+    final track = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: width, height: railH),
+      const Radius.circular(railH / 2),
+    );
+    canvas.drawRRect(track, Paint()..color = _black.withValues(alpha: 0.42));
+    canvas.drawRRect(
+      track,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = _white.withValues(alpha: 0.12),
+    );
+
+    // Centered sweet-spot band (brightens while the marker is inside it).
+    final bandW = width * (half * 2);
+    final bandGlow = inWindow ? 0.9 : 0.45;
+    final pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 6.0));
+    final band = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: bandW, height: railH + 8),
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(
+      band,
+      Paint()
+        ..color = accent.withValues(alpha: 0.22 * bandGlow * pulse)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, inWindow ? 10 : 5),
+    );
+    canvas.drawRRect(
+      band,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = inWindow ? 3.0 : 1.8
+        ..color = accent.withValues(alpha: inWindow ? 0.95 : 0.5),
+    );
+
+    // Sweeping marker (a bright vertical paddle riding the rail).
+    final mx = left + width * p;
+    final markColor = inWindow ? _white : accent;
+    final markH = railH + 14;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+            center: Offset(mx, center.dy), width: 7, height: markH),
+        const Radius.circular(3.5),
+      ),
+      Paint()
+        ..color = markColor
+        ..maskFilter = inWindow
+            ? const MaskFilter.blur(BlurStyle.normal, 4)
+            : null,
+    );
+
+    // "HEAVE!" tag floating over the band only at the moment it lines up.
+    if (inWindow) {
+      _drawBeatLabel(canvas, center.translate(0, -railH - 16), accent);
+    }
+  }
+
+  static void _drawBeatLabel(Canvas canvas, Offset at, Color color) {
+    final builder = ParagraphBuilder(ParagraphStyle(
+      textAlign: TextAlign.center,
+      fontSize: 16,
+      fontWeight: FontWeight.w900,
+    ))
+      ..pushStyle(TextStyle(color: color))
+      ..addText('HEAVE!');
+    final para = builder.build()
+      ..layout(const ParagraphConstraints(width: 160));
+    canvas.drawParagraph(para, Offset(at.dx - 80, at.dy - 8));
+  }
+
   /// Render the stick puller itself. Kept here so the painter call lives with
   /// the rest of the visuals; [figure] owns its own pose/ragdoll state.
   static void drawPuller(Canvas canvas, StickFigure figure, Offset root) {

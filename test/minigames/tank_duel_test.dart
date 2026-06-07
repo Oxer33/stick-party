@@ -28,6 +28,24 @@ void main() {
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
   });
 
+  test('all-bot 4p round lasts > 1.5s and finishes within the time limit', () {
+    // Across several seeds: a round must never end in a sub-1.5s flash (the
+    // min-duration floor + bot warm-up guarantee it plays out), yet must always
+    // resolve by the 40s limit. 40s ≈ 2400 frames; allow slack for hit-stop.
+    for (var seed = 0; seed < 8; seed++) {
+      final g = TankDuel()..init(ctxFor(4, seed: 100 + seed));
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 80) {
+        g.update(1 / 60);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      expect(frames, greaterThan(90),
+          reason: 'seed $seed ended too fast (${frames / 60}s)');
+      expect(frames, lessThan(60 * 50),
+          reason: 'seed $seed overran the limit (${frames / 60}s)');
+    }
+  });
+
   for (final count in [1, 2, 3]) {
     test('tank duel finishes with $count player(s)', () {
       final g = TankDuel()..init(ctxFor(count, seed: 11 + count));
@@ -58,6 +76,60 @@ void main() {
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
       g.update(1 / 60);
       if (n % 30 == 0) g.onInput(PlayerInput.down(0));
+    }
+    expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('a pure tap (down then immediate up) still fires; round resolves', () {
+    // Tap-to-fire must survive the hold-to-slow-aim addition: a down+up in the
+    // same frame is a snap shot (release always looses).
+    final players = [
+      PlayerSlot.defaults(0),
+      PlayerSlot.defaults(1, isBot: true),
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(8),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = TankDuel()..init(ctx);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      if (n % 25 == 0) {
+        expect(() {
+          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down));
+          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+        }, returnsNormally);
+      }
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('a hold (down, wait, release) slows aim then fires; round resolves', () {
+    final players = [
+      PlayerSlot.defaults(0),
+      PlayerSlot.defaults(1, isBot: true),
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(9),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = TankDuel()..init(ctx);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      if (n % 40 == 0) {
+        expect(() => g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down)),
+            returnsNormally);
+      }
+      if (n % 40 == 12) {
+        expect(() => g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up)),
+            returnsNormally);
+      }
+      g.update(1 / 60);
     }
     expect(g.status, MiniGameStatus.finished);
   });

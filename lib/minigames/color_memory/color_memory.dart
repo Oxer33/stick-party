@@ -23,6 +23,13 @@ class _Pad {
   double koFlash = 0; // 0..1 elimination flash that fades after a KO
   final ReactionClock? clock;
 
+  /// Bot only: the step index at which this bot will deliberately slip THIS
+  /// round (or -1 = it will reproduce the whole pattern correctly). Decided once
+  /// per round so a single slip ends a bot's run — instead of re-rolling the
+  /// error on every entry, which used to wipe everyone before the pattern could
+  /// ever grow. Difficulty + sequence length set how likely/early a slip is.
+  int mistakeStep = -1;
+
   /// Per-pad bloom 0..1 (red, blue, green, yellow). Lit pads bloom bright and
   /// decay for an afterglow; purely cosmetic so it never affects logic.
   final List<double> bloom = <double>[0, 0, 0, 0];
@@ -78,6 +85,17 @@ class ColorMemory extends MiniGameBase {
   static const double _roundDeadlineSec = 6.0; // hard cap on one input phase
   static const int _maxSeqLen = 24; // absolute cap so it always terminates
   static const int _startSeqLen = 1;
+
+  // ── Bot memory model (fairness) ─────────────────────────────────────────────
+  // A bot rolls ONE planned slip per round (not per entry). The chance it slips
+  // grows with how many colors it must hold this round, scaled by difficulty via
+  // [BotProfile.errorRate] — so difficulty reads as "how long a pattern the CPU
+  // can remember". Short patterns are reproduced reliably, so the sequence
+  // actually grows and the memory tension lands instead of a first-step coin
+  // flip wiping the field.
+  static const double _botSlipPerColor = 0.16; // added slip chance per color held
+  static const double _botSlipCap = 0.85; // never a guaranteed slip
+  static const int _botFreeRecall = 1; // colors a bot always nails (no slip)
 
   // ── Feel tuning ─────────────────────────────────────────────────────────────
   static const double _bloomDecayPerSec = 2.6; // pad afterglow fade rate
@@ -138,7 +156,29 @@ class ColorMemory extends MiniGameBase {
       pad.done = false;
       pad.highlight = 0;
       pad.clock?.arm(ctx.botProfile, ctx.rng);
+      if (pad.clock != null) pad.mistakeStep = _rollBotMistakeStep();
     }
+  }
+
+  /// Decide, once for the round, whether a bot slips and where. Returns the step
+  /// index of the slip, or -1 if the bot will reproduce the whole pattern.
+  ///
+  /// Slip chance scales with the pattern length and the profile's [errorRate]
+  /// (easy bots slip on shorter patterns, hard bots hold longer). The first
+  /// [_botFreeRecall] colors are always safe so a fresh round never collapses on
+  /// step one. When a slip is chosen its step is biased toward later entries
+  /// (memory fatigue), which both feels right and lets the sequence build.
+  int _rollBotMistakeStep() {
+    final len = _sequence.length;
+    if (len <= _botFreeRecall) return -1;
+    final recallable = len - _botFreeRecall;
+    final slipChance =
+        (ctx.botProfile.errorRate * recallable * _botSlipPerColor * _palette)
+            .clamp(0.0, _botSlipCap);
+    if (!ctx.rng.chance(slipChance)) return -1;
+    // Bias the slip toward the back half of the recallable range.
+    final lo = _botFreeRecall + recallable ~/ 2;
+    return ctx.rng.intRange(lo, len);
   }
 
   @override
@@ -178,6 +218,13 @@ class ColorMemory extends MiniGameBase {
             size: 26);
       }
     } else {
+      // Make the miss legible: a red "WRONG!" over the cluster names the failure
+      // (a wrong color, not just "out"), then the KO beat fells the player.
+      _juice.popup(
+          _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
+          'WRONG!',
+          MemoryRenderer.palette[0],
+          size: 30);
       _eliminate(pad);
     }
   }
@@ -274,8 +321,11 @@ class ColorMemory extends MiniGameBase {
     if (_roundResolved()) _resolveRound();
   }
 
-  /// Bots commit on their reaction cadence: the correct color with probability
-  /// (1 - errorRate), otherwise a deliberately wrong one (→ elimination).
+  /// Bots commit on their reaction cadence. They reproduce the pattern from
+  /// their per-round plan ([_Pad.mistakeStep]): correct on every step except the
+  /// one planned slip, where they press a wrong color (→ elimination). This
+  /// makes a bot's run a coherent "remembered N colors then fumbled" rather than
+  /// an independent dice roll per tap, so patterns grow and difficulty is fair.
   void _driveBots(double dt) {
     for (final pad in _pads) {
       if (pad.clock == null || !pad.alive || pad.done) continue;
@@ -283,9 +333,8 @@ class ColorMemory extends MiniGameBase {
       pad.clock!.arm(ctx.botProfile, ctx.rng);
 
       final expected = _sequence[pad.progress];
-      final correct = !ctx.rng.chance(ctx.botProfile.errorRate);
-      final color = correct ? expected : _wrongColor(expected);
-      _commit(pad, color);
+      final slips = pad.progress == pad.mistakeStep;
+      _commit(pad, slips ? _wrongColor(expected) : expected);
     }
   }
 

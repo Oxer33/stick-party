@@ -14,19 +14,25 @@ import 'chicken_render.dart';
 
 /// Numeric tuning — no magic numbers inline. Times in seconds, speeds px/s.
 class _Tuning {
-  // Round length. Comfortably under the test's 80s safety cap; the lava
-  // escalation guarantees the round converges well before this.
-  static const double timeLimit = 44;
+  // Round length. The lava escalation converges the round in ~10-15s; this is a
+  // generous safety cap well above that so a stalled human still resolves.
+  static const double timeLimit = 30;
+
+  // A short "GET SET" beat: the lava holds just below the lowest rung and bots
+  // stay put, so everyone gets a moment to read the board before the climb. The
+  // host also shows a 3-2-1-GO overlay; this in-sim warmup makes the all-bot /
+  // test path fair too and lets the lava "build" dramatically before it rises.
+  static const double warmupSec = 1.5;
 
   static const int platformCount = 16; // rungs in each player's tower
   static const double topInset = 96; // px from the top to the highest platform
   static const double bottomInset = 150; // px from the bottom to the lowest
 
-  // Rising lava: engages quickly (no dead time at the start) and accelerates so
-  // the round always resolves.
-  static const double lavaRiseStart = 44; // px/s initial climb
-  static const double lavaAccel = 7.5; // px/s^2 ramp
-  static const double lavaStartGap = 12; // px the lava starts below the lowest
+  // Rising lava (after the warmup): starts brisk and accelerates so the round
+  // always resolves, with a fair reaction window per rung early on.
+  static const double lavaRiseStart = 46; // px/s initial climb
+  static const double lavaAccel = 8.0; // px/s^2 ramp
+  static const double lavaStartGap = 10; // px the lava starts below the lowest
 
   static const double hopAnimSpeed = 16; // lane ease rate (snappy take-off)
   static const double jumpHoldSec = 0.22; // how long the jump pose shows
@@ -46,14 +52,21 @@ class _Tuning {
   static const int crumbleEveryN = 2; // only every Nth rung is crumbly
 
   // Danger / near-catch feel.
-  static const double dangerGapPx = 150; // lava within this → danger glow ramps
-  static const double nearCatchGapPx = 26; // lava this close → tension shake
-  static const double nearCatchShakeGap = 0.55; // min seconds between tics
+  static const double dangerGapPx = 170; // lava within this → danger glow ramps
+  static const double nearCatchGapPx = 30; // lava this close → tension shake
+  static const double nearCatchShakeGap = 0.5; // min seconds between tics
+
+  // Anticipation: the rung directly above the climber pulses so the player
+  // always sees where the next hop lands (readability), and it brightens with
+  // danger so it screams "jump NOW" as the lava closes in.
+  static const double nextRungPulseHz = 3.2; // pulse speed of the next rung cue
 
   // Bots time their hops with the reaction clock; they jump when the lava is
   // within a safety buffer of their rung, and occasionally fumble (errorRate).
-  static const double botSafetyGapPx = 92; // base buffer before a bot hops
-  static const double botBufferPerAccuracy = 1.1; // better bots keep more buffer
+  // Easy bots keep a *smaller* buffer (cut it closer) AND fumble more, so a
+  // steady human out-climbs them; strong bots keep a wide, safe buffer.
+  static const double botSafetyGapPx = 86; // base buffer before a bot hops
+  static const double botBufferPerAccuracy = 1.25; // better bots keep more buffer
 
   // Elimination fling.
   static const double flingX = 130; // horizontal fling / figure scale
@@ -271,7 +284,10 @@ class ChickenJump extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
-    _lavaSpeed = _Tuning.lavaRiseStart + _Tuning.lavaAccel * _elapsed;
+    // During the warmup beat the lava holds; afterward it accelerates. Measuring
+    // the ramp from the post-warmup clock keeps the early reaction window fair.
+    final runT = math.max(0.0, _elapsed - _Tuning.warmupSec);
+    _lavaSpeed = _Tuning.lavaRiseStart + _Tuning.lavaAccel * runT;
 
     _driveBots(dt);
     for (final c in _climbers) {
@@ -280,9 +296,12 @@ class ChickenJump extends MiniGameBase {
     _checkEnd();
   }
 
+  bool get _inWarmup => _elapsed < _Tuning.warmupSec;
+
   void _stepClimber(_Climber c, double dt, double sdt) {
-    // Lava always rises (even for the dead, so the scene keeps escalating).
-    c.lavaY -= _lavaSpeed * sdt;
+    // Lava holds during the warmup, then rises (even for the dead, so the scene
+    // keeps escalating).
+    if (!_inWarmup) c.lavaY -= _lavaSpeed * sdt;
     c.sinceShake += dt;
 
     if (!c.alive) {
@@ -326,16 +345,18 @@ class ChickenJump extends MiniGameBase {
   }
 
   void _landPuff(_Climber c) {
+    // A wide, flat puff that sprays sideways off the rung so the plant reads as
+    // a solid impact — dust hugs the platform rather than fountaining up.
     _juice.particles.burst(
       at: Offset(c.columnX, c.visualRungY()),
-      count: 5,
-      color: const Color(0xFFD7E0EC),
-      speed: 120,
+      count: 8,
+      color: const Color(0xFFE3EBF6),
+      speed: 150,
       baseAngle: -math.pi / 2,
-      spread: math.pi,
-      size: ChickenRenderer.dustSize * c.figureScale * 0.8,
-      gravity: 360,
-      life: 0.26,
+      spread: math.pi * 1.5,
+      size: ChickenRenderer.dustSize * c.figureScale * 0.9,
+      gravity: 320,
+      life: 0.3,
     );
   }
 
@@ -374,6 +395,7 @@ class ChickenJump extends MiniGameBase {
   /// Bots hop on their reaction clock when the lava nears their rung. Better
   /// accuracy keeps a larger safety buffer; [errorRate] makes them hesitate.
   void _driveBots(double dt) {
+    if (_inWarmup) return; // let everyone read the board first (fair beat)
     for (final c in _climbers) {
       final clock = c.clock;
       if (clock == null || !c.alive) continue;
@@ -494,10 +516,18 @@ class ChickenJump extends MiniGameBase {
       c.alive,
     );
 
+    // The rung the climber will hop to next — pulses so the player always sees
+    // the target; sharpens with danger to read as "jump now".
+    final nextLane = c.hopper.lane + 1;
+    final showNext = c.alive && c.hopper.settled && nextLane < c.rungs.count;
+
     // Platforms (skip a fully-dropped crumbled rung; pass crumble progress).
     for (var lane = 0; lane < c.rungs.count; lane++) {
       final crumble = _crumbleProgress(c, lane);
       if (crumble >= 1) continue; // gone
+      final anticipate = (showNext && lane == nextLane)
+          ? _anticipationPulse(danger)
+          : 0.0;
       ChickenRenderer.drawPlatform(
         canvas,
         Offset(c.columnX, c.rungYOf(lane)),
@@ -506,6 +536,7 @@ class ChickenJump extends MiniGameBase {
         crumbly: c.isCrumblyRung(lane),
         crumble: crumble,
         lit: lane == c.hopper.lane && c.alive,
+        anticipate: anticipate,
       );
     }
 
@@ -551,6 +582,15 @@ class ChickenJump extends MiniGameBase {
     final gap = c.lavaY - c.visualRungY();
     if (gap <= 0) return 1;
     return (1.0 - (gap / _Tuning.dangerGapPx)).clamp(0.0, 1.0);
+  }
+
+  /// 0..1 strength of the next-rung anticipation cue: a calm pulse when safe
+  /// that swells (and pulses faster, via the phase) as the lava closes in.
+  double _anticipationPulse(double danger) {
+    final d = danger.clamp(0.0, 1.0);
+    final hz = _Tuning.nextRungPulseHz * (1.0 + d);
+    final throb = 0.5 + 0.5 * math.sin(_animClock * hz * math.pi);
+    return (0.35 + 0.65 * d) * (0.6 + 0.4 * throb);
   }
 
   /// 0..1 fraction of the tower climbed (for the altitude bar).
