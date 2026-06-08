@@ -8,7 +8,9 @@ import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/minigames/one_touch_soccer/one_touch_soccer.dart';
 void main() {
-  test('render soccer preview', () async {
+  test('render soccer preview (vertical N/S pitch)', () async {
+    // Tall portrait arena: goals sit at the TOP and BOTTOM, turf in horizontal
+    // bands — the rendered PNG should show the north/south pitch.
     const size = Size(900, 1400);
     final players = [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)];
     final ctx = MiniGameContext(players: players, arena: size, rng: SeededRng(3), zones: ZoneLayout.forPlayers(4));

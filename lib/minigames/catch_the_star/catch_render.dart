@@ -368,15 +368,15 @@ class CatchRenderer {
     final n = points.length;
     final p = pulse.clamp(0.0, 1.0);
 
-    // Glow underlay (one blurred stroke per segment, widening toward the head).
-    final glowPaint = Paint()
-      ..strokeCap = StrokeCap.round
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, headRadius * 0.5);
+    // Glow underlay: a wide, faint solid stroke per segment widening toward the
+    // head. A translucent over-wide stroke reads like a soft halo at a fraction
+    // of the cost of a per-segment blur (no MaskFilter in this per-frame loop).
+    final glowPaint = Paint()..strokeCap = StrokeCap.round;
     for (var i = 0; i < n - 1; i++) {
       final frac = 1.0 - i / (n - 1); // 1 at head, 0 at tail
       glowPaint
-        ..strokeWidth = headRadius * _trailWidthFactor * frac * 1.6 + 0.5
-        ..color = glow.withValues(alpha: (0.32 * frac * frac).clamp(0.0, 1.0));
+        ..strokeWidth = headRadius * _trailWidthFactor * frac * 2.4 + 1.0
+        ..color = glow.withValues(alpha: (0.20 * frac * frac).clamp(0.0, 1.0));
       canvas.drawLine(points[i], points[i + 1], glowPaint);
     }
 
@@ -449,14 +449,23 @@ class CatchRenderer {
   ) {
     final s = strength.clamp(0.0, 1.0);
     if (s <= 0.02) return;
+    // Two stacked solid strokes (wide+faint under thin+crisp) read like a soft
+    // guide line without a per-frame blur.
+    canvas.drawLine(
+      from,
+      to,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = 4.0 + 3.0 * s
+        ..color = color.withValues(alpha: 0.16 * s),
+    );
     canvas.drawLine(
       from,
       to,
       Paint()
         ..strokeCap = StrokeCap.round
         ..strokeWidth = 1.5 + 1.5 * s
-        ..color = color.withValues(alpha: 0.35 * s)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+        ..color = color.withValues(alpha: 0.4 * s),
     );
   }
 

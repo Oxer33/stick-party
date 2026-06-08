@@ -160,12 +160,12 @@ class FallingRenderer {
     final rrect = RRect.fromRectAndRadius(
         inset, Radius.circular(math.max(6.0, band.height * 0.05)));
 
-    // Outer glow (single soft pass), stronger when a hazard is near.
+    // Soft outer aura: a wide, faint stroke (no blur) under the crisp core line.
+    // Widens with danger instead of blurring more — cheap per band.
     final glow = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(2.0, band.height * 0.02)
-      ..color = color.withValues(alpha: (0.16 + 0.34 * d) * a)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 + 6 * d);
+      ..strokeWidth = math.max(3.0, band.height * 0.035 + 6 * d)
+      ..color = color.withValues(alpha: (0.10 + 0.2 * d) * a);
     canvas.drawRRect(rrect, glow);
 
     // Crisp core line.
@@ -219,13 +219,16 @@ class FallingRenderer {
     final w = hazardSize * (1.0 + 0.4 * p);
     final h = hazardSize * _telegraphMaxH;
 
-    // Soft halo.
-    final halo = Paint()
-      ..color = _telegraph.withValues(alpha: 0.10 + 0.28 * p)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, hazardSize * 0.22);
+    // Soft halo: two stacked translucent ovals (wide+faint under tight+stronger)
+    // approximate the blur cheaply per hazard.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset(laneX, groundY), width: w * 1.3, height: h * 1.5),
+      Paint()..color = _telegraph.withValues(alpha: 0.06 + 0.16 * p),
+    );
     canvas.drawOval(
       Rect.fromCenter(center: Offset(laneX, groundY), width: w, height: h),
-      halo,
+      Paint()..color = _telegraph.withValues(alpha: 0.10 + 0.24 * p),
     );
 
     // Crisp ring.
@@ -289,12 +292,16 @@ class FallingRenderer {
     final near = (1.0 - (dist / (size * 6)).clamp(0.0, 1.0)).clamp(0.0, 1.0);
     final w = size * (0.5 + _dropShadowMax * near);
     final h = size * (0.18 + 0.18 * near);
-    final shadow = Paint()
-      ..color = _black.withValues(alpha: 0.18 + 0.32 * near)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, size * 0.18);
+    // Two stacked translucent ovals (wide+faint under tight+darker) fake the soft
+    // shadow without a per-hazard blur.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset(center.dx, groundY), width: w * 1.3, height: h * 1.5),
+      Paint()..color = _black.withValues(alpha: 0.10 + 0.16 * near),
+    );
     canvas.drawOval(
       Rect.fromCenter(center: Offset(center.dx, groundY), width: w, height: h),
-      shadow,
+      Paint()..color = _black.withValues(alpha: 0.16 + 0.26 * near),
     );
   }
 
@@ -494,15 +501,23 @@ class FallingRenderer {
   static void drawContactShadow(
       Canvas canvas, Offset groundCenter, double width, bool alive) {
     if (!alive) return;
+    // Two stacked translucent ovals (wide+faint under tight+darker) fake the
+    // soft edge without a per-runner blur.
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: groundCenter,
+        width: width * (_contactShadowW + 0.5),
+        height: width * (_contactShadowH + 0.18),
+      ),
+      Paint()..color = _black.withValues(alpha: 0.14),
+    );
     canvas.drawOval(
       Rect.fromCenter(
         center: groundCenter,
         width: width * _contactShadowW,
         height: width * _contactShadowH,
       ),
-      Paint()
-        ..color = _black.withValues(alpha: 0.34)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, width * 0.18),
+      Paint()..color = _black.withValues(alpha: 0.26),
     );
   }
 
@@ -546,16 +561,16 @@ class FallingRenderer {
       ..moveTo(tip.dx + back * size, tip.dy - size * 0.62)
       ..lineTo(tip.dx, tip.dy)
       ..lineTo(tip.dx + back * size, tip.dy + size * 0.62);
-    // Soft glow underlay.
+    // Soft aura underlay: a wide, faint stroke (no blur) beneath the crisp
+    // chevron + white core — the layered widths fake the glow cheaply.
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round
         ..strokeCap = StrokeCap.round
-        ..strokeWidth = math.max(2.0, size * 0.5)
-        ..color = color.withValues(alpha: 0.18 + 0.22 * p)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, size * 0.4),
+        ..strokeWidth = math.max(2.4, size * 0.62)
+        ..color = color.withValues(alpha: 0.12 + 0.16 * p),
     );
     // Crisp color stroke so it reads over the dark band.
     canvas.drawPath(
@@ -625,14 +640,12 @@ class FallingRenderer {
     final pip = math.max(4.0, band.height * 0.02);
     final c = Offset(band.left + pad + pip, band.top + pad + pip);
 
-    // Soft glow.
+    // Soft glow: two stacked translucent halos (wide+faint, tight+stronger)
+    // instead of a per-band blur.
     canvas.drawCircle(
-      c,
-      pip * 2.0,
-      Paint()
-        ..color = color.withValues(alpha: 0.35 * a)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, pip),
-    );
+        c, pip * 2.6, Paint()..color = color.withValues(alpha: 0.14 * a));
+    canvas.drawCircle(
+        c, pip * 2.0, Paint()..color = color.withValues(alpha: 0.26 * a));
     // Outer ring.
     canvas.drawCircle(
       c,

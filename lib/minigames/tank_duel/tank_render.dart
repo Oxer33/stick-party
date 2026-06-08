@@ -262,13 +262,16 @@ class TankRenderer {
   // ── Destructible cover crate ───────────────────────────────────────────────
   static void drawCrate(Canvas canvas, CrateView c) {
     final rect = c.rect;
-    final dropShadow = Paint()
-      ..color = _black.withValues(alpha: 0.35)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+    // Cheap soft shadow: two stacked translucent rounded fills (a wider, fainter
+    // pad under a tighter one) instead of a GPU-costly blur, drawn every frame.
+    final base = rect.translate(0, rect.height * 0.12);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.translate(0, rect.height * 0.12),
-          const Radius.circular(4)),
-      dropShadow,
+      RRect.fromRectAndRadius(base.inflate(4), const Radius.circular(7)),
+      Paint()..color = _black.withValues(alpha: 0.14),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(base.inflate(1.5), const Radius.circular(5)),
+      Paint()..color = _black.withValues(alpha: 0.24),
     );
 
     final damage = c.maxHp <= 0 ? 0.0 : 1.0 - (c.hp / c.maxHp).clamp(0.0, 1.0);
@@ -384,16 +387,19 @@ class TankRenderer {
     final up = t.edge.outward;
     final side = t.edge.along;
 
-    // Ground contact shadow (an ellipse hugging the edge).
+    // Ground contact shadow: two stacked translucent ovals (wide+faint under
+    // tight+darker) fake a soft edge far cheaper than a per-frame blur.
     final shadowCenter = t.base + up * (r * _shadowDrop);
     canvas.save();
     canvas.translate(shadowCenter.dx, shadowCenter.dy);
     canvas.rotate(math.atan2(side.dy, side.dx));
     canvas.drawOval(
-      Rect.fromCenter(center: Offset.zero, width: r * 2.8, height: r * 0.9),
-      Paint()
-        ..color = _black.withValues(alpha: 0.4)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.22),
+      Rect.fromCenter(center: Offset.zero, width: r * 3.1, height: r * 1.15),
+      Paint()..color = _black.withValues(alpha: 0.16),
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset.zero, width: r * 2.7, height: r * 0.85),
+      Paint()..color = _black.withValues(alpha: 0.30),
     );
     canvas.restore();
 
@@ -470,15 +476,13 @@ class TankRenderer {
       );
     canvas.drawRRect(rrect, body);
 
-    // Top highlight strip.
-    final hi = Paint()
-      ..color = _white.withValues(alpha: 0.22 + flashK * 0.4)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.18);
+    // Top highlight strip: a soft translucent sheen (rounded RRect, no blur).
+    final hi = Paint()..color = _white.withValues(alpha: 0.18 + flashK * 0.34);
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(
-            center: Offset(0, -h * 0.28), width: w * 0.82, height: h * 0.26),
-        Radius.circular(h * 0.2),
+            center: Offset(0, -h * 0.28), width: w * 0.78, height: h * 0.22),
+        Radius.circular(h * 0.18),
       ),
       hi,
     );
@@ -563,13 +567,17 @@ class TankRenderer {
     final len = r * (1.4 + 1.6 * a);
     final perp = Offset(-dir.dy, dir.dx);
     final tip = muzzle + dir * len;
-    // Outer glow.
+    // Outer glow: two stacked translucent circles (wide+faint, tight+brighter)
+    // approximate the bloom without a per-shot blur.
     canvas.drawCircle(
       muzzle,
-      r * (0.9 + 0.8 * a),
-      Paint()
-        ..color = _muzzleCore.withValues(alpha: 0.5 * a)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.4),
+      r * (1.1 + 0.9 * a),
+      Paint()..color = _muzzleCore.withValues(alpha: 0.22 * a),
+    );
+    canvas.drawCircle(
+      muzzle,
+      r * (0.7 + 0.6 * a),
+      Paint()..color = _muzzleCore.withValues(alpha: 0.4 * a),
     );
     // Star burst (flame petals).
     final flame = Path()
@@ -629,9 +637,9 @@ class TankRenderer {
     // glow streak so the shell reads as a fast tracer.
     final n = s.trail.length;
     if (n >= 2) {
-      final glow = Paint()
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+      // A wide, faint stroke under the crisp tracer fakes the soft glow without
+      // a per-segment blur (cheap layered-stroke trick).
+      final glow = Paint()..strokeCap = StrokeCap.round;
       final paint = Paint()..strokeCap = StrokeCap.round;
       for (var i = 0; i < n - 1; i++) {
         final f = 1 - i / n; // newest strongest
@@ -655,14 +663,13 @@ class TankRenderer {
       }
     }
 
-    // Glow + hot core.
+    // Glow + hot core: two stacked translucent halos (wide+faint, tight+stronger)
+    // replace the per-shell blur, then the solid body + bright center.
+    final halo = _blend(s.color, _shellHot, 0.5);
     canvas.drawCircle(
-      s.pos,
-      _shellR * 1.9,
-      Paint()
-        ..color = _blend(s.color, _shellHot, 0.5).withValues(alpha: 0.5)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
-    );
+        s.pos, _shellR * 2.2, Paint()..color = halo.withValues(alpha: 0.22));
+    canvas.drawCircle(
+        s.pos, _shellR * 1.5, Paint()..color = halo.withValues(alpha: 0.4));
     canvas.drawCircle(s.pos, _shellR, Paint()..color = s.color);
     canvas.drawCircle(s.pos, _shellR * 0.5, Paint()..color = _shellHot);
   }

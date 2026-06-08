@@ -25,11 +25,10 @@ Future<void> main() async {
     debugPrint('[STICK_PARTY] FlutterError: ${details.exceptionAsString()}');
   };
 
-  // Allow both portrait and landscape (party games are played flat / shared).
+  // Lock to portrait: every minigame is designed for the tall (north/south)
+  // screen, with the device held upright and shared around it.
   await SystemChrome.setPreferredOrientations(<DeviceOrientation>[
     DeviceOrientation.portraitUp,
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
   ]);
 
   final Persistence? persistence = await _openPersistence();

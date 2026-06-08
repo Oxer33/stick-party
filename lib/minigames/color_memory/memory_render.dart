@@ -46,7 +46,6 @@ class MemoryRenderer {
   static const double _clusterCornerFactor = 0.10; // cluster plate corner / side
   static const double _clusterPadFactor = 0.10; // inset of pads inside plate
   static const double _baseAlpha = 0.34; // resting pad fill alpha
-  static const double _bloomGlowFactor = 0.55; // bloom blur / half
   static const double _hubGapFactor = 0.30; // hub hole / half (cluster center)
   static const double _ringFactor = 1.10; // cursor ring radius / quadrant
   static const double _seqDiscFactor = 0.085; // center disc radius / minSide
@@ -165,12 +164,10 @@ class MemoryRenderer {
   }) {
     final rr = RRect.fromRectAndRadius(
         plate, Radius.circular(plate.width * _clusterCornerFactor));
-    // Drop shadow for depth.
+    // Drop shadow for depth: a plain offset fill (no per-frame blur).
     canvas.drawRRect(
-      rr.shift(Offset(0, plate.width * 0.02)),
-      Paint()
-        ..color = _black.withValues(alpha: 0.45)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, plate.width * 0.04),
+      rr.shift(Offset(0, plate.width * 0.035)),
+      Paint()..color = _black.withValues(alpha: 0.35),
     );
     canvas.drawRRect(
       rr,
@@ -182,13 +179,13 @@ class MemoryRenderer {
         ? _blend(accent, _white, 0.4)
         : (alive ? _consoleEdge : const Color(0x22557799));
     if (done && alive) {
+      // Wide faint solid stroke as a cheap victory bloom (no per-frame blur).
       canvas.drawRRect(
         rr,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(2.0, plate.width * 0.03)
-          ..color = accent.withValues(alpha: 0.5)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, plate.width * 0.04),
+          ..strokeWidth = math.max(4.0, plate.width * 0.07)
+          ..color = accent.withValues(alpha: 0.28),
       );
     }
     canvas.drawRRect(
@@ -212,14 +209,16 @@ class MemoryRenderer {
     final baseA = alive ? _baseAlpha : 0.10;
     final fillA = (baseA + (1.0 - baseA) * bloom).clamp(0.0, 1.0);
 
-    // Soft outer bloom halo when lit.
+    // Soft outer bloom halo when lit: two stacked translucent inflated plates
+    // (wider+fainter, then tighter+brighter) fake a glow without a per-pad blur.
     if (bloom > 0.02 && alive) {
       canvas.drawRRect(
-        RRect.fromRectAndRadius(cell.inflate(cell.width * 0.06), radius),
-        Paint()
-          ..color = color.withValues(alpha: 0.5 * bloom)
-          ..maskFilter =
-              MaskFilter.blur(BlurStyle.normal, cell.width * _bloomGlowFactor),
+        RRect.fromRectAndRadius(cell.inflate(cell.width * 0.16), radius),
+        Paint()..color = color.withValues(alpha: 0.16 * bloom),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(cell.inflate(cell.width * 0.07), radius),
+        Paint()..color = color.withValues(alpha: 0.28 * bloom),
       );
     }
 
@@ -271,14 +270,13 @@ class MemoryRenderer {
     );
     final rr =
         RRect.fromRectAndRadius(ring, Radius.circular(cell.width * 0.28));
-    // Glow.
+    // Glow: a wide faint solid stroke under the crisp core (no per-frame blur).
     canvas.drawRRect(
       rr,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(2.0, cell.width * (0.07 + 0.04 * p))
-        ..color = _white.withValues(alpha: 0.5 + 0.4 * p)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, cell.width * 0.10),
+        ..strokeWidth = math.max(4.0, cell.width * (0.14 + 0.05 * p))
+        ..color = _white.withValues(alpha: (0.22 + 0.18 * p).clamp(0.0, 1.0)),
     );
     // Core.
     canvas.drawRRect(
@@ -314,14 +312,10 @@ class MemoryRenderer {
           : startX + span * (i / (sequenceLength - 1));
       final done = i < progress;
       if (done && alive) {
+        // Wide faint solid disc under the bright pip fakes the glow cheaply.
+        canvas.drawCircle(Offset(x, y), r * 2.4,
+            Paint()..color = accent.withValues(alpha: 0.18));
         canvas.drawCircle(Offset(x, y), r * 1.5, fill);
-        canvas.drawCircle(
-          Offset(x, y),
-          r * 1.5,
-          Paint()
-            ..color = accent.withValues(alpha: 0.4)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, r),
-        );
       } else {
         canvas.drawCircle(Offset(x, y), r, done ? fill : dim);
       }
@@ -427,13 +421,9 @@ class MemoryRenderer {
       final color = palette[sequence[i].clamp(0, palette.length - 1)];
       final lit = watching && i < shownCount;
       if (lit) {
-        canvas.drawCircle(
-          Offset(x, y),
-          r * 2.2,
-          Paint()
-            ..color = color.withValues(alpha: 0.45)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 1.4),
-        );
+        // Wide faint solid disc under the bright dot fakes the glow cheaply.
+        canvas.drawCircle(Offset(x, y), r * 3.0,
+            Paint()..color = color.withValues(alpha: 0.18));
         canvas.drawCircle(Offset(x, y), r * 1.5, Paint()..color = color);
       } else {
         canvas.drawCircle(

@@ -198,15 +198,14 @@ class ReactionRenderer {
   /// Soft contact shadow ellipse beneath a duelist at ground level. [u] is the
   /// figure scale unit (≈ torso width).
   static void drawContactShadow(Canvas canvas, Offset feet, double u) {
+    // A plain translucent oval grounds the figure without a per-frame blur.
     canvas.drawOval(
       Rect.fromCenter(
         center: feet,
         width: u * _shadowWFactor,
         height: u * _shadowHFactor,
       ),
-      Paint()
-        ..color = _black.withValues(alpha: 0.34)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, u * 0.22),
+      Paint()..color = _black.withValues(alpha: 0.28),
     );
   }
 
@@ -228,14 +227,14 @@ class ReactionRenderer {
       width: u * (_shadowWFactor + 0.2),
       height: u * (_shadowHFactor + 0.15),
     );
-    // Soft outer glow ring.
+    // Soft outer glow ring: a wide faint solid stroke under the crisp core ring
+    // (no per-frame blur).
     canvas.drawOval(
       rect,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.5, u * 0.16)
-        ..color = color.withValues(alpha: a * 0.45)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, u * 0.2),
+        ..strokeWidth = math.max(3.0, u * 0.3)
+        ..color = color.withValues(alpha: a * 0.22),
     );
     // Crisp core ring.
     canvas.drawOval(
@@ -384,15 +383,15 @@ class ReactionRenderer {
       ..moveTo(from.dx, from.dy)
       ..quadraticBezierTo(mid.dx, mid.dy, to.dx, to.dy);
 
-    // Soft outer glow.
+    // Soft outer glow: a wide faint solid stroke under the white-hot core
+    // (no per-frame blur).
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round
-        ..strokeWidth = (10 + 14 * s)
-        ..color = color.withValues(alpha: 0.35 * s)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+        ..strokeWidth = (12 + 18 * s)
+        ..color = color.withValues(alpha: 0.18 * s),
     );
     // White-hot core.
     canvas.drawPath(

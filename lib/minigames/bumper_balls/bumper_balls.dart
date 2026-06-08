@@ -12,13 +12,16 @@ import 'bumper_render.dart';
 /// circular platform and shoves rivals off the edge.
 ///
 /// CONTROL (the heart of it — full player agency, one touch; mirrors Sumo):
-///  * Each ball has a player-coloured AIM ARROW that constantly sweeps around
-///    it, so you choose WHERE to bump.
-///  * Quick TAP  → a small nudge in the arrow's current direction (positioning,
-///    or a panic save back toward the centre).
-///  * HOLD then release → the aim LOCKS and a charge meter fills; releasing
-///    fires a powerful bump in the locked direction (power ∝ charge).
-///  Nothing is ever auto-aimed: the player times the sweep and picks the power.
+///  * There is NO rotating idle arrow. The aim ALWAYS tracks the nearest
+///    opponent, so a tap or charged bump always strikes straight at it — the
+///    player picks WHEN and HOW HARD, never WHERE-by-timing-a-sweep.
+///  * Quick TAP  → a small nudge straight toward the nearest opponent
+///    (positioning / pressure), or a panic save toward the centre when bots
+///    auto-target the edge.
+///  * HOLD then release → a charge meter fills; releasing fires a powerful bump
+///    toward the nearest opponent (power ∝ charge). While charging, a telegraph
+///    points at the target so the player sees exactly where the bump will land.
+///  Nothing is auto-fired: the player still decides every shove.
 ///
 /// Feel: a slick-but-grippy floor so bumps carry without instantly ejecting an
 /// idle ball; elastic caroms (PushArena) plus a speed- and head-on-scaled
@@ -55,7 +58,8 @@ class BumperBalls extends MiniGameBase {
   static const double _spawnRadiusFactor = 0.55;
 
   // ── Aim + charge control tuning (mirrors Sumo) ──────────────────────────────
-  static const double _aimSweepSpeed = 2.0; // rad/s, ~3.1s per revolution
+  // No idle sweep: the aim always tracks the nearest opponent (see
+  // [_tickBallStates] / [_aimAtNearest]), so a tap/charge strikes straight at it.
   static const double _chargeTimeSec = 0.6; // hold time to full charge
   static const double _cooldownSec = 0.24; // snappy recovery between bumps
   static const double _dashBase = 1.4; // quick tap = a small nudge
@@ -158,7 +162,9 @@ class BumperBalls extends MiniGameBase {
     final spawnRadius = _ringRadius * _spawnRadiusFactor;
     for (var i = 0; i < count; i++) {
       final p = ctx.players[i];
-      final angle = (i / count) * math.pi * 2 - math.pi / 2;
+      // Start at +90° (bottom) so player 0 spawns in their own bottom zone and
+      // 2-player duels face off north/south up the tall portrait screen.
+      final angle = (i / count) * math.pi * 2 + math.pi / 2;
       final pos =
           _center + Offset(math.cos(angle), math.sin(angle)) * spawnRadius;
       _arena.add(Body(id: p.id, pos: pos, radius: _bodyRadius));
@@ -193,7 +199,9 @@ class BumperBalls extends MiniGameBase {
       case InputPhase.up:
         if (s.charging) {
           s.charging = false;
-          _commitDash(input.playerId, body, s.aim, s.charge);
+          // Fire straight at the nearest opponent (never a stale swept angle).
+          final aim = _aimAtNearest(input.playerId) ?? s.aim;
+          _commitDash(input.playerId, body, aim, s.charge);
           s.charge = 0;
         }
       case InputPhase.holdTick:
@@ -225,19 +233,32 @@ class BumperBalls extends MiniGameBase {
 
   // ── Per-frame ball state ─────────────────────────────────────────────────────
 
-  /// Sweep the aim when idle, fill charge while held, relax squash, age trail
+  /// Aim always tracks the nearest opponent (no idle sweep — a tap/charge
+  /// strikes straight at it), fill charge while held, relax squash, age trail
   /// and recover cooldown — all frame-rate independent.
   void _tickBallStates(double dt) {
     for (final entry in _ball.entries) {
       final s = entry.value;
-      final alive = _isAlive(entry.key);
-      if (s.charging && alive) {
-        s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
-      } else if (alive) {
-        s.aim = _wrap(s.aim + _aimSweepSpeed * dt);
+      if (_isAlive(entry.key)) {
+        final a = _aimAtNearest(entry.key);
+        if (a != null) s.aim = a;
+        if (s.charging) {
+          s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
+        }
       }
       s.tick(dt, _squashDecayPerSec);
     }
+  }
+
+  /// Angle from a ball to the nearest alive opponent, or null when none remain
+  /// (e.g. the last ball standing) — then the aim simply holds its last heading.
+  double? _aimAtNearest(int playerId) {
+    final self = _bodyOf(playerId);
+    final target = _nearestOpponentPos(playerId);
+    if (self == null || target == null) return null;
+    final d = target - self.pos;
+    if (d.distance < 1e-6) return null;
+    return math.atan2(d.dy, d.dx);
   }
 
   void _tickImpacts(double dt) {
@@ -567,8 +588,9 @@ class BumperBalls extends MiniGameBase {
         displayNumber: b.id + 1,
       );
 
-      // The aim arrow + charge — the player's control, drawn on top.
-      if (state != null) {
+      // No idle arrow. While charging, a telegraph points straight at the
+      // nearest opponent (where the bump will land) with a charge ground-arc.
+      if (state != null && state.charging) {
         BumperRenderer.drawAim(
           canvas,
           b.pos,
@@ -576,9 +598,6 @@ class BumperBalls extends MiniGameBase {
           color,
           aim: state.aim,
           charge: state.charge,
-          charging: state.charging,
-          ready: state.ready,
-          t: _animClock,
         );
       }
     }
@@ -614,10 +633,6 @@ class BumperBalls extends MiniGameBase {
     return const Color(0xFFFFFFFF);
   }
 
-  // TEMP-PROBE
-  double get probeElapsed => _elapsed;
-  Set<int> get probeEliminated => _eliminated;
-
   /// Stable order-independent key for a pair of player ids (0..3).
   static int _pairKey(int a, int b) => a < b ? a * 8 + b : b * 8 + a;
 
@@ -638,14 +653,6 @@ class BumperBalls extends MiniGameBase {
     final d = v.distance;
     if (d < 1e-6) return Offset.zero;
     return v / d;
-  }
-
-  static double _wrap(double a) {
-    const twoPi = math.pi * 2;
-    var r = a % twoPi;
-    if (r > math.pi) r -= twoPi;
-    if (r < -math.pi) r += twoPi;
-    return r;
   }
 }
 

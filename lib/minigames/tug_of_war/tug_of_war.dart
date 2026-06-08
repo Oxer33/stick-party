@@ -12,13 +12,20 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'tug_render.dart';
 
-/// Side of the rope. Left pulls the marker toward -1, right toward +1.
-enum _Side { left, right }
+/// Side of the rope. Top pulls the marker toward -1, bottom toward +1. The rope
+/// runs vertically (north/south) down the tall portrait screen.
+enum _Side { top, bottom }
 
-/// Tug of War — two teams MASH to drag a rope marker across their goal line and
-/// yank the losers into a central mud/lava pit.
+/// Tug of War — two teams MASH to drag a VERTICAL rope marker across their goal
+/// line (north or south) and yank the losers into a central mud/lava pit.
 ///
-/// Sides split by [Team] when set (duel / 2v2), else by even/odd player id.
+/// The board is rotated to use the tall screen: a TOP team and a BOTTOM team
+/// haul a vertical rope, the marker rides up/down, and the first side to drag it
+/// past its goal line (top edge or bottom edge) wins — the losing team is then
+/// yanked off their feet and ragdoll-flung off the top/bottom into the pit.
+///
+/// Sides split by [Team] when set (duel / 2v2): Team.a = top, Team.b = bottom;
+/// otherwise by even/odd player id (even = top, odd = bottom).
 ///
 /// Skill layer (still one-touch) — rhythm beats blind spam:
 ///  * Each side has a decaying [TapMashMeter]: a tap adds effort, idle bleeds it
@@ -33,8 +40,8 @@ enum _Side { left, right }
 ///    ±threshold wins, and at the time limit the side nearer its goal wins, so
 ///    the round ALWAYS resolves.
 ///  * **Loser comedy**: the losing team is yanked off its feet and RAGDOLL-flies
-///    into the pit with a big SPLASH (mud + lava particles), "SPLASH!" / "WIN!"
-///    popups, slow-mo and a heavy shake.
+///    toward the winner's edge with a big SPLASH (mud + lava particles),
+///    "SPLASH!" / "WIN!" popups, slow-mo and a heavy shake.
 ///
 /// Bots warm up (~1s grace) then tap on a [BotProfile] cadence; their timing
 /// scatters around the beat by accuracy, so easy bots hit the sweet spot rarely
@@ -86,22 +93,23 @@ class TugOfWar extends MiniGameBase {
   static const double _botJitterBase = 0.06; // sloppier at low accuracy
 
   // ── Layout tuning (fractions of arena) ──────────────────────────────────────
-  static const double _ropeInsetFrac = 0.1; // team hands inset from edges
-  static const double _midYFrac = 0.52; // foot / action line height
-  static const double _ropeSagFrac = 0.055; // catenary sag depth / height
-  static const double _goalInsetFrac = 0.17; // goal line inset from edges
-  static const double _runnerGapFrac = 0.075; // spacing per figure within a side
-  static const double _runnerBackoffFrac = 0.04; // figures behind the goal line
-  static const double _pitWidthFrac = 0.36; // pit ellipse width / width
-  static const double _pitHeightFrac = 0.11; // pit ellipse height / height
-  static const double _groundTopFrac = 0.4; // ground slab starts here (frac h)
-  static const double _effortBarFrac = 0.22; // effort bar width / width
-  static const double _beatTrackFrac = 0.6; // HEAVE beat track width / width
-  static const double _beatTrackYFrac = 0.2; // beat track height (frac h)
+  static const double _ropeInsetFrac = 0.1; // team hands inset from edges (Y)
+  static const double _midXFrac = 0.5; // rope / action column (X)
+  static const double _ropeBowFrac = 0.04; // sideways rope wobble depth / width
+  static const double _goalInsetFrac = 0.2; // goal line inset from edges (Y)
+  static const double _runnerGapFrac = 0.16; // spacing per figure across a side
+  static const double _runnerBackoffFrac = 0.025; // figures beyond the goal line
+  static const double _pitWidthFrac = 0.42; // pit ellipse width / width
+  static const double _pitHeightFrac = 0.14; // pit ellipse height / height
+  static const double _crowdBandFrac = 0.14; // dark crowd band height / height
+  static const double _effortBarFrac = 0.34; // effort bar width / width
+  static const double _effortBarInsetFrac = 0.1; // bar Y inset from each edge
+  static const double _beatTrackFrac = 0.62; // HEAVE beat track width / width
+  static const double _beatTrackYFrac = 0.5; // beat track height (frac h)
 
   // ── Figure / feel tuning ────────────────────────────────────────────────────
   static const double _figureScale = 2.0; // bigger, readable pullers
-  static const double _maxLeanRad = 0.42; // max backward lean at full effort
+  static const double _maxLeanRad = 0.3; // max strain tilt at full effort
   static const double _bodyWidthFactor = 3.2; // dust/shadow half-width / torsoW
   static const Color _splashMud = Color(0xFFB8500F);
   static const Color _splashLava = Color(0xFFFFC23A);
@@ -111,18 +119,18 @@ class TugOfWar extends MiniGameBase {
   late Size _size;
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for shimmer/dust
-  double _marker = 0; // [-1, 1]; -1 = left wins, +1 = right wins
+  double _marker = 0; // [-1, 1]; -1 = top wins, +1 = bottom wins
   double _beatPos = 0.5; // 0..1 sweep position of the shared HEAVE beat
   double _beatClock = 0; // phase accumulator for the ping-pong sweep
   bool _beatWasInWindow = true; // edge-detect to re-arm HEAVE once per pass
   bool _resolved = false;
 
-  late double _midY;
-  late double _leftHandX;
-  late double _rightHandX;
-  late double _leftGoalX;
-  late double _rightGoalX;
-  late double _centerX;
+  late double _midX;
+  late double _topHandY;
+  late double _bottomHandY;
+  late double _topGoalY;
+  late double _bottomGoalY;
+  late double _centerY;
   late Offset _pitCenter;
   late double _pitRx;
   late double _pitRy;
@@ -139,8 +147,8 @@ class TugOfWar extends MiniGameBase {
     _size = ctx.arena;
     _computeLayout();
 
-    _effort[_Side.left] = _makeEffortMeter();
-    _effort[_Side.right] = _makeEffortMeter();
+    _effort[_Side.top] = _makeEffortMeter();
+    _effort[_Side.bottom] = _makeEffortMeter();
 
     final proportions = StickProportions.hero.scaled(_figureScale);
     // Legs are near-vertical at rest, so pelvis→foot ≈ thigh + shin.
@@ -149,34 +157,43 @@ class TugOfWar extends MiniGameBase {
 
     for (final p in ctx.players) {
       final side = _sideFor(p);
-      final facing = side == _Side.left ? 1.0 : -1.0; // face the rope/center
+      // Facing is fixed up per-figure in [_fixFacings] once roots are known.
       _pullers[p.id] = _Puller(
         slot: p,
         side: side,
         figure: StickFigure(
           proportions: proportions,
           style: _styleFor(Color(p.colorArgb)),
-          facing: facing,
+          facing: 1.0,
         )..setLoco(LocoState.run),
         botInterval: _botInterval(),
         botJitter: _botJitter(),
       );
     }
+    _fixFacings();
     begin();
   }
 
   void _computeLayout() {
-    _midY = _size.height * _midYFrac;
-    _leftHandX = _size.width * _ropeInsetFrac;
-    _rightHandX = _size.width * (1 - _ropeInsetFrac);
-    _leftGoalX = _size.width * _goalInsetFrac;
-    _rightGoalX = _size.width * (1 - _goalInsetFrac);
-    _centerX = _size.width / 2;
+    _midX = _size.width * _midXFrac;
+    _topHandY = _size.height * _ropeInsetFrac;
+    _bottomHandY = _size.height * (1 - _ropeInsetFrac);
+    _topGoalY = _size.height * _goalInsetFrac;
+    _bottomGoalY = _size.height * (1 - _goalInsetFrac);
+    _centerY = _size.height / 2;
     _pitRx = _size.width * _pitWidthFrac * 0.5;
     _pitRy = _size.height * _pitHeightFrac * 0.5;
-    // Pit straddles the foot line so the two teams flank it and the rope sags
-    // into its mouth; its lower half opens beneath the ground line.
-    _pitCenter = Offset(_centerX, _midY + _pitRy * 0.15);
+    // Pit sits dead center; the rope sags into its mouth from both ends.
+    _pitCenter = Offset(_midX, _centerY);
+  }
+
+  /// Make each puller face the rope column: figures left of center face right,
+  /// figures right of center face left, so a spread row grips inward.
+  void _fixFacings() {
+    for (final pl in _pullers.values) {
+      final root = _runnerRoot(pl);
+      pl.figure.facing = root.dx <= _midX ? 1.0 : -1.0;
+    }
   }
 
   TapMashMeter _makeEffortMeter() => TapMashMeter(
@@ -196,13 +213,13 @@ class TugOfWar extends MiniGameBase {
         smearAlpha: 0.28,
       );
 
-  /// Team-aware split: Team.a/Team.b honor explicit teams; otherwise even ids
-  /// pull left, odd ids pull right. Guarantees a non-empty opposing side when
-  /// there are 2+ players.
+  /// Team-aware split: Team.a = top, Team.b = bottom honor explicit teams;
+  /// otherwise even ids pull top, odd ids pull bottom. Guarantees a non-empty
+  /// opposing side when there are 2+ players.
   _Side _sideFor(PlayerSlot p) {
-    if (p.team == Team.a) return _Side.left;
-    if (p.team == Team.b) return _Side.right;
-    return p.id.isEven ? _Side.left : _Side.right;
+    if (p.team == Team.a) return _Side.top;
+    if (p.team == Team.b) return _Side.bottom;
+    return p.id.isEven ? _Side.top : _Side.bottom;
   }
 
   double _botInterval() {
@@ -282,7 +299,8 @@ class TugOfWar extends MiniGameBase {
 
   // ── Tap → effort + on-beat HEAVE + marker pull ──────────────────────────────
 
-  void _tap(int id) => _doTap(id, onBeat: _beatInWindow, precision: _beatPrecision);
+  void _tap(int id) =>
+      _doTap(id, onBeat: _beatInWindow, precision: _beatPrecision);
 
   /// Shared tap path. The rope moves ONLY on a HEAVE — the first in-window tap of
   /// each window pass (the [heaveArmed] latch re-arms when the beat leaves the
@@ -306,8 +324,9 @@ class TugOfWar extends MiniGameBase {
     _fireHeave(pl, prec);
 
     // Stronger side-effort gives a small bonus, so holding a fast rhythm helps.
-    final pull = lerpD(_heavePullMin, _heavePullMax, prec) * (1.0 + 0.25 * effort);
-    _marker += pl.side == _Side.left ? -pull : pull;
+    final pull =
+        lerpD(_heavePullMin, _heavePullMax, prec) * (1.0 + 0.25 * effort);
+    _marker += pl.side == _Side.top ? -pull : pull;
     _marker = clampD(_marker, -_winThreshold, _winThreshold);
   }
 
@@ -400,7 +419,7 @@ class TugOfWar extends MiniGameBase {
   /// on-field HUD shows the leading side. Teammates share their side value.
   void _publishScores() {
     for (final pl in _pullers.values) {
-      final advantage = pl.side == _Side.left
+      final advantage = pl.side == _Side.top
           ? math.max(0.0, -_marker)
           : math.max(0.0, _marker);
       setScore(pl.slot.id, advantage);
@@ -411,12 +430,12 @@ class TugOfWar extends MiniGameBase {
 
   void _resolveIfDecided() {
     if (_marker <= -_winThreshold) {
-      _resolve(_Side.left);
+      _resolve(_Side.top);
     } else if (_marker >= _winThreshold) {
-      _resolve(_Side.right);
+      _resolve(_Side.bottom);
     } else if (_elapsed >= _timeLimit) {
-      // Nearer goal wins; dead-even falls to left for determinism.
-      _resolve(_marker <= 0 ? _Side.left : _Side.right);
+      // Nearer goal wins; dead-even falls to top for determinism.
+      _resolve(_marker <= 0 ? _Side.top : _Side.bottom);
     }
   }
 
@@ -424,17 +443,19 @@ class TugOfWar extends MiniGameBase {
     if (_resolved) return;
     _resolved = true;
 
-    // Comedy: losers get yanked off their feet and ragdoll-fly into the pit.
-    final groundY = _pitCenter.dy + _pitRy;
+    // Comedy: losers get yanked off their feet and ragdoll-fly toward the
+    // winner's edge (up if top wins, down if bottom wins) and off-screen.
+    final winnerIsTop = winner == _Side.top;
+    // Floor placed past the far edge so the loser sails off rather than landing.
+    final groundY = winnerIsTop ? -_size.height : _size.height * 2;
     for (final pl in _pullers.values) {
       if (pl.side == winner) continue;
       final root = _runnerRoot(pl);
-      final toPit = _pitCenter - root;
-      final dir =
-          toPit.distance < 1e-3 ? const Offset(0, -1) : toPit / toPit.distance;
-      // Fling up-and-inward toward the pit so the arc lands in the mud.
-      final fling = Offset(dir.dx * _size.width * 0.5, -_size.height * 0.42);
-      pl.figure.enterRagdoll(root, groundY, fling);
+      // Fling toward the winner's edge: dominant vertical lift in that direction
+      // plus a small inward nudge so the arc carries over the pit.
+      final vy = winnerIsTop ? -_size.height * 0.55 : _size.height * 0.55;
+      final vx = (_midX - root.dx).sign * _size.width * 0.12;
+      pl.figure.enterRagdoll(root, groundY, Offset(vx, vy));
     }
 
     _splashAndPopups(winner);
@@ -478,10 +499,9 @@ class TugOfWar extends MiniGameBase {
     _juice.popup(_pitCenter.translate(0, -_pitRy * 2.2), 'SPLASH!', _splashLava,
         size: 40);
 
-    // "WIN!" over the winning side.
-    final winX = winner == _Side.left ? _leftGoalX : _rightGoalX;
-    _juice.popup(Offset(winX, _midY - _footReach * 1.4), 'WIN!',
-        _colorOf(_anyWinnerId(winner)),
+    // "WIN!" over the winning side's goal line.
+    final winY = winner == _Side.top ? _topGoalY : _bottomGoalY;
+    _juice.popup(Offset(_midX, winY), 'WIN!', _colorOf(_anyWinnerId(winner)),
         size: 36);
   }
 
@@ -501,10 +521,10 @@ class TugOfWar extends MiniGameBase {
     canvas.translate(o.dx, o.dy);
 
     TugRenderer.drawBackground(canvas, size);
-    TugRenderer.drawGround(canvas, size, size.height * _groundTopFrac);
+    TugRenderer.drawCrowdBands(canvas, size, _crowdBandFrac);
     TugRenderer.drawPit(canvas, _pitCenter, _pitRx, _pitRy, _animClock);
     TugRenderer.drawFieldLines(
-        canvas, size, _midY, _centerX, _leftGoalX, _rightGoalX);
+        canvas, size, _midX, _centerY, _topGoalY, _bottomGoalY);
 
     _drawTeamsAndRope(canvas);
     _drawEffortBars(canvas);
@@ -522,20 +542,20 @@ class TugOfWar extends MiniGameBase {
       (_marker.abs() / _winThreshold).clamp(0.0, 1.0);
 
   void _drawTeamsAndRope(Canvas canvas) {
-    final leftLead = _colorOf(_frontPullerId(_Side.left));
-    final rightLead = _colorOf(_frontPullerId(_Side.right));
+    final topLead = _colorOf(_frontPullerId(_Side.top));
+    final bottomLead = _colorOf(_frontPullerId(_Side.bottom));
 
-    // Rope first (behind the pullers' hands), sagging to the knot.
+    // Rope first (behind the pullers' hands), running vertically to the knot.
     final knot = _knotPos();
-    final sag = _size.height * _ropeSagFrac;
+    final bow = _size.width * _ropeBowFrac;
     TugRenderer.drawRope(
       canvas,
-      Offset(_leftHandX, _midY),
-      Offset(_rightHandX, _midY),
+      Offset(_midX, _topHandY),
+      Offset(_midX, _bottomHandY),
       knot,
-      sag,
-      leftLead,
-      rightLead,
+      bow,
+      topLead,
+      bottomLead,
     );
 
     // Pullers: shadow + dust under each, then the leaning/straining figure.
@@ -547,7 +567,7 @@ class TugOfWar extends MiniGameBase {
       if (!pl.figure.isRagdoll) {
         TugRenderer.drawContactShadow(canvas, feet, _bodyW);
         final effort = _effort[pl.side]?.progress ?? 0.0;
-        final dustDir = pl.side == _Side.left ? -1.0 : 1.0;
+        final dustDir = root.dx <= _midX ? -1.0 : 1.0;
         TugRenderer.drawFootDust(canvas, feet, _bodyW, effort, _animClock,
             dir: dustDir);
       }
@@ -563,27 +583,30 @@ class TugOfWar extends MiniGameBase {
 
     // Flag marker rides the rope knot last so it sits on top of the rope.
     TugRenderer.drawMarkerFlag(
-        canvas, knot, _marker, leftLead, rightLead, _animClock);
+        canvas, knot, _marker, topLead, bottomLead, _animClock);
   }
 
-  /// Draw a puller leaning back from the rope by an amount that grows with their
+  /// Draw a puller straining against the rope by an amount that grows with their
   /// side's effort (premium body language). Ragdolls render upright (their own
-  /// frame already encodes the tumble). The lean rotates around the feet.
+  /// frame already encodes the tumble). The strain is a tilt that ROTATES the
+  /// figure around its planted feet — the figure never translates off-frame, so
+  /// the top team stays on the tall screen. Top and bottom teams tilt in
+  /// opposite screen directions so the two rows visibly lean against each other.
   void _drawLeaningPuller(Canvas canvas, _Puller pl, Offset root) {
     if (pl.figure.isRagdoll) {
       TugRenderer.drawPuller(canvas, pl.figure, root);
       return;
     }
     final effort = _effort[pl.side]?.progress ?? 0.0;
-    // Lean away from the rope: left team leans left, right leans right. Add a
-    // tiny surge twitch for the player who just heaved.
     final surgeKick = pl.surge > 0 ? 0.06 : 0.0;
-    final lean = (_maxLeanRad * effort + surgeKick) *
-        (pl.side == _Side.left ? 1.0 : -1.0);
+    // Tilt away from the pull, around the feet pivot. Top team leans one way,
+    // bottom team the other, so the rows read as hauling against each other.
+    final dirTilt = pl.side == _Side.top ? -1.0 : 1.0;
+    final tilt = (_maxLeanRad * effort + surgeKick) * dirTilt;
     final pivot = Offset(root.dx, root.dy + _footReach);
     canvas.save();
     canvas.translate(pivot.dx, pivot.dy);
-    canvas.rotate(lean);
+    canvas.rotate(tilt);
     canvas.translate(-pivot.dx, -pivot.dy);
     TugRenderer.drawPuller(canvas, pl.figure, root);
     canvas.restore();
@@ -591,35 +614,37 @@ class TugOfWar extends MiniGameBase {
 
   void _drawEffortBars(Canvas canvas) {
     final barW = _size.width * _effortBarFrac;
-    final barY = _midY - _size.height * 0.16;
-    final leftColor = _colorOf(_frontPullerId(_Side.left));
-    final rightColor = _colorOf(_frontPullerId(_Side.right));
+    final topBarY = _size.height * _effortBarInsetFrac;
+    final bottomBarY = _size.height * (1 - _effortBarInsetFrac);
+    final topColor = _colorOf(_frontPullerId(_Side.top));
+    final bottomColor = _colorOf(_frontPullerId(_Side.bottom));
     TugRenderer.drawEffortBar(
       canvas,
-      Offset(_size.width * 0.26, barY),
+      Offset(_midX, topBarY),
       barW,
-      _effort[_Side.left]?.progress ?? 0.0,
-      _heaveOfSide(_Side.left),
-      leftColor,
+      _effort[_Side.top]?.progress ?? 0.0,
+      _heaveOfSide(_Side.top),
+      topColor,
       dir: -1,
     );
     TugRenderer.drawEffortBar(
       canvas,
-      Offset(_size.width * 0.74, barY),
+      Offset(_midX, bottomBarY),
       barW,
-      _effort[_Side.right]?.progress ?? 0.0,
-      _heaveOfSide(_Side.right),
-      rightColor,
+      _effort[_Side.bottom]?.progress ?? 0.0,
+      _heaveOfSide(_Side.bottom),
+      bottomColor,
       dir: 1,
     );
   }
 
   /// The shared HEAVE beat: a centered rhythm track with a sweet-spot window and
   /// a sweeping marker. Tapping while the marker is inside the window lands a
-  /// HEAVE — this is the visible rhythm cue the whole skill layer hangs on.
+  /// HEAVE — this is the visible rhythm cue the whole skill layer hangs on. Sits
+  /// on the center row, on top of the pit, so both teams read the same beat.
   void _drawBeatTrack(Canvas canvas) {
     final width = _size.width * _beatTrackFrac;
-    final center = Offset(_centerX, _size.height * _beatTrackYFrac);
+    final center = Offset(_midX, _size.height * _beatTrackYFrac);
     TugRenderer.drawBeatTrack(
       canvas,
       center,
@@ -647,27 +672,31 @@ class TugOfWar extends MiniGameBase {
 
   // ── Layout helpers ──────────────────────────────────────────────────────────
 
-  /// Rope knot world position: rides between the goal lines, mapped from the
-  /// marker. Sits slightly below the rope baseline (the sag apex).
+  /// Rope knot world position: rides between the goal lines vertically, mapped
+  /// from the marker. Sits on the rope column (center x).
   Offset _knotPos() {
     final t = (_marker + 1) / 2; // 0..1 over [-1,1]
-    final x = lerpDouble(_leftGoalX, _rightGoalX, t)!;
-    // Knot dips toward the pit mouth so the rope visibly sags into the lava.
-    return Offset(x, _pitCenter.dy - _pitRy * 0.35);
+    final y = lerpDouble(_topGoalY, _bottomGoalY, t)!;
+    return Offset(_midX, y);
   }
 
-  /// Stick root for a puller: stacked just behind their goal line, offset by
-  /// their index within the side so multiple figures don't overlap. Pelvis is
-  /// lifted by [_footReach] so the feet plant on the ground line.
+  /// Stick root for a puller: stacked just beyond their goal line (top team
+  /// above the top line, bottom team below the bottom line), spread across the
+  /// width by their index within the side so multiple figures don't overlap.
+  /// Pelvis is lifted by [_footReach] so the feet plant on the team's foot line.
   Offset _runnerRoot(_Puller pl) {
     final gap = _size.width * _runnerGapFrac;
-    final backoff = _size.width * _runnerBackoffFrac;
+    final backoff = _size.height * _runnerBackoffFrac;
     final index = _indexOnSide(pl);
-    final y = _midY - _footReach;
-    if (pl.side == _Side.left) {
-      return Offset(_leftGoalX - backoff - index * gap, y);
+    final count = _countOnSide(pl.side);
+    // Spread the side's figures symmetrically across the center column.
+    final spreadX = _midX + (index - (count - 1) / 2.0) * gap;
+    if (pl.side == _Side.top) {
+      final y = _topGoalY - backoff - _footReach;
+      return Offset(spreadX, y);
     }
-    return Offset(_rightGoalX + backoff + index * gap, y);
+    final y = _bottomGoalY + backoff - _footReach;
+    return Offset(spreadX, y);
   }
 
   int _indexOnSide(_Puller pl) {
@@ -678,6 +707,14 @@ class TugOfWar extends MiniGameBase {
       i++;
     }
     return i;
+  }
+
+  int _countOnSide(_Side side) {
+    var n = 0;
+    for (final pl in _pullers.values) {
+      if (pl.side == side) n++;
+    }
+    return n;
   }
 
   /// The front (index 0) puller id on a side, used for the team's accent tint.

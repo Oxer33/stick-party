@@ -182,11 +182,12 @@ class ChickenRenderer {
     final rrect = RRect.fromRectAndRadius(
         inset, Radius.circular(math.max(6.0, column.width * 0.06)));
 
+    // Soft neon frame: a wide, faint stroke under the crisp core line fakes the
+    // glow without a per-column blur. Widen with danger instead of blurring more.
     final glow = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(2.0, column.width * 0.03)
-      ..color = color.withValues(alpha: (0.12 + 0.4 * d) * a)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 + 8 * d);
+      ..strokeWidth = math.max(3.0, column.width * 0.05 + 6 * d)
+      ..color = color.withValues(alpha: (0.08 + 0.22 * d) * a);
     canvas.drawRRect(rrect, glow);
 
     final core = Paint()
@@ -245,14 +246,17 @@ class ChickenRenderer {
     final rect = Rect.fromCenter(center: Offset.zero, width: w, height: h);
     final rr = RRect.fromRectAndRadius(rect, Radius.circular(h * 0.4));
 
-    // Lit rung gets a soft halo in the player color.
+    // Lit rung gets a soft halo: two stacked translucent rounded fills (wide+faint
+    // under tight+stronger) instead of a per-rung blur.
     if (lit) {
       canvas.drawRRect(
+        RRect.fromRectAndRadius(rect.inflate(h * 0.8), Radius.circular(h)),
+        Paint()..color = color.withValues(alpha: 0.12),
+      );
+      canvas.drawRRect(
         RRect.fromRectAndRadius(
-            rect.inflate(h * 0.5), Radius.circular(h * 0.7)),
-        Paint()
-          ..color = color.withValues(alpha: 0.28)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.7),
+            rect.inflate(h * 0.4), Radius.circular(h * 0.6)),
+        Paint()..color = color.withValues(alpha: 0.2),
       );
     }
 
@@ -330,13 +334,17 @@ class ChickenRenderer {
   ) {
     final p = pulse.clamp(0.0, 1.0);
 
-    // Soft halo hugging the rung.
+    // Soft halo hugging the rung: two stacked translucent ovals (wide+faint
+    // under tight+stronger) approximate the glow without a per-cue blur.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: center, width: w * (1.35 + 0.2 * p), height: h * 3.2),
+      Paint()..color = color.withValues(alpha: (0.08 + 0.16 * p)),
+    );
     canvas.drawOval(
       Rect.fromCenter(
           center: center, width: w * (1.05 + 0.15 * p), height: h * 2.4),
-      Paint()
-        ..color = color.withValues(alpha: 0.18 + 0.32 * p)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * (0.6 + 0.5 * p)),
+      Paint()..color = color.withValues(alpha: (0.14 + 0.24 * p)),
     );
 
     // Two chevrons floating just above the rung, pointing up at the target.
@@ -421,11 +429,11 @@ class ChickenRenderer {
       ..lineTo(column.right, top + column.width * 0.5)
       ..lineTo(column.left, top + column.width * 0.5)
       ..close();
+    // Filled translucent ripple band (no blur) gives a soft surface wash under
+    // the crisp crest line below — cheap per column.
     canvas.drawPath(
       glowPath,
-      Paint()
-        ..color = _lavaCrest.withValues(alpha: 0.25 + 0.45 * d)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, _lavaCrestH * (1 + d)),
+      Paint()..color = _lavaCrest.withValues(alpha: 0.18 + 0.32 * d),
     );
 
     // Crisp bright crest line riding the ripple.
@@ -478,15 +486,23 @@ class ChickenRenderer {
   static void drawContactShadow(
       Canvas canvas, Offset groundCenter, double width, bool alive) {
     if (!alive || width <= 0) return;
+    // Two stacked translucent ovals (wide+faint under tight+darker) fake the
+    // soft edge without a per-climber blur.
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: groundCenter,
+        width: width * (_contactShadowW + 0.5),
+        height: width * (_contactShadowH + 0.18),
+      ),
+      Paint()..color = _black.withValues(alpha: 0.14),
+    );
     canvas.drawOval(
       Rect.fromCenter(
         center: groundCenter,
         width: width * _contactShadowW,
         height: width * _contactShadowH,
       ),
-      Paint()
-        ..color = _black.withValues(alpha: 0.34)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, width * 0.18),
+      Paint()..color = _black.withValues(alpha: 0.26),
     );
   }
 
@@ -545,14 +561,12 @@ class ChickenRenderer {
         ),
     );
 
-    // Glowing cap at the fill head.
-    canvas.drawCircle(
-      Offset(x, fillTop),
-      w * 0.8,
-      Paint()
-        ..color = color.withValues(alpha: 0.5 * a)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, w * 0.6),
-    );
+    // Glowing cap at the fill head: two stacked translucent halos (wide+faint,
+    // tight+stronger) under the bright core — no per-column blur.
+    canvas.drawCircle(Offset(x, fillTop), w * 1.1,
+        Paint()..color = color.withValues(alpha: 0.2 * a));
+    canvas.drawCircle(Offset(x, fillTop), w * 0.8,
+        Paint()..color = color.withValues(alpha: 0.34 * a));
     canvas.drawCircle(
       Offset(x, fillTop),
       w * 0.5,

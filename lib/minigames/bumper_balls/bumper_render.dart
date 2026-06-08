@@ -8,9 +8,15 @@ import 'dart:ui';
 /// Theme: a neon knockout floor. A dark void backdrop, a glowing hex/grid disc
 /// platform with a bright energized rim and a pulsing red danger band, and
 /// glossy player-colored bumper balls with eyes, a motion trail, squash &
-/// stretch on impact and impact spark rings. Each ball also carries a bold
-/// player-colored aim arrow (the player's control) and a numbered ground id
-/// ring so it is always identifiable.
+/// stretch on impact and impact spark rings. There is no idle aim arrow; while
+/// a player charges, a player-colored telegraph points at the nearest opponent.
+/// A numbered ground id ring keeps each ball identifiable.
+///
+/// Perf: per-entity glows (ball bloom, motion trail, impact ring, aim
+/// telegraph) and the ambient motes use cheap layered solid strokes — no
+/// per-frame [MaskFilter.blur]. Blur is reserved for the handful of
+/// once-per-frame backdrop pieces (platform drop-shadow, danger-band halo, rim
+/// glow) plus the single soft contact shadow under each ball.
 ///
 /// Every method is side-effect free beyond the supplied [Canvas], guards its
 /// own inputs, and never throws (so it is safe to call from `render`).
@@ -74,8 +80,7 @@ class BumperRenderer {
   /// they stay deterministic and animate with the sim clock).
   static void drawAmbientMotes(Canvas canvas, List<Offset> motes, double t) {
     if (motes.isEmpty) return;
-    final paint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+    final paint = Paint(); // solid dots (no per-mote blur)
     for (var i = 0; i < motes.length; i++) {
       final m = motes[i];
       final drift = Offset(0, math.sin(t * 0.6 + i) * 6);
@@ -255,14 +260,23 @@ class BumperRenderer {
     if (s <= 0.02) return;
     final len = ballR * _trailMaxFactor * s;
     final tail = pos - dir * len;
+    // Two cheap layered solid strokes (no blur): a wider faint base + a tighter
+    // brighter core fake a soft motion blur at a fraction of the cost.
     canvas.drawLine(
       tail,
       pos,
       Paint()
         ..strokeCap = StrokeCap.round
-        ..strokeWidth = ballR * (0.7 + 0.9 * s)
-        ..color = color.withValues(alpha: 0.32 * s)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, ballR * 0.35),
+        ..strokeWidth = ballR * (1.0 + 1.2 * s)
+        ..color = color.withValues(alpha: 0.16 * s),
+    );
+    canvas.drawLine(
+      tail,
+      pos,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = ballR * (0.6 + 0.8 * s)
+        ..color = color.withValues(alpha: 0.34 * s),
     );
   }
 
@@ -284,11 +298,24 @@ class BumperRenderer {
   }) {
     if (ballR <= 0) return;
 
-    // Outer glow (drawn in world space, unaffected by the squash transform).
-    final glow = Paint()
-      ..color = color.withValues(alpha: 0.34)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, ballR * 0.6);
-    canvas.drawCircle(pos, ballR * _ballGlowFactor, glow);
+    // Outer glow as two cheap layered solid rings (no per-frame blur): a wide
+    // faint halo and a tighter brighter one read as a soft neon bloom.
+    canvas.drawCircle(
+      pos,
+      ballR * _ballGlowFactor,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ballR * 0.5
+        ..color = color.withValues(alpha: 0.16),
+    );
+    canvas.drawCircle(
+      pos,
+      ballR * (1.0 + (_ballGlowFactor - 1.0) * 0.5),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ballR * 0.34
+        ..color = color.withValues(alpha: 0.24),
+    );
 
     final sq = squash.clamp(-0.5, 0.5);
     final along = 1.0 + sq;
@@ -403,14 +430,22 @@ class BumperRenderer {
     final r = maxRadius * _easeOut(p);
     final fade = 1.0 - p;
 
+    // Two concentric solid strokes (no blur) read as a crisp expanding spark.
     canvas.drawCircle(
       at,
       r,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(1.5, maxRadius * 0.12 * fade)
-        ..color = _blend(color, _white, 0.4).withValues(alpha: 0.7 * fade)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, maxRadius * 0.06),
+        ..color = _blend(color, _white, 0.4).withValues(alpha: 0.7 * fade),
+    );
+    canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(0.8, maxRadius * 0.05 * fade)
+        ..color = _white.withValues(alpha: 0.5 * fade),
     );
 
     // Quick cross-flash early in the impact.
@@ -465,10 +500,11 @@ class BumperRenderer {
         canvas, pipCenter, '$displayNumber', r * 1.25, _readableText(color));
   }
 
-  /// The player's control made visible: a player-colored aim arrow sweeping
-  /// around the ball. It grows + brightens while [charging] so the player sees
-  /// exactly where and how hard they will bump; a charge ground-arc fills as the
-  /// hold deepens. [aim] is the heading in radians, [charge] 0..1.
+  /// The player's control made visible while CHARGING only (there is no idle
+  /// arrow): a player-colored telegraph pointing straight at the nearest
+  /// opponent — where the bump will land — that grows with [charge], plus a
+  /// charge ground-arc that fills as the hold deepens. [aim] is the heading in
+  /// radians, [charge] 0..1. Drawn with cheap layered solid strokes (no blur).
   static void drawAim(
     Canvas canvas,
     Offset center,
@@ -476,38 +512,32 @@ class BumperRenderer {
     Color color, {
     required double aim,
     required double charge,
-    required bool charging,
-    required bool ready,
-    required double t,
   }) {
     if (ballR <= 0) return;
     final c = charge.clamp(0.0, 1.0);
+    if (c <= 0.01) return;
     final dir = Offset(math.cos(aim), math.sin(aim));
     final base = ballR * 1.0;
-    final len = ballR * (2.3 + 2.7 * c) * (ready ? 1.0 : 0.55);
+    final len = ballR * (2.0 + 2.7 * c);
     final start = center + dir * base;
     final end = center + dir * (base + len);
-
-    final pulse = ready ? (0.85 + 0.15 * math.sin(t * 6)) : 0.4;
-    final a = (charging ? 1.0 : pulse).clamp(0.0, 1.0);
     final w = ballR * (0.24 + 0.26 * c);
 
-    // Soft glow shaft (widens + blurs more with charge).
+    // Layered solid shaft: a wide soft-tinted base, a crisp colored core, then a
+    // white inner line so it pops over the neon floor — all blur-free.
     canvas.drawLine(
       start,
       end,
       Paint()
-        ..color = color.withValues(alpha: (a * 0.7).clamp(0.0, 1.0))
+        ..color = color.withValues(alpha: 0.45)
         ..strokeWidth = w * 1.8
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 6 * c),
+        ..strokeCap = StrokeCap.round,
     );
-    // Crisp colored shaft with a white core so it pops over the neon floor.
     canvas.drawLine(
       start,
       end,
       Paint()
-        ..color = color.withValues(alpha: a)
+        ..color = color.withValues(alpha: 0.95)
         ..strokeWidth = w
         ..strokeCap = StrokeCap.round,
     );
@@ -515,7 +545,7 @@ class BumperRenderer {
       start,
       end,
       Paint()
-        ..color = _white.withValues(alpha: a * 0.6)
+        ..color = _white.withValues(alpha: 0.6)
         ..strokeWidth = w * 0.4
         ..strokeCap = StrokeCap.round,
     );
@@ -531,32 +561,28 @@ class BumperRenderer {
       ..lineTo(left.dx, left.dy)
       ..lineTo(right.dx, right.dy)
       ..close();
-    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: a));
+    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: 0.95));
     canvas.drawPath(
       headPath,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(1.0, ballR * 0.08)
-        ..color = _white.withValues(alpha: a * 0.7),
+        ..color = _white.withValues(alpha: 0.7),
     );
 
     // Charge ground-arc beneath the ball while holding.
-    if (charging && c > 0.02) {
-      final groundCenter = center.translate(0, ballR);
-      final arc = Paint()
+    final groundCenter = center.translate(0, ballR);
+    canvas.drawArc(
+      Rect.fromCircle(center: groundCenter, radius: ballR * 1.25),
+      -math.pi / 2,
+      math.pi * 2 * c,
+      false,
+      Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = ballR * 0.18
         ..strokeCap = StrokeCap.round
-        ..color =
-            _blend(color, _white, c).withValues(alpha: 0.9);
-      canvas.drawArc(
-        Rect.fromCircle(center: groundCenter, radius: ballR * 1.25),
-        -math.pi / 2,
-        math.pi * 2 * c,
-        false,
-        arc,
-      );
-    }
+        ..color = _blend(color, _white, c).withValues(alpha: 0.9),
+    );
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────

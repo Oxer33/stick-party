@@ -3,13 +3,22 @@ import 'dart:ui';
 
 import '../../art/stick/stick_figure.dart';
 
-/// Pure-Canvas rendering for [TugOfWar]. Holds NO game state and never mutates
-/// the simulation — callers pass plain value snapshots. Kept in its own file so
-/// the gameplay module stays lean and the drawing stays cohesive (mirrors the
-/// sumo_smash split).
+/// Pure-Canvas rendering for [TugOfWar] — a VERTICAL (north/south) rope pull on
+/// the tall portrait screen: a top team and a bottom team haul a vertical rope,
+/// the marker rides up/down between two goal lines, and the losing team is
+/// yanked off the top/bottom edge into a central pit.
+///
+/// Holds NO game state and never mutates the simulation — callers pass plain
+/// value snapshots. Kept in its own file so the gameplay module stays lean and
+/// the drawing stays cohesive (mirrors the sumo_smash split).
 ///
 /// Every method is side-effect free beyond the supplied [Canvas], guards its
 /// own inputs, and never throws (so it is safe to call from `render`).
+///
+/// Performance: this file draws every entity each frame, so it avoids
+/// `MaskFilter.blur` in per-entity/per-loop paint. Soft glows are faked with
+/// stacked translucent solid strokes/fills (a wide faint layer under a crisp
+/// one), which reads similarly at a fraction of the cost.
 class TugRenderer {
   TugRenderer._();
 
@@ -19,8 +28,6 @@ class TugRenderer {
   static const Color _bgBottom = Color(0xFF070409);
   static const Color _vignette = Color(0x99000000);
   static const Color _spotlight = Color(0x18FFE6B0);
-  static const Color _groundTop = Color(0xFF3A2A1C);
-  static const Color _groundBottom = Color(0xFF1C140E);
   static const Color _groundLine = Color(0x33FFFFFF);
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
@@ -38,16 +45,13 @@ class TugRenderer {
   static const Color _ropeDark = Color(0xFF9C6F3A);
   static const Color _ropeShade = Color(0xFF5E3F1F);
 
-  // ── Tuning (fractions of arena/ground; no inline magic numbers) ────────────
-  static const double _spotlightFactor = 0.9; // spotlight radius / width
+  // ── Tuning (fractions of arena; no inline magic numbers) ────────────────────
+  static const double _spotlightFactor = 0.9; // spotlight radius / height
   static const double _vignetteInnerFrac = 0.5; // clear-zone radius / diag
   static const double _vignetteOuterFrac = 0.72; // vignette radius / diag
-  static const double _crowdBandFrac = 0.16; // dark crowd band height / height
-  static const double _groundTopFrac = 0.5; // ground starts here (frac height)
-  static const int _groundLineCount = 5;
   static const double _centerDashLen = 14;
   static const double _centerDashGap = 12;
-  static const double _goalLineHalfFrac = 0.07; // goal line half-height / height
+  static const double _goalLineHalfFrac = 0.16; // goal line half-WIDTH / width
 
   // Pit rim stroke width relative to pit x-radius.
   static const double _pitRimWidthFrac = 0.024;
@@ -59,7 +63,7 @@ class TugRenderer {
   static const double _ropeBraidW = 4;
   static const double _ropeGripW = 11;
 
-  // ── Background: gradient sky + crowd-dark band + soft stage spotlight ───────
+  // ── Background: gradient sky + soft stage spotlight ─────────────────────────
   static void drawBackground(Canvas canvas, Size size) {
     final bg = Paint()
       ..shader = Gradient.linear(
@@ -70,10 +74,10 @@ class TugRenderer {
       );
     canvas.drawRect(Offset.zero & size, bg);
 
-    // Soft warm stage spotlight centered above the pit.
-    final spotR = size.width * _spotlightFactor;
+    // Soft warm stage spotlight centered on the pit.
+    final spotR = size.height * _spotlightFactor;
     if (spotR > 0) {
-      final spotCenter = Offset(size.width / 2, size.height * _groundTopFrac);
+      final spotCenter = Offset(size.width / 2, size.height / 2);
       final spot = Paint()
         ..shader = Gradient.radial(
           spotCenter,
@@ -82,42 +86,33 @@ class TugRenderer {
         );
       canvas.drawCircle(spotCenter, spotR, spot);
     }
-
-    // Dark "crowd" band along the horizon for depth.
-    final bandH = size.height * _crowdBandFrac;
-    final bandTop = size.height * _groundTopFrac - bandH;
-    final crowd = Paint()
-      ..shader = Gradient.linear(
-        Offset(0, bandTop),
-        Offset(0, bandTop + bandH),
-        const [Color(0x00000000), Color(0x88000000)],
-      );
-    canvas.drawRect(Rect.fromLTWH(0, bandTop, size.width, bandH), crowd);
   }
 
-  /// Ground slab below the play line: warm gradient + a few perspective lines.
-  static void drawGround(Canvas canvas, Size size, double groundY) {
-    final top = math.min(groundY, size.height);
-    final rect =
-        Rect.fromLTWH(0, top, size.width, math.max(0, size.height - top));
-    final ground = Paint()
-      ..shader = Gradient.linear(
-        Offset(0, top),
-        Offset(0, size.height),
-        const [_groundTop, _groundBottom],
-      );
-    canvas.drawRect(rect, ground);
-
-    // Receding floor lines (subtle perspective).
-    final line = Paint()
-      ..color = _groundLine
-      ..strokeWidth = 1.5;
-    final span = size.height - top;
-    for (var i = 1; i <= _groundLineCount; i++) {
-      final f = i / (_groundLineCount + 1);
-      final y = top + span * f * f; // ease so lines bunch toward horizon
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), line);
-    }
+  /// Two dark "crowd" bands behind each team (top + bottom) so the standing rows
+  /// read with depth. [bandFrac] is each band's height as a fraction of height.
+  static void drawCrowdBands(Canvas canvas, Size size, double bandFrac) {
+    final bandH = size.height * bandFrac.clamp(0.0, 0.4);
+    if (bandH <= 0) return;
+    // Top band (fades downward into the field).
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, bandH),
+      Paint()
+        ..shader = Gradient.linear(
+          const Offset(0, 0),
+          Offset(0, bandH),
+          const [Color(0x88000000), Color(0x00000000)],
+        ),
+    );
+    // Bottom band (fades upward into the field).
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height - bandH, size.width, bandH),
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(0, size.height - bandH),
+          Offset(0, size.height),
+          const [Color(0x00000000), Color(0x88000000)],
+        ),
+    );
   }
 
   /// Crowd-dark vignette so the action pops (drawn over the field, under the
@@ -131,7 +126,7 @@ class TugRenderer {
     final edge = Color.lerp(_vignette, const Color(0xFF260202), p) ?? _vignette;
     final paint = Paint()
       ..shader = Gradient.radial(
-        Offset(size.width / 2, size.height * 0.46),
+        Offset(size.width / 2, size.height * 0.5),
         outer,
         [const Color(0x00000000), edge],
         [(inner / outer).clamp(0.0, 0.99), 1.0],
@@ -150,16 +145,15 @@ class TugRenderer {
   ) {
     if (rx <= 1 || ry <= 1) return;
 
-    // Recessed socket shadow under/around the pit.
-    final socket = Paint()
-      ..color = _pitOuter
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, ry * 0.5);
+    // Recessed socket shadow around the pit — stacked translucent ovals fake the
+    // soft edge without a per-frame blur.
+    final socketRect =
+        Rect.fromCenter(center: center, width: rx * 2.4, height: ry * 2.4);
     canvas.drawOval(
-      Rect.fromCenter(
-          center: center.translate(0, ry * 0.12),
-          width: rx * 2.2,
-          height: ry * 2.2),
-      socket,
+        socketRect, Paint()..color = _pitOuter.withValues(alpha: 0.5));
+    canvas.drawOval(
+      Rect.fromCenter(center: center, width: rx * 2.15, height: ry * 2.15),
+      Paint()..color = _pitOuter.withValues(alpha: 0.8),
     );
 
     // Mud → lava radial body (slightly offset highlight for volume).
@@ -176,8 +170,8 @@ class TugRenderer {
     );
 
     // Bubbling hot spots — a few drifting glowing blobs (deterministic from t).
-    final blob =
-        Paint()..maskFilter = MaskFilter.blur(BlurStyle.normal, ry * 0.16);
+    // Plain translucent discs (no per-blob blur).
+    final blob = Paint();
     for (var i = 0; i < 5; i++) {
       final phase = t * (0.7 + i * 0.13) + i * 1.7;
       final bx = math.sin(phase) * rx * 0.5;
@@ -185,7 +179,7 @@ class TugRenderer {
       final pulse = 0.5 + 0.5 * math.sin(phase * 1.6);
       final r = ry * (0.18 + 0.12 * pulse);
       blob.color = Color.lerp(_pitMud1, _pitLava, pulse)!
-          .withValues(alpha: 0.55 * pulse + 0.2);
+          .withValues(alpha: 0.45 * pulse + 0.18);
       canvas.drawCircle(center.translate(bx, by), r, blob);
     }
 
@@ -204,7 +198,7 @@ class TugRenderer {
       heat,
     );
 
-    // Glowing rim: soft outer halo + crisp hot core line.
+    // Glowing rim: a wide faint solid stroke under a crisp hot core line.
     final rimW = math.max(2.0, rx * _pitRimWidthFrac);
     final rimRect =
         Rect.fromCenter(center: center, width: rx * 2, height: ry * 2);
@@ -213,9 +207,8 @@ class TugRenderer {
       rimRect,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = rimW * 2.4
-        ..color = _pitRimGlow.withValues(alpha: 0.32 * glowPulse)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, rimW * 1.6),
+        ..strokeWidth = rimW * 3.2
+        ..color = _pitRimGlow.withValues(alpha: 0.18 * glowPulse),
     );
     canvas.drawOval(
       rimRect,
@@ -226,89 +219,89 @@ class TugRenderer {
     );
   }
 
-  /// Dashed center line + two side goal lines (the win thresholds). [centerX] is
-  /// the pit center; [leftGoalX]/[rightGoalX] are the goal verticals.
+  /// Dashed horizontal center line + two horizontal goal lines (the win
+  /// thresholds, north + south). [centerY] is the pit center row; [topGoalY] /
+  /// [bottomGoalY] are the goal horizontals.
   static void drawFieldLines(
     Canvas canvas,
     Size size,
-    double midY,
-    double centerX,
-    double leftGoalX,
-    double rightGoalX,
+    double midX,
+    double centerY,
+    double topGoalY,
+    double bottomGoalY,
   ) {
-    final goalHalf = size.height * _goalLineHalfFrac;
+    final goalHalf = size.width * _goalLineHalfFrac;
 
-    // Dashed vertical center line.
+    // Dashed horizontal center line through the pit.
     final dash = Paint()
       ..color = _groundLine
       ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round;
-    var y = midY - goalHalf * 1.4;
-    final yEnd = midY + goalHalf * 1.4;
-    while (y < yEnd) {
-      canvas.drawLine(Offset(centerX, y),
-          Offset(centerX, math.min(y + _centerDashLen, yEnd)), dash);
-      y += _centerDashLen + _centerDashGap;
+    var x = midX - goalHalf * 1.4;
+    final xEnd = midX + goalHalf * 1.4;
+    while (x < xEnd) {
+      canvas.drawLine(Offset(x, centerY),
+          Offset(math.min(x + _centerDashLen, xEnd), centerY), dash);
+      x += _centerDashLen + _centerDashGap;
     }
 
-    // Side goal lines with small chevrons so they read as "the line".
-    _goalLine(canvas, leftGoalX, midY, goalHalf, -1);
-    _goalLine(canvas, rightGoalX, midY, goalHalf, 1);
+    // Top + bottom goal lines with small chevrons so they read as "the line".
+    _goalLine(canvas, topGoalY, midX, goalHalf, -1);
+    _goalLine(canvas, bottomGoalY, midX, goalHalf, 1);
   }
 
   static void _goalLine(
-      Canvas canvas, double x, double midY, double half, double dir) {
+      Canvas canvas, double y, double midX, double half, double dir) {
     final paint = Paint()
       ..color = _white.withValues(alpha: 0.5)
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(x, midY - half), Offset(x, midY + half), paint);
-    // Chevron flags pointing inward.
+    canvas.drawLine(Offset(midX - half, y), Offset(midX + half, y), paint);
+    // Chevron flags pointing inward (toward the pit).
     final flag = Paint()
       ..color = _white.withValues(alpha: 0.28)
       ..strokeWidth = 2;
     canvas.drawLine(
-        Offset(x, midY - half), Offset(x + dir * 12, midY - half + 8), flag);
+        Offset(midX - half, y), Offset(midX - half + 8, y + dir * 12), flag);
     canvas.drawLine(
-        Offset(x, midY + half), Offset(x + dir * 12, midY + half - 8), flag);
+        Offset(midX + half, y), Offset(midX + half - 8, y + dir * 12), flag);
   }
 
-  /// The rope as a catenary curve sagging in the middle, drawn from [leftHand]
-  /// to [rightHand] through the [knot] apex, with a braided sheen. [sag] is the
-  /// extra droop depth (px). Tinted grip wraps mark each team's grip.
+  /// The rope as a near-vertical curve bowing through the [knot], drawn from
+  /// [topHand] to [bottomHand], with a braided sheen. [bow] is the sideways
+  /// wobble depth (px). Tinted grip wraps mark each team's grip.
   static void drawRope(
     Canvas canvas,
-    Offset leftHand,
-    Offset rightHand,
+    Offset topHand,
+    Offset bottomHand,
     Offset knot,
-    double sag,
-    Color leftTint,
-    Color rightTint,
+    double bow,
+    Color topTint,
+    Color bottomTint,
   ) {
-    final span = rightHand.dx - leftHand.dx;
+    final span = bottomHand.dy - topHand.dy;
     if (span.abs() < 1) return;
 
-    // Two control legs so the apex of the sag sits at the knot.
-    final leftCtrl = Offset(
-        leftHand.dx + (knot.dx - leftHand.dx) * 0.5, knot.dy + sag * 0.6);
-    final rightCtrl = Offset(
-        knot.dx + (rightHand.dx - knot.dx) * 0.5, knot.dy + sag * 0.6);
+    // Two control legs so the apex of the bow sits at the knot (sideways wobble).
+    final topCtrl = Offset(
+        knot.dx + bow * 0.6, topHand.dy + (knot.dy - topHand.dy) * 0.5);
+    final bottomCtrl = Offset(
+        knot.dx + bow * 0.6, knot.dy + (bottomHand.dy - knot.dy) * 0.5);
 
     final path = Path()
-      ..moveTo(leftHand.dx, leftHand.dy)
-      ..quadraticBezierTo(leftCtrl.dx, leftCtrl.dy, knot.dx, knot.dy)
+      ..moveTo(topHand.dx, topHand.dy)
+      ..quadraticBezierTo(topCtrl.dx, topCtrl.dy, knot.dx, knot.dy)
       ..quadraticBezierTo(
-          rightCtrl.dx, rightCtrl.dy, rightHand.dx, rightHand.dy);
+          bottomCtrl.dx, bottomCtrl.dy, bottomHand.dx, bottomHand.dy);
 
-    // Soft drop shadow of the rope on the ground.
+    // Soft drop shadow of the rope: a wide faint solid stroke (no blur).
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = _ropeShadowW
+        ..strokeWidth = _ropeShadowW * 1.6
         ..strokeCap = StrokeCap.round
-        ..color = _black.withValues(alpha: 0.28)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        ..color = _black.withValues(alpha: 0.16),
     );
 
     // Dark underside → body → bright braid (stacked for a round 3-D rope).
@@ -338,8 +331,8 @@ class TugRenderer {
     );
 
     // Tinted grip wraps near each team's hands.
-    _gripWrap(canvas, leftHand, leftCtrl, leftTint);
-    _gripWrap(canvas, rightHand, rightCtrl, rightTint);
+    _gripWrap(canvas, topHand, topCtrl, topTint);
+    _gripWrap(canvas, bottomHand, bottomCtrl, bottomTint);
   }
 
   static void _gripWrap(Canvas canvas, Offset hand, Offset ctrl, Color tint) {
@@ -360,19 +353,19 @@ class TugRenderer {
   }
 
   /// The center marker: a fabric pennant hanging off the rope knot, tinted
-  /// toward whichever side is currently winning ([lead] in -1..1, -1 = left).
+  /// toward whichever side is currently winning ([lead] in -1..1, -1 = top).
   static void drawMarkerFlag(
     Canvas canvas,
     Offset knot,
     double lead,
-    Color leftTint,
-    Color rightTint,
+    Color topTint,
+    Color bottomTint,
     double t,
   ) {
     final l = lead.clamp(-1.0, 1.0);
     final tint = l <= 0
-        ? Color.lerp(_white, leftTint, (-l).clamp(0.0, 1.0))!
-        : Color.lerp(_white, rightTint, l.clamp(0.0, 1.0))!;
+        ? Color.lerp(_white, topTint, (-l).clamp(0.0, 1.0))!
+        : Color.lerp(_white, bottomTint, l.clamp(0.0, 1.0))!;
 
     // Pole binding knot on the rope.
     canvas.drawCircle(knot, 9, Paint()..color = _ropeDark);
@@ -384,13 +377,14 @@ class TugRenderer {
           ..strokeWidth = 2
           ..color = _ropeCore);
 
-    // Triangular pennant flapping below the knot (wave from t + lead bias).
-    final wave = math.sin(t * 6.0) * 6 + l * 14;
-    final tip = knot + Offset(wave, 34);
+    // Triangular pennant flapping to the SIDE of the knot (wave from t + lead
+    // bias up/down so the flag leans toward the winning end).
+    final wave = math.sin(t * 6.0) * 6;
+    final tip = knot + Offset(34, wave + l * 14);
     final flag = Path()
-      ..moveTo(knot.dx - 3, knot.dy + 4)
+      ..moveTo(knot.dx + 4, knot.dy - 3)
       ..lineTo(tip.dx, tip.dy)
-      ..lineTo(knot.dx + 3, knot.dy + 4)
+      ..lineTo(knot.dx + 4, knot.dy + 3)
       ..close();
     canvas.drawPath(flag, Paint()..color = tint);
     canvas.drawPath(
@@ -405,19 +399,20 @@ class TugRenderer {
   }
 
   /// Dug-in feet dust puff for a straining puller. [strain] 0..1 scales it.
+  /// [dir] is the horizontal spray direction (kept for figure spread).
   static void drawFootDust(
       Canvas canvas, Offset feet, double bodyW, double strain, double t,
       {required double dir}) {
     final s = strain.clamp(0.0, 1.0);
     if (s <= 0.02) return;
-    final paint =
-        Paint()..maskFilter = MaskFilter.blur(BlurStyle.normal, bodyW * 0.4);
+    // Plain translucent puffs (no per-mote blur).
+    final paint = Paint();
     for (var i = 0; i < 3; i++) {
       final phase = t * 3.0 + i * 2.1;
       final puff = 0.5 + 0.5 * math.sin(phase);
       final px = dir * bodyW * (0.5 + i * 0.5);
       final py = -bodyW * 0.1 * puff;
-      paint.color = _groundTop.withValues(alpha: (0.18 + 0.22 * puff) * s);
+      paint.color = _pitMud1.withValues(alpha: (0.14 + 0.18 * puff) * s);
       canvas.drawCircle(feet.translate(px, py),
           bodyW * (0.3 + 0.25 * puff) * (0.6 + s), paint);
     }
@@ -425,18 +420,17 @@ class TugRenderer {
 
   /// Soft contact shadow ellipse beneath a puller at ground level.
   static void drawContactShadow(Canvas canvas, Offset groundCenter, double w) {
-    final paint = Paint()
-      ..color = _black.withValues(alpha: 0.3)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, w * 0.22);
+    // A plain translucent oval grounds the figure without a per-frame blur.
     canvas.drawOval(
       Rect.fromCenter(center: groundCenter, width: w * 2.4, height: w * 0.7),
-      paint,
+      Paint()..color = _black.withValues(alpha: 0.25),
     );
   }
 
-  /// A side effort bar showing how hard a team is pulling. [effort] 0..1 fills
-  /// it from the team's outer edge inward; [heave] 0..1 brightens + adds a surge
-  /// glow tip when the rhythm bonus is hot. [dir] -1 = left team, +1 = right.
+  /// A team effort bar showing how hard a team is pulling. [effort] 0..1 fills
+  /// it from the left edge inward; [heave] 0..1 brightens + adds a surge glow
+  /// tip when the rhythm bonus is hot. [dir] -1 = top team, +1 = bottom (used to
+  /// tag which team the bar labels; the bar itself is horizontal for both).
   static void drawEffortBar(
     Canvas canvas,
     Offset anchor,
@@ -456,8 +450,7 @@ class TugRenderer {
 
     final fillW = width * e;
     if (fillW > 1) {
-      final left =
-          dir < 0 ? anchor.dx + width / 2 - fillW : anchor.dx - width / 2;
+      final left = anchor.dx - width / 2;
       final fillRect = RRect.fromRectAndRadius(
         Rect.fromLTWH(left, anchor.dy - h / 2, fillW, h),
         const Radius.circular(h / 2),
@@ -466,18 +459,15 @@ class TugRenderer {
       canvas.drawRRect(fillRect, Paint()..color = hot);
     }
 
-    // Heave surge glow tip at the leading edge of the fill.
+    // Heave surge glow tip at the leading edge of the fill: stacked translucent
+    // discs instead of a per-frame blur.
     if (heave > 0.05) {
-      final tipX = dir < 0
-          ? anchor.dx + width / 2 - fillW
-          : anchor.dx - width / 2 + fillW;
-      canvas.drawCircle(
-        Offset(tipX, anchor.dy),
-        h * (0.8 + heave),
-        Paint()
-          ..color = _white.withValues(alpha: 0.5 * heave.clamp(0.0, 1.0))
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.6),
-      );
+      final tipX = anchor.dx - width / 2 + fillW;
+      final hv = heave.clamp(0.0, 1.0);
+      canvas.drawCircle(Offset(tipX, anchor.dy), h * (1.2 + heave),
+          Paint()..color = _white.withValues(alpha: 0.18 * hv));
+      canvas.drawCircle(Offset(tipX, anchor.dy), h * (0.8 + heave),
+          Paint()..color = _white.withValues(alpha: 0.4 * hv));
     }
   }
 
@@ -531,19 +521,23 @@ class TugRenderer {
         ..color = _white.withValues(alpha: 0.12),
     );
 
-    // Centered sweet-spot band (brightens while the marker is inside it).
+    // Centered sweet-spot band (brightens while the marker is inside it). Faked
+    // glow via a wide faint solid plate under the crisp band edge (no blur).
     final bandW = width * (half * 2);
     final bandGlow = inWindow ? 0.9 : 0.45;
     final pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 6.0));
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: bandW + 12, height: railH + 16),
+        const Radius.circular(10),
+      ),
+      Paint()
+        ..color =
+            accent.withValues(alpha: (0.14 * bandGlow * pulse).clamp(0.0, 1.0)),
+    );
     final band = RRect.fromRectAndRadius(
       Rect.fromCenter(center: center, width: bandW, height: railH + 8),
       const Radius.circular(8),
-    );
-    canvas.drawRRect(
-      band,
-      Paint()
-        ..color = accent.withValues(alpha: 0.22 * bandGlow * pulse)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, inWindow ? 10 : 5),
     );
     canvas.drawRRect(
       band,
@@ -553,21 +547,27 @@ class TugRenderer {
         ..color = accent.withValues(alpha: inWindow ? 0.95 : 0.5),
     );
 
-    // Sweeping marker (a bright vertical paddle riding the rail).
+    // Sweeping marker (a bright vertical paddle riding the rail). Faked glow via
+    // a wider faint paddle behind the crisp one when in-window (no blur).
     final mx = left + width * p;
     final markColor = inWindow ? _white : accent;
     final markH = railH + 14;
+    if (inWindow) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+              center: Offset(mx, center.dy), width: 13, height: markH + 6),
+          const Radius.circular(6.5),
+        ),
+        Paint()..color = markColor.withValues(alpha: 0.35),
+      );
+    }
     canvas.drawRRect(
       RRect.fromRectAndRadius(
-        Rect.fromCenter(
-            center: Offset(mx, center.dy), width: 7, height: markH),
+        Rect.fromCenter(center: Offset(mx, center.dy), width: 7, height: markH),
         const Radius.circular(3.5),
       ),
-      Paint()
-        ..color = markColor
-        ..maskFilter = inWindow
-            ? const MaskFilter.blur(BlurStyle.normal, 4)
-            : null,
+      Paint()..color = markColor,
     );
 
     // "HEAVE!" tag floating over the band only at the moment it lines up.

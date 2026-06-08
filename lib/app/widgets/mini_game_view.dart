@@ -16,7 +16,6 @@ import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
-import 'glass_kit.dart';
 import 'glass_tokens.dart';
 
 /// Tuning for the runner shell (no magic numbers at call sites).
@@ -482,14 +481,13 @@ class _PlayerBadge extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        GlassPanel(
-          radius: _RunnerTune.badgeRadius,
-          blur: GlassTokens.blurChip,
-          shadow: false,
-          borderColor: color.withValues(alpha: 0.9),
-          tint: color,
-          tintOpacity: 0.14,
+        Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: GlassColors.base.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(_RunnerTune.badgeRadius),
+            border: Border.all(color: color.withValues(alpha: 0.9), width: 1.2),
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
@@ -562,11 +560,13 @@ class _CountdownOverlay extends StatelessWidget {
           final bool isGo = label == 'GO!';
           return Center(
             child: ClipOval(
-              child: GlassPanel(
-                radius: 999,
-                tint: isGo ? GlassColors.cyan : GlassColors.violet,
-                tintOpacity: 0.22,
+              child: Container(
                 padding: const EdgeInsets.all(36),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: (isGo ? GlassColors.cyan : GlassColors.violet)
+                      .withValues(alpha: 0.3),
+                ),
                 child: Text(
                   label,
                   style: TextStyle(
@@ -611,11 +611,12 @@ class _QuitButton extends StatelessWidget {
         }
       },
       behavior: HitTestBehavior.opaque,
-      child: GlassPanel(
-        radius: 999,
-        blur: GlassTokens.blurChip,
-        shadow: false,
+      child: Container(
         padding: const EdgeInsets.all(12),
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          color: Color(0x99000000),
+        ),
         child: const Icon(Icons.close, color: GlassColors.text, size: 22),
       ),
     );

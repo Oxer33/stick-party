@@ -133,10 +133,10 @@ class PaintRenderer {
   // ── Coverage base tint (baked from the grid) ───────────────────────────────
 
   /// A soft tinted under-layer painted from the grid ownership: each owned cell
-  /// contributes a faint blurred block of its owner color. This fills the gaps
-  /// between the crisp blobs so coverage reads at a glance without looking like
-  /// flat tiles. [cellOwnerColor] returns the owner color for a cell or null
-  /// when unpainted.
+  /// contributes a faint translucent, slightly-overdrawn block of its owner
+  /// color. This fills the gaps between the crisp blobs so coverage reads at a
+  /// glance without looking like flat tiles. [cellOwnerColor] returns the owner
+  /// color for a cell or null when unpainted.
   static void drawCoverageTint(
     Canvas canvas,
     Size size,
@@ -147,16 +147,21 @@ class PaintRenderer {
     if (cols < 1 || rows < 1 || size.width <= 1 || size.height <= 1) return;
     final cw = size.width / cols;
     final ch = size.height / rows;
-    final paint = Paint()
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(cw, ch) * 0.55);
+    // Translucent overdrawn cells (no blur) — this loop runs for up to cols×rows
+    // cells every frame, so a per-cell MaskFilter.blur was the heaviest cost in
+    // the game. Overlapping faint rects still read as soft coverage under the
+    // crisp hero blobs drawn on top.
+    final overlap = math.max(cw, ch) * 0.5;
+    final paint = Paint();
     for (var row = 0; row < rows; row++) {
       for (var col = 0; col < cols; col++) {
         final color = cellOwnerColor(col, row);
         if (color == null) continue;
-        paint.color = color.withValues(alpha: 0.40);
-        // Slight overdraw avoids hairline gaps between cells.
+        paint.color = color.withValues(alpha: 0.28);
+        // Overdraw past the cell edges softens the block boundaries.
         canvas.drawRect(
-          Rect.fromLTWH(col * cw, row * ch, cw + 1.0, ch + 1.0),
+          Rect.fromLTWH(col * cw - overlap * 0.5, row * ch - overlap * 0.5,
+              cw + overlap, ch + overlap),
           paint,
         );
       }
@@ -184,13 +189,18 @@ class PaintRenderer {
     final shade = _blend(color, _black, 0.30);
     final tint = _blend(color, _white, 0.30);
 
-    // Soft contact shadow so blobs feel like wet paint sitting on the canvas.
+    // Soft contact shadow so blobs feel like wet paint sitting on the canvas:
+    // two stacked translucent circles (wide+faint, tight+darker) — no per-splat
+    // blur.
+    canvas.drawCircle(
+      center.translate(r * 0.06, r * 0.08),
+      r * 1.12,
+      Paint()..color = _black.withValues(alpha: 0.07),
+    );
     canvas.drawCircle(
       center.translate(r * 0.06, r * 0.08),
       r * 0.96,
-      Paint()
-        ..color = _black.withValues(alpha: 0.14)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.22),
+      Paint()..color = _black.withValues(alpha: 0.11),
     );
 
     // Drips first (under the body) so they read as paint running off the blob.
@@ -235,12 +245,17 @@ class PaintRenderer {
     // Wet glossy sheen highlight (fades as the splat dries).
     final w = wet.clamp(0.0, 1.0);
     if (w > 0.02) {
+      // Two stacked translucent white blots (wide+faint, tight+stronger) plus a
+      // crisp glint fake the wet sheen without a per-splat blur.
+      canvas.drawCircle(
+        center.translate(-r * 0.26, -r * 0.30),
+        r * (_highlightInset + 0.12),
+        Paint()..color = _white.withValues(alpha: 0.2 * w),
+      );
       canvas.drawCircle(
         center.translate(-r * 0.26, -r * 0.30),
         r * _highlightInset,
-        Paint()
-          ..color = _white.withValues(alpha: 0.45 * w)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.18),
+        Paint()..color = _white.withValues(alpha: 0.34 * w),
       );
       canvas.drawCircle(
         center.translate(-r * 0.30, -r * 0.34),
@@ -384,13 +399,12 @@ class PaintRenderer {
   static void _drawSprayBurst(
       Canvas canvas, Offset center, double unit, Color color, double charge) {
     final r = unit * (1.1 + 0.8 * charge);
+    // Two stacked translucent puffs (wide+faint, tight+stronger) read as colored
+    // mist without a per-cursor blur.
     canvas.drawCircle(
-      center,
-      r,
-      Paint()
-        ..color = color.withValues(alpha: 0.30)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.7),
-    );
+        center, r, Paint()..color = color.withValues(alpha: 0.14));
+    canvas.drawCircle(
+        center, r * 0.7, Paint()..color = color.withValues(alpha: 0.24));
     canvas.drawCircle(
       center,
       r * 0.5,
@@ -402,15 +416,14 @@ class PaintRenderer {
   static void _drawTargetRing(Canvas canvas, Offset center, double unit,
       Color color, double charge, double pulse) {
     final ringR = unit * (1.6 + 1.4 * charge) + unit * 0.5 * pulse;
-    // Soft halo.
+    // Soft halo: a wide, faint stroke (no blur) under the crisp dashed ring.
     canvas.drawCircle(
       center,
       ringR,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = unit * 0.5
-        ..color = color.withValues(alpha: 0.18 + 0.2 * pulse)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, unit * 0.4),
+        ..strokeWidth = unit * 0.8
+        ..color = color.withValues(alpha: 0.12 + 0.14 * pulse),
     );
     // Dashed-look ring via short arcs.
     final ringPaint = Paint()
@@ -566,14 +579,14 @@ class PaintRenderer {
         z.rect.right * size.width,
         z.rect.bottom * size.height,
       ).deflate(2);
-      // Soft tinted halo just inside the seam.
+      // Soft tinted halo just inside the seam: a wide, faint stroke (no blur)
+      // under the crisp thin border below.
       canvas.drawRect(
         r,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(2.0, math.min(size.width, size.height) * 0.01)
-          ..color = z.color.withValues(alpha: 0.16)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6),
+          ..strokeWidth = math.max(3.0, math.min(size.width, size.height) * 0.018)
+          ..color = z.color.withValues(alpha: 0.1),
       );
       // Crisp thin border.
       canvas.drawRect(
@@ -618,11 +631,14 @@ class PaintRenderer {
         Radius.circular(barH * 0.5),
       );
       if (e.isLeader) {
+        // A slightly inflated translucent fill under the solid bar fakes the
+        // leader glow without a blur.
         canvas.drawRRect(
-          fill,
-          Paint()
-            ..color = e.color.withValues(alpha: 0.5)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, barH * 0.5),
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(inset, y, fillW, barH).inflate(barH * 0.28),
+            Radius.circular(barH),
+          ),
+          Paint()..color = e.color.withValues(alpha: 0.28),
         );
       }
       canvas.drawRRect(fill, Paint()..color = e.color);

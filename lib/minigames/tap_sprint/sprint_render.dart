@@ -275,12 +275,9 @@ class SprintRenderer {
     double laneH,
   ) {
     final r = (laneH * 0.16).clamp(10.0, 26.0);
-    canvas.drawCircle(
-        center,
-        r,
-        Paint()
-          ..color = _black.withValues(alpha: 0.4)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.3));
+    // Plain offset disc as the pip shadow (no per-pip blur).
+    canvas.drawCircle(center.translate(0, r * 0.12), r,
+        Paint()..color = _black.withValues(alpha: 0.35));
     canvas.drawCircle(center, r, Paint()..color = color);
     canvas.drawCircle(
       center,
@@ -375,14 +372,14 @@ class SprintRenderer {
     final flutter = math.sin(t * 7.0) * 3;
     final p1 = Offset(finishX - 6, size.height * 0.04);
     final p2 = Offset(finishX + 6 + flutter, size.height);
+    // Wide faint solid stroke under the crisp tape fakes the glow (no blur).
     canvas.drawLine(
       p1,
       p2,
       Paint()
-        ..strokeWidth = _tapeWidth * 2.4
+        ..strokeWidth = _tapeWidth * 3.4
         ..strokeCap = StrokeCap.round
-        ..color = _tapeGlow.withValues(alpha: 0.4)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        ..color = _tapeGlow.withValues(alpha: 0.2),
     );
     canvas.drawLine(
       p1,
@@ -419,9 +416,8 @@ class SprintRenderer {
   static void drawContactShadow(
       Canvas canvas, Offset feet, double bodyW, double squash) {
     final s = squash.clamp(0.3, 1.4);
-    final paint = Paint()
-      ..color = _black.withValues(alpha: 0.30 * s)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, bodyW * 0.22);
+    // A plain translucent oval grounds the runner without a per-frame blur.
+    final paint = Paint()..color = _black.withValues(alpha: 0.26 * s);
     canvas.drawOval(
       Rect.fromCenter(
           center: feet, width: bodyW * 2.4 * s, height: bodyW * 0.6),
@@ -440,8 +436,8 @@ class SprintRenderer {
   ) {
     final s = speed.clamp(0.0, 1.0);
     if (s <= 0.03) return;
-    final paint =
-        Paint()..maskFilter = MaskFilter.blur(BlurStyle.normal, bodyW * 0.35);
+    // Translucent solid puffs (no per-mote blur) read as soft kicked-up dust.
+    final paint = Paint();
     for (var i = 0; i < _dustMoteCount; i++) {
       final phase = stride * 2.0 + i * 1.3;
       final puff = 0.5 + 0.5 * math.sin(phase);

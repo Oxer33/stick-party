@@ -35,7 +35,6 @@ class SnakeRenderer {
   static const double _bodyInset = 0.14; // gap around a cell (fraction of cell)
   static const double _headRadiusFactor = 0.46;
   static const double _bodyRadiusFactor = 0.30;
-  static const double _trailGlowFactor = 1.9; // body glow blur / cell
   static const double _eyeRadiusFactor = 0.11;
   static const double _foodPulseAmp = 0.18; // pellet radius pulse amplitude
   static const double _foodBaseFactor = 0.30; // pellet radius / cell
@@ -86,12 +85,13 @@ class SnakeRenderer {
     final ch = field.height / rows;
     final breathe = 0.5 + 0.5 * pulse.clamp(0.0, 1.0);
 
-    // Soft glow underlay (wide, faint) then crisp lines on top.
+    // Soft glow underlay (wide, faint) then crisp lines on top. A wider faint
+    // stroke under each crisp line fakes the glow without a per-line blur — this
+    // runs for every grid line each frame, so the blur removal is a big saving.
     final glow = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = _gridLineW * 2.2
-      ..color = _gridGlow.withValues(alpha: 0.5 * breathe)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.2);
+      ..strokeWidth = _gridLineW * 4.0
+      ..color = _gridGlow.withValues(alpha: 0.32 * breathe);
 
     final minor = Paint()
       ..style = PaintingStyle.stroke
@@ -125,12 +125,22 @@ class SnakeRenderer {
   static void drawWalls(Canvas canvas, Rect field, double intensity) {
     if (field.width <= 1 || field.height <= 1) return;
     final flare = intensity.clamp(0.0, 1.0);
-    final glow = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = _wallGlowW * (1.0 + 0.6 * flare)
-      ..color = _wallNeon.withValues(alpha: 0.28 + 0.4 * flare)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, _wallGlowW * 0.7);
-    canvas.drawRect(field, glow);
+    // Two stacked translucent border strokes (wide+faint over slightly tighter)
+    // under the crisp core line fake the neon bloom without a blur.
+    canvas.drawRect(
+      field,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _wallGlowW * (1.6 + 0.9 * flare)
+        ..color = _wallNeon.withValues(alpha: 0.12 + 0.18 * flare),
+    );
+    canvas.drawRect(
+      field,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _wallGlowW * (0.8 + 0.5 * flare)
+        ..color = _wallNeon.withValues(alpha: 0.2 + 0.28 * flare),
+    );
 
     final core = Paint()
       ..style = PaintingStyle.stroke
@@ -153,14 +163,12 @@ class SnakeRenderer {
     final pulse = 1.0 + _foodPulseAmp * math.sin(phase * 3.0);
     final r = cell * _foodBaseFactor * pulse;
 
-    // Outer glow halo.
+    // Outer glow halo: two stacked translucent rings (wide+faint, tight+stronger)
+    // instead of a per-pellet blur.
     canvas.drawCircle(
-      center,
-      r * 2.6,
-      Paint()
-        ..color = neon.withValues(alpha: 0.30)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 1.4),
-    );
+        center, r * 2.8, Paint()..color = neon.withValues(alpha: 0.12));
+    canvas.drawCircle(
+        center, r * 2.0, Paint()..color = neon.withValues(alpha: 0.2));
     // Neon body.
     canvas.drawCircle(center, r, Paint()..color = neon);
     // Bright hot core.
@@ -205,15 +213,16 @@ class SnakeRenderer {
     final headR = math.max(1.0, cell * _headRadiusFactor);
 
     // 1) Wide soft glow pass under the body (tail faints out) — the light trail.
-    final glowPaint = Paint()
-      ..maskFilter =
-          MaskFilter.blur(BlurStyle.normal, cell * _trailGlowFactor * 0.5);
+    // Wider, faint translucent circles per segment fake the bloom without a
+    // per-segment blur (this loop runs for every segment of every snake).
+    final glowPaint = Paint();
     for (var i = n - 1; i >= 0; i--) {
       final f = 1.0 - i / n; // 1 at head → ~0 at tail
-      final a = (0.10 + 0.34 * f) * dim;
+      final a = (0.07 + 0.22 * f) * dim;
       if (a <= 0.01) continue;
       glowPaint.color = color.withValues(alpha: a);
-      canvas.drawCircle(pixels[i], (bodyR + inset) * (0.6 + 0.7 * f), glowPaint);
+      canvas.drawCircle(
+          pixels[i], (bodyR + inset) * (0.9 + 1.0 * f), glowPaint);
     }
 
     // 2) Connective neon ribbon so segments read as one continuous body.
@@ -240,15 +249,13 @@ class SnakeRenderer {
       canvas.drawCircle(pixels[i], bodyR * (0.7 + 0.5 * f), Paint()..color = c);
     }
 
-    // 4) The head: bright glow + body + a white-hot core + eyes.
+    // 4) The head: bright glow + body + a white-hot core + eyes. Two stacked
+    // translucent halos (wide+faint, tight+stronger) replace the per-head blur.
     final head = pixels.first;
-    canvas.drawCircle(
-      head,
-      headR * 2.0,
-      Paint()
-        ..color = color.withValues(alpha: 0.5 * dim)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, headR),
-    );
+    canvas.drawCircle(head, headR * 2.2,
+        Paint()..color = color.withValues(alpha: 0.18 * dim));
+    canvas.drawCircle(head, headR * 1.5,
+        Paint()..color = color.withValues(alpha: 0.32 * dim));
     canvas.drawCircle(head, headR,
         Paint()..color = Color.lerp(color, _white, 0.15) ?? color);
     canvas.drawCircle(head, headR * 0.42,
@@ -341,12 +348,17 @@ class SnakeRenderer {
     // Ghost dot: where the head lands after one tap (one cell along [next]).
     final ghost = head + nxt * cell;
     final ghostR = cell * _turnGhostFactor;
+    // Two stacked translucent dots (wide+faint, tight+stronger) hint the landing
+    // cell without a blur.
+    canvas.drawCircle(
+      ghost,
+      ghostR * 1.3,
+      Paint()..color = color.withValues(alpha: (0.10 * em).clamp(0.0, 1.0)),
+    );
     canvas.drawCircle(
       ghost,
       ghostR,
-      Paint()
-        ..color = color.withValues(alpha: (0.22 * em).clamp(0.0, 1.0))
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, ghostR * 0.6),
+      Paint()..color = color.withValues(alpha: (0.2 * em).clamp(0.0, 1.0)),
     );
     canvas.drawCircle(
       ghost,

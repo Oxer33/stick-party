@@ -8,7 +8,8 @@ import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/minigames/tug_of_war/tug_of_war.dart';
 void main() {
-  test('render tug preview', () async {
+  test('render tug preview (vertical north/south pull)', () async {
+    // Tall portrait canvas: Tug of War pulls a VERTICAL rope (top vs bottom).
     const size = Size(900, 1400);
     final players = [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)];
     final ctx = MiniGameContext(players: players, arena: size, rng: SeededRng(3), zones: ZoneLayout.forPlayers(4));

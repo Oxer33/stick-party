@@ -51,7 +51,6 @@ class SumoSmash extends MiniGameBase {
   static const double _spawnRadiusFactor = 0.55;
 
   // ── Aim + charge control tuning ─────────────────────────────────────────────
-  static const double _aimSweepSpeed = 2.0; // rad/s, ~3.1s per revolution
   static const double _chargeTimeSec = 0.6; // hold time to full charge
   static const double _cooldownSec = 0.24; // snappy recovery between shoves
   static const double _dashBase = 1.4; // quick tap = a small nudge
@@ -142,7 +141,9 @@ class SumoSmash extends MiniGameBase {
     final spawnRadius = _ringRadius * _spawnRadiusFactor;
     for (var i = 0; i < count; i++) {
       final p = ctx.players[i];
-      final angle = (i / count) * math.pi * 2 - math.pi / 2;
+      // Start at +90° (bottom) so player 0 spawns in their own bottom zone and
+      // 2-player duels face off north/south up the tall screen.
+      final angle = (i / count) * math.pi * 2 + math.pi / 2;
       final pos =
           _center + Offset(math.cos(angle), math.sin(angle)) * spawnRadius;
       _arena.add(Body(id: p.id, pos: pos, radius: _bodyRadius));
@@ -211,7 +212,8 @@ class SumoSmash extends MiniGameBase {
       case InputPhase.up:
         if (f.charging) {
           f.charging = false;
-          _commitDash(input.playerId, body, f.aim, f.charge);
+          final aim = _aimAtNearest(input.playerId) ?? f.aim;
+          _commitDash(input.playerId, body, aim, f.charge);
           f.charge = 0;
         }
       case InputPhase.holdTick:
@@ -241,18 +243,30 @@ class SumoSmash extends MiniGameBase {
     _resolveOutcome();
   }
 
-  /// Sweep the aim when idle, fill charge while held, recover cooldown.
+  /// Aim always tracks the nearest opponent (so a tap/charge strikes straight
+  /// at it — no rotating arrow to time), fill charge while held, recover cooldown.
   void _tickFighters(double dt) {
     for (final entry in _fighters.entries) {
       final f = entry.value;
-      final alive = _isAlive(entry.key);
-      if (f.charging && alive) {
-        f.charge = math.min(1.0, f.charge + dt / _chargeTimeSec);
-      } else if (alive) {
-        f.aim = _wrap(f.aim + _aimSweepSpeed * dt);
+      if (_isAlive(entry.key)) {
+        final a = _aimAtNearest(entry.key);
+        if (a != null) f.aim = a;
+        if (f.charging) {
+          f.charge = math.min(1.0, f.charge + dt / _chargeTimeSec);
+        }
       }
       f.tick(dt);
     }
+  }
+
+  /// Angle from a player to the nearest alive opponent, or null if none.
+  double? _aimAtNearest(int playerId) {
+    final self = _bodyOf(playerId);
+    final target = _nearestOpponentPos(playerId);
+    if (self == null || target == null) return null;
+    final d = target - self.pos;
+    if (d.distance < 1e-6) return null;
+    return math.atan2(d.dy, d.dx);
   }
 
   void _driveBots(double dt) {
@@ -539,73 +553,61 @@ class SumoSmash extends MiniGameBase {
     }
   }
 
-  /// Player-coloured aim arrow sweeping around the wrestler; it grows + brightens
-  /// while charging so the player sees exactly where and how hard they'll shove.
+  /// No idle arrow. While charging, a telegraph points straight at the nearest
+  /// opponent (where the shove will fire) and a ring shows the charge level.
   void _drawAim(Canvas canvas, Offset center, Color color, _Fighter f) {
-    final ready = f.ready;
+    if (!f.charging || f.charge <= 0.01) return;
     final charge = f.charge;
     final dir = Offset(math.cos(f.aim), math.sin(f.aim));
     final base = _bodyRadius * 0.95;
-    final len = _bodyRadius * (2.4 + 2.6 * charge) * (ready ? 1.0 : 0.55);
+    final len = _bodyRadius * (1.8 + 2.4 * charge);
     final start = center + dir * base;
     final end = center + dir * (base + len);
+    final w = _bodyRadius * (0.22 + 0.26 * charge);
 
-    final pulse = ready ? (0.85 + 0.15 * math.sin(_animClock * 6)) : 0.4;
-    final a = (f.charging ? 1.0 : pulse).clamp(0.0, 1.0);
-    final w = _bodyRadius * (0.26 + 0.26 * charge);
-
-    // Soft glow shaft.
+    // Solid layered shaft (no blur — cheap to draw every frame).
     canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = color.withValues(alpha: (a * 0.7).clamp(0.0, 1.0))
-        ..strokeWidth = w * 1.8
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 6 * charge),
-    );
-    // Crisp white-cored shaft so it pops over the clay.
-    canvas.drawLine(start, end,
-        Paint()..color = color.withValues(alpha: a)..strokeWidth = w..strokeCap = StrokeCap.round);
-    canvas.drawLine(start, end,
-        Paint()..color = const Color(0xFFFFFFFF).withValues(alpha: a * 0.6)..strokeWidth = w * 0.4..strokeCap = StrokeCap.round);
-
-    // Arrowhead (color + white core).
-    final perp = Offset(-dir.dy, dir.dx);
-    final head = _bodyRadius * (0.62 + 0.34 * charge);
-    final tip = end + dir * head;
-    final left = end + perp * head * 0.66;
-    final right = end - perp * head * 0.66;
-    final headPath = Path()
-      ..moveTo(tip.dx, tip.dy)
-      ..lineTo(left.dx, left.dy)
-      ..lineTo(right.dx, right.dy)
-      ..close();
-    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: a));
-    canvas.drawPath(
-        headPath,
+        start,
+        end,
         Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(1.0, _bodyRadius * 0.08)
-          ..color = const Color(0xFFFFFFFF).withValues(alpha: a * 0.7));
+          ..color = color.withValues(alpha: 0.95)
+          ..strokeWidth = w
+          ..strokeCap = StrokeCap.round);
+    canvas.drawLine(
+        start,
+        end,
+        Paint()
+          ..color = const Color(0xFFFFFFFF).withValues(alpha: 0.6)
+          ..strokeWidth = w * 0.4
+          ..strokeCap = StrokeCap.round);
 
-    // Charge ring beneath the wrestler while holding.
-    if (f.charging && charge > 0.02) {
-      final groundCenter = center.translate(0, _bodyRadius);
-      final ring = Paint()
+    final perp = Offset(-dir.dy, dir.dx);
+    final head = _bodyRadius * (0.55 + 0.34 * charge);
+    final tip = end + dir * head;
+    final l = end + perp * head * 0.66;
+    final r = end - perp * head * 0.66;
+    canvas.drawPath(
+      Path()
+        ..moveTo(tip.dx, tip.dy)
+        ..lineTo(l.dx, l.dy)
+        ..lineTo(r.dx, r.dy)
+        ..close(),
+      Paint()..color = color.withValues(alpha: 0.95),
+    );
+
+    final groundCenter = center.translate(0, _bodyRadius);
+    canvas.drawArc(
+      Rect.fromCircle(center: groundCenter, radius: _bodyRadius * 1.25),
+      -math.pi / 2,
+      math.pi * 2 * charge,
+      false,
+      Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = _bodyRadius * 0.18
         ..strokeCap = StrokeCap.round
         ..color = Color.lerp(color, const Color(0xFFFFFFFF), charge)!
-            .withValues(alpha: 0.9);
-      canvas.drawArc(
-        Rect.fromCircle(center: groundCenter, radius: _bodyRadius * 1.25),
-        -math.pi / 2,
-        math.pi * 2 * charge,
-        false,
-        ring,
-      );
-    }
+            .withValues(alpha: 0.9),
+    );
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -657,14 +659,6 @@ class SumoSmash extends MiniGameBase {
     final d = v.distance;
     if (d < 1e-6) return Offset.zero;
     return v / d;
-  }
-
-  static double _wrap(double a) {
-    const twoPi = math.pi * 2;
-    var r = a % twoPi;
-    if (r > math.pi) r -= twoPi;
-    if (r < -math.pi) r += twoPi;
-    return r;
   }
 }
 

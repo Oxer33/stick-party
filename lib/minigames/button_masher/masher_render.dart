@@ -229,9 +229,7 @@ class MasherRenderer {
         ),
         Radius.circular(railW * 0.4),
       ),
-      Paint()
-        ..color = _black.withValues(alpha: 0.3)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, railW * 0.4),
+      Paint()..color = _black.withValues(alpha: 0.25),
     );
 
     // Steel rail with a vertical sheen.
@@ -301,11 +299,16 @@ class MasherRenderer {
       );
 
       if (lit) {
+        // Wide faint solid plate under the lit body fakes the glow cheaply
+        // (no per-level blur in this per-frame loop).
         canvas.drawRRect(
-          rect,
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(left, top, tabW, cellH).inflate(cellH * 0.22),
+            Radius.circular(cellH * 0.3),
+          ),
           Paint()
-            ..color = baseCol.withValues(alpha: 0.35 + 0.25 * glowPulse)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, cellH * 0.4),
+            ..color = baseCol.withValues(
+                alpha: (0.16 + 0.12 * glowPulse).clamp(0.0, 1.0)),
         );
         canvas.drawRRect(rect, Paint()..color = baseCol);
         canvas.drawRRect(
@@ -427,14 +430,8 @@ class MasherRenderer {
       );
     }
 
-    // Puck glow.
-    canvas.drawCircle(
-      pos,
-      w * 0.6,
-      Paint()
-        ..color = color.withValues(alpha: 0.4)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, w * 0.4),
-    );
+    // Puck glow: cheap stacked-disc halo (no per-frame blur).
+    _softGlow(canvas, pos, w * 0.6, color, 0.26);
 
     // Puck body (a chunky rounded slug) with a top sheen.
     final rect = RRect.fromRectAndRadius(
@@ -484,15 +481,10 @@ class MasherRenderer {
       Paint()..color = _railSteel,
     );
 
-    // Excited glow when rung.
+    // Excited glow when rung: cheap stacked-disc bloom (no per-frame blur).
     if (rung) {
-      canvas.drawCircle(
-        center,
-        r * (1.4 + 0.3 * glowPulse),
-        Paint()
-          ..color = bellGold.withValues(alpha: 0.4 + 0.3 * glowPulse)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.6),
-      );
+      _softGlow(canvas, center, r * (1.3 + 0.25 * glowPulse), bellGold,
+          0.2 + 0.15 * glowPulse);
     }
 
     // Bell dome (a rounded bell shape via a cubic path).
@@ -627,15 +619,14 @@ class MasherRenderer {
     // Bright steel band.
     canvas.drawCircle(c, headThick * 0.22, Paint()..color = _railSteelHi);
 
-    // Impact flash at the head when fully struck.
+    // Impact flash at the head when fully struck: a layered solid burst
+    // (wide+faint under tight+bright) instead of a blur.
     if (s > 0.85) {
-      canvas.drawCircle(
-        headPos,
-        scale * 0.3 * (s - 0.85) / 0.15,
-        Paint()
-          ..color = _white.withValues(alpha: 0.6)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, scale * 0.12),
-      );
+      final fr = (s - 0.85) / 0.15;
+      canvas.drawCircle(headPos, scale * 0.42 * fr,
+          Paint()..color = _white.withValues(alpha: 0.28));
+      canvas.drawCircle(headPos, scale * 0.3 * fr,
+          Paint()..color = _white.withValues(alpha: 0.6));
     }
   }
 
@@ -656,13 +647,8 @@ class MasherRenderer {
         ..strokeWidth = math.max(1.5, scale * 0.12 * k)
         ..color = _blend(color, _white, 0.4).withValues(alpha: 0.7 * k),
     );
-    canvas.drawCircle(
-      at,
-      r * 0.5,
-      Paint()
-        ..color = color.withValues(alpha: 0.3 * k)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, scale * 0.2),
-    );
+    // Soft inner fill: cheap stacked-disc glow instead of a per-flash blur.
+    _softGlow(canvas, at, r * 0.5, color, 0.28 * k);
   }
 
   // ── Power bar ───────────────────────────────────────────────────────────────
@@ -692,11 +678,14 @@ class MasherRenderer {
     );
     canvas.drawRRect(fillRect, Paint()..color = hot);
     if (p > 0.6) {
+      // Wide faint solid plate over the fill fakes a hot bloom (no blur).
+      final glow = ((p - 0.6) / 0.4).clamp(0.0, 1.0);
       canvas.drawRRect(
-        fillRect,
-        Paint()
-          ..color = bellGold.withValues(alpha: 0.4 * (p - 0.6) / 0.4)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.6),
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: center, width: fillW, height: h * 2.0),
+          Radius.circular(h),
+        ),
+        Paint()..color = bellGold.withValues(alpha: 0.22 * glow),
       );
     }
   }
@@ -720,14 +709,9 @@ class MasherRenderer {
     final hot = Color.lerp(color, bellGold, t)!;
     final fontSize = 18.0 + 16.0 * t + 3.0 * p;
 
-    // Glow puck behind the text so it reads over the busy carnival background.
-    canvas.drawCircle(
-      anchor,
-      fontSize * (0.9 + 0.2 * p),
-      Paint()
-        ..color = hot.withValues(alpha: 0.28 + 0.22 * t)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, fontSize * 0.6),
-    );
+    // Glow puck behind the text so it reads over the busy carnival background:
+    // cheap stacked-disc halo instead of a per-frame blur.
+    _softGlow(canvas, anchor, fontSize * (0.9 + 0.2 * p), hot, 0.22 + 0.18 * t);
     _drawText(
       canvas,
       'x$combo',
@@ -748,17 +732,27 @@ class MasherRenderer {
 
   // ── Contact shadow ──────────────────────────────────────────────────────────
   static void drawContactShadow(Canvas canvas, Offset groundCenter, double w) {
+    // A plain translucent oval grounds the figure without a per-frame blur.
     canvas.drawOval(
       Rect.fromCenter(center: groundCenter, width: w * 2.4, height: w * 0.7),
-      Paint()
-        ..color = _black.withValues(alpha: 0.3)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, w * 0.22),
+      Paint()..color = _black.withValues(alpha: 0.25),
     );
   }
 
   // ── Small private helpers ───────────────────────────────────────────────────
   static Color _blend(Color a, Color b, double t) =>
       Color.lerp(a, b, t.clamp(0.0, 1.0)) ?? a;
+
+  /// Cheap soft glow: a wide faint disc under a tighter brighter one — fakes a
+  /// blurred halo without a per-frame [MaskFilter.blur]. [r] is the inner glow
+  /// radius; [alpha] the inner opacity (the outer is ~half as wide-spread).
+  static void _softGlow(Canvas canvas, Offset c, double r, Color color,
+      double alpha) {
+    final a = alpha.clamp(0.0, 1.0);
+    canvas.drawCircle(
+        c, r * 1.4, Paint()..color = color.withValues(alpha: a * 0.5));
+    canvas.drawCircle(c, r, Paint()..color = color.withValues(alpha: a));
+  }
 
   /// Pick black or white text for legibility against [bg].
   static Color _readableText(Color bg) {

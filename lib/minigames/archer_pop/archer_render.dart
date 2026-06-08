@@ -167,29 +167,35 @@ class ArcherRenderer {
   static void _drawClouds(
       Canvas canvas, List<Offset> clouds, Size size, double t) {
     if (clouds.isEmpty) return;
-    final paint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+    // Puffy clouds from a few overlapping translucent ovals — soft + cheap, no
+    // per-cloud blur. The faint alpha keeps the cluster reading as one cloud.
+    final paint = Paint()..color = _cloud;
     for (var i = 0; i < clouds.length; i++) {
       final c = clouds[i];
       // Slow horizontal drift that wraps across the width.
       final span = size.width + 240;
       final x = ((c.dx + t * (8 + (i % 3) * 4)) % span) - 120;
       final y = c.dy;
-      paint.color = _cloud;
       final w = 70.0 + (i % 3) * 34;
       canvas.drawOval(
-        Rect.fromCenter(center: Offset(x, y), width: w, height: w * 0.42),
+        Rect.fromCenter(center: Offset(x, y), width: w, height: w * 0.46),
         paint,
       );
       canvas.drawOval(
         Rect.fromCenter(
             center: Offset(x + w * 0.3, y + 4),
             width: w * 0.7,
-            height: w * 0.34),
+            height: w * 0.36),
+        paint,
+      );
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(x - w * 0.26, y + 3),
+            width: w * 0.55,
+            height: w * 0.30),
         paint,
       );
     }
-    paint.maskFilter = null;
   }
 
   /// Layered rolling hills receding to the horizon (far → near, darker + taller).
@@ -351,15 +357,14 @@ class ArcherRenderer {
     canvas.save();
     canvas.translate(center.dx, center.dy);
 
-    // Golden balloons get a soft outer glow so the bonus reads at a glance.
+    // Golden balloons get a soft outer glow (two stacked translucent rings,
+    // wide+faint under tight+stronger) so the bonus reads without a per-balloon
+    // blur.
     if (b.golden) {
-      canvas.drawCircle(
-        Offset.zero,
-        r * 1.5,
-        Paint()
-          ..color = _gold.withValues(alpha: 0.28)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.5),
-      );
+      canvas.drawCircle(Offset.zero, r * 1.7,
+          Paint()..color = _gold.withValues(alpha: 0.12));
+      canvas.drawCircle(Offset.zero, r * 1.34,
+          Paint()..color = _gold.withValues(alpha: 0.2));
     }
 
     // String: a wavy tail with a small knot.
@@ -525,7 +530,8 @@ class ArcherRenderer {
     // Control point bows the limbs back behind the hand (away from aim).
     final ctrl = hand - dir * (r * 0.5);
 
-    // Glow pass under the wood.
+    // Soft colored aura under the wood: a wide, faint stroke (no blur) beneath
+    // the crisp limbs fakes the glow far cheaper per archer.
     final bowPath = Path()
       ..moveTo(tipTop.dx, tipTop.dy)
       ..quadraticBezierTo(ctrl.dx, ctrl.dy, tipBot.dx, tipBot.dy);
@@ -533,10 +539,9 @@ class ArcherRenderer {
       bowPath,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(3.0, r * 0.22)
+        ..strokeWidth = math.max(4.0, r * 0.34)
         ..strokeCap = StrokeCap.round
-        ..color = a.color.withValues(alpha: 0.35)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.18),
+        ..color = a.color.withValues(alpha: 0.22),
     );
 
     // Wooden limbs (dark base + bright inner riser line).

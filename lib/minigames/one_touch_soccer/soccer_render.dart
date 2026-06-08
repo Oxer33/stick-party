@@ -12,7 +12,7 @@ class SoccerSide {
   /// Current score shown on the scoreboard.
   final int score;
 
-  /// Short label (e.g. "L"/"R" or a team letter) shown on the scoreboard chip.
+  /// Short label (e.g. "TOP"/"BOT" or a team letter) for the scoreboard chip.
   final String label;
 
   const SoccerSide({
@@ -42,16 +42,16 @@ class SoccerActor {
   /// 1-based number drawn in the ground ring.
   final int number;
 
-  /// 0..1 lunge charge used to brighten/scale the ground ring on a kick.
+  /// 0..1 kick flash used to brighten/scale the ground ring on a kick.
   final double kickFlash;
 
-  /// Origin of the active dash trail (null when none). Drawn behind the figure.
+  /// Origin of the active kick trail (null when none). Drawn behind the figure.
   final Offset? trailFrom;
 
-  /// Unit direction of the active dash trail (zero when none).
+  /// Unit direction of the active kick trail (zero when none).
   final Offset trailDir;
 
-  /// 0..1 remaining strength of the dash trail (0 when none).
+  /// 0..1 remaining strength of the kick trail (0 when none).
   final double trailStrength;
 
   const SoccerActor({
@@ -72,8 +72,13 @@ class SoccerActor {
 /// mutates the simulation — callers pass plain value snapshots. Kept in its own
 /// file so the gameplay module stays lean and the drawing stays cohesive.
 ///
+/// The pitch is NORTH/SOUTH: goals sit on the TOP and BOTTOM walls, the turf is
+/// mowed in horizontal bands and the penalty boxes hug the top and bottom.
+///
 /// Every method is side-effect free beyond the supplied [Canvas], guards its
-/// own inputs, and never throws (so it is safe to call from `render`).
+/// own inputs, and never throws (so it is safe to call from `render`). For
+/// performance there are NO per-entity blur mask filters — soft edges are faked
+/// with cheap layered solid strokes/fills so the game stays smooth.
 class SoccerRenderer {
   SoccerRenderer._();
 
@@ -82,8 +87,8 @@ class SoccerRenderer {
   static const Color _stadiumBottom = Color(0xFF03070A);
   static const Color _turfLight = Color(0xFF2BA85A);
   static const Color _turfDark = Color(0xFF1F8E49);
-  static const Color _turfShadeTop = Color(0x33A8FFC8);
-  static const Color _turfShadeBottom = Color(0x33000000);
+  static const Color _turfShadeLeft = Color(0x33A8FFC8);
+  static const Color _turfShadeRight = Color(0x33000000);
   static const Color _border = Color(0xFF05130B);
   static const Color _line = Color(0xFFF2FFF6);
   static const Color _white = Color(0xFFFFFFFF);
@@ -92,28 +97,28 @@ class SoccerRenderer {
   static const Color _crowdGlow = Color(0x1AFFFFFF);
 
   // ── Tuning (no magic numbers inline) ───────────────────────────────────────
-  static const int _stripeCount = 10;
+  static const int _stripeCount = 12;
   static const double _lineWidthFactor = 0.006; // line stroke / pitch shortSide
   static const double _centerCircleFactor = 0.13; // radius / shortSide
-  static const double _penaltyDepthFactor = 0.16; // box depth / pitch width
-  static const double _penaltyHeightFactor = 0.52; // box height / pitch height
-  static const double _netCellFactor = 0.16; // net cell / mouth height
+  static const double _penaltyDepthFactor = 0.16; // box depth / pitch height
+  static const double _penaltyWidthFactor = 0.52; // box width / pitch width
+  static const double _netCellFactor = 0.16; // net cell / mouth width
   static const double _postWidthFactor = 0.018; // post stroke / pitch shortSide
-  static const double _goalDepthFactor = 0.05; // net depth / pitch width
+  static const double _goalDepthFactor = 0.05; // net depth / pitch height
   static const double _vignetteFactor = 0.62; // vignette inset
   static const double _ballTrailStep = 0.55; // trail node spacing fade
   static const double _shadowDropFactor = 1.1; // ball shadow drop / radius
   static const double _scoreboardHeightFactor = 0.052; // of pitch height
   static const double _twoPi = math.pi * 2;
 
-  // Aim arrow geometry (multiples of the striker's body radius).
-  static const double _aimBaseFactor = 0.95; // gap before the shaft starts
-  static const double _aimLenBase = 2.4; // shaft length at zero charge
-  static const double _aimLenCharge = 2.6; // + this at full charge
-  static const double _aimWidthBase = 0.26; // shaft width at zero charge
-  static const double _aimWidthCharge = 0.26; // + this at full charge
-  static const double _aimHeadBase = 0.62; // arrowhead size at zero charge
-  static const double _aimHeadCharge = 0.34; // + this at full charge
+  // Soft-edge faking: how many concentric layers approximate a blur. Cheap vs
+  // MaskFilter.
+  static const int _softLayers = 3;
+
+  // Joystick geometry (the on-screen virtual stick).
+  static const double _joyBaseAlpha = 0.16; // base disc fill
+  static const double _joyRingAlpha = 0.5; // base ring stroke
+  static const double _joyThumbFactor = 0.42; // thumb radius / base radius
 
   // ── Background: stadium gradient + dark crowd haze ─────────────────────────
   static void drawBackground(Canvas canvas, Size size) {
@@ -135,9 +140,9 @@ class SoccerRenderer {
     canvas.drawRect(Offset.zero & size, glow);
   }
 
-  /// The pitch: dark stadium border, alternating mowed stripes (with a subtle
-  /// top-light / bottom-shade overlay), perimeter line, center line + circle and
-  /// both penalty boxes.
+  /// The pitch: dark stadium border, alternating mowed HORIZONTAL bands (with a
+  /// subtle left-light / right-shade overlay), perimeter line, center line +
+  /// circle and both penalty boxes (top + bottom).
   static void drawPitch(Canvas canvas, Rect pitch) {
     if (pitch.width <= 2 || pitch.height <= 2) return;
     final shortSide = pitch.shortestSide;
@@ -152,34 +157,34 @@ class SoccerRenderer {
       Paint()..color = _border,
     );
 
-    // Mowed vertical stripes.
+    // Mowed horizontal bands.
     canvas.save();
     canvas.clipRRect(RRect.fromRectAndRadius(
       pitch,
       Radius.circular(shortSide * 0.02),
     ));
-    final stripeW = pitch.width / _stripeCount;
-    final stripePaint = Paint();
+    final bandH = pitch.height / _stripeCount;
+    final bandPaint = Paint();
     for (var i = 0; i < _stripeCount; i++) {
-      stripePaint.color = i.isEven ? _turfLight : _turfDark;
+      bandPaint.color = i.isEven ? _turfLight : _turfDark;
       canvas.drawRect(
         Rect.fromLTWH(
-          pitch.left + i * stripeW,
-          pitch.top,
-          stripeW + 1,
-          pitch.height,
+          pitch.left,
+          pitch.top + i * bandH,
+          pitch.width,
+          bandH + 1,
         ),
-        stripePaint,
+        bandPaint,
       );
     }
-    // Vertical light → shade gradient overlay for grassy depth.
+    // Horizontal light → shade gradient overlay for grassy depth.
     canvas.drawRect(
       pitch,
       Paint()
         ..shader = Gradient.linear(
-          pitch.topCenter,
-          pitch.bottomCenter,
-          const [_turfShadeTop, Color(0x00000000), _turfShadeBottom],
+          pitch.centerLeft,
+          pitch.centerRight,
+          const [_turfShadeLeft, Color(0x00000000), _turfShadeRight],
           const [0.0, 0.5, 1.0],
         ),
     );
@@ -197,10 +202,10 @@ class SoccerRenderer {
     // Perimeter.
     canvas.drawRect(pitch.deflate(lineW), line);
 
-    // Center line + circle + spot.
+    // Halfway line (horizontal) + center circle + spot.
     canvas.drawLine(
-      Offset(pitch.center.dx, pitch.top + lineW),
-      Offset(pitch.center.dx, pitch.bottom - lineW),
+      Offset(pitch.left + lineW, pitch.center.dy),
+      Offset(pitch.right - lineW, pitch.center.dy),
       line,
     );
     final circleR = pitch.shortestSide * _centerCircleFactor;
@@ -208,46 +213,47 @@ class SoccerRenderer {
     canvas.drawCircle(
         pitch.center, math.max(2.0, lineW * 1.4), Paint()..color = _line);
 
-    // Penalty boxes on each side, centered vertically.
-    final boxDepth = pitch.width * _penaltyDepthFactor;
-    final boxHeight = pitch.height * _penaltyHeightFactor;
-    final boxTop = pitch.center.dy - boxHeight / 2;
+    // Penalty boxes on the top + bottom, centered horizontally.
+    final boxDepth = pitch.height * _penaltyDepthFactor;
+    final boxWidth = pitch.width * _penaltyWidthFactor;
+    final boxLeft = pitch.center.dx - boxWidth / 2;
     canvas.drawRect(
-      Rect.fromLTWH(pitch.left + lineW, boxTop, boxDepth, boxHeight),
+      Rect.fromLTWH(boxLeft, pitch.top + lineW, boxWidth, boxDepth),
       line,
     );
     canvas.drawRect(
       Rect.fromLTWH(
-          pitch.right - lineW - boxDepth, boxTop, boxDepth, boxHeight),
+          boxLeft, pitch.bottom - lineW - boxDepth, boxWidth, boxDepth),
       line,
     );
   }
 
-  /// A goal: a netted mouth on one wall. [onRight] selects the right wall (else
-  /// left). [bulge] in 0..1 flashes a net ripple after a recent goal.
+  /// A goal: a netted mouth on the top or bottom wall. [onBottom] selects the
+  /// bottom wall (else the top). [bulge] in 0..1 flashes a net ripple after a
+  /// recent goal.
   static void drawGoal(
     Canvas canvas,
     Rect pitch,
     Rect mouth, {
-    required bool onRight,
+    required bool onBottom,
     required Color color,
     required double bulge,
   }) {
-    if (mouth.height <= 2) return;
+    if (mouth.width <= 2) return;
     final shortSide = pitch.shortestSide;
-    final depth = pitch.width * _goalDepthFactor;
-    final x = onRight ? pitch.right : pitch.left;
-    final inward = onRight ? -1.0 : 1.0;
-    final backX = x - inward * depth;
-    final mouthH = mouth.height;
-    final cell = math.max(6.0, mouthH * _netCellFactor);
+    final depth = pitch.height * _goalDepthFactor;
+    final y = onBottom ? pitch.bottom : pitch.top;
+    final inward = onBottom ? -1.0 : 1.0;
+    final backY = y - inward * depth;
+    final mouthW = mouth.width;
+    final cell = math.max(6.0, mouthW * _netCellFactor);
 
     // Net recess background (dim) so the mesh reads against the turf.
     final recess = Rect.fromLTRB(
-      math.min(x, backX),
-      mouth.top,
-      math.max(x, backX),
-      mouth.bottom,
+      mouth.left,
+      math.min(y, backY),
+      mouth.right,
+      math.max(y, backY),
     );
     canvas.drawRect(recess, Paint()..color = _black.withValues(alpha: 0.30));
 
@@ -256,31 +262,31 @@ class SoccerRenderer {
     if (b > 0.01) {
       final swell = Paint()
         ..shader = Gradient.radial(
-          Offset(backX, mouth.center.dy),
+          Offset(mouth.center.dx, backY),
           depth * 1.6,
           [color.withValues(alpha: 0.5 * b), const Color(0x00000000)],
         );
       canvas.drawRect(recess, swell);
     }
 
-    // Net mesh: vertical + horizontal strands, slightly displaced by the bulge.
+    // Net mesh: horizontal + vertical strands, slightly displaced by the bulge.
     final mesh = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(0.8, shortSide * 0.0025)
       ..color = _white.withValues(alpha: 0.34 + 0.30 * b);
     final push = inward * depth * 0.4 * b;
-    for (var gx = 0.0; gx <= depth; gx += cell) {
-      final sx = x - inward * gx;
+    for (var gy = 0.0; gy <= depth; gy += cell) {
+      final sy = y - inward * gy;
       canvas.drawLine(
-          Offset(sx, mouth.top), Offset(sx, mouth.bottom), mesh);
+          Offset(mouth.left, sy), Offset(mouth.right, sy), mesh);
     }
-    for (var gy = mouth.top; gy <= mouth.bottom; gy += cell) {
+    for (var gx = mouth.left; gx <= mouth.right; gx += cell) {
       // Mid strands sag toward the back when the net bulges.
-      final t = ((gy - mouth.top) / mouthH - 0.5).abs() * 2; // 0 mid → 1 edge
+      final t = ((gx - mouth.left) / mouthW - 0.5).abs() * 2; // 0 mid → 1 edge
       final sag = push * (1 - t);
       canvas.drawLine(
-        Offset(x, gy),
-        Offset(backX + sag, gy),
+        Offset(gx, y),
+        Offset(gx, backY + sag),
         mesh,
       );
     }
@@ -292,35 +298,28 @@ class SoccerRenderer {
       ..strokeWidth = postW
       ..strokeCap = StrokeCap.round
       ..color = color;
-    // Front goal line (the mouth) glows in the accent.
-    final glow = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = postW * 1.6
-      ..strokeCap = StrokeCap.round
-      ..color = color.withValues(alpha: 0.45)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, postW);
-    canvas.drawLine(Offset(x, mouth.top), Offset(x, mouth.bottom), glow);
-    canvas.drawLine(Offset(x, mouth.top), Offset(x, mouth.bottom), post);
-    // Top + bottom bars receding to the back of the net.
-    canvas.drawLine(Offset(x, mouth.top), Offset(backX, mouth.top), post);
+    // Front goal line (the mouth) gets a cheap layered glow + a crisp bar.
+    _strokeSoftLine(canvas, Offset(mouth.left, y), Offset(mouth.right, y),
+        color, postW);
+    canvas.drawLine(Offset(mouth.left, y), Offset(mouth.right, y), post);
+    // Side bars receding to the back of the net.
+    canvas.drawLine(Offset(mouth.left, y), Offset(mouth.left, backY), post);
+    canvas.drawLine(Offset(mouth.right, y), Offset(mouth.right, backY), post);
     canvas.drawLine(
-        Offset(x, mouth.bottom), Offset(backX, mouth.bottom), post);
-    canvas.drawLine(
-        Offset(backX, mouth.top), Offset(backX, mouth.bottom), post);
+        Offset(mouth.left, backY), Offset(mouth.right, backY), post);
   }
 
-  /// Soft contact shadow ellipse + a colored ground ring with a number, drawn
-  /// beneath one player. [kickFlash] in 0..1 brightens the ring on a lunge.
+  /// Solid contact shadow ellipse + a colored ground ring with a number, drawn
+  /// beneath one player. [kickFlash] in 0..1 brightens the ring on a kick. No
+  /// blur — the shadow is a single soft-tinted oval.
   static void drawActorGround(Canvas canvas, SoccerActor a) {
     final r = a.radius;
-    // Shadow.
+    // Shadow (flat tint, no mask filter).
     canvas.drawOval(
       Rect.fromCenter(center: a.feet, width: r * 2.6, height: r * 0.8),
-      Paint()
-        ..color = _black.withValues(alpha: 0.34)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.22),
+      Paint()..color = _black.withValues(alpha: 0.30),
     );
-    // Ground ring (brightens with kick charge).
+    // Ground ring (brightens with kick flash).
     final flash = a.kickFlash.clamp(0.0, 1.0);
     final ring = Paint()
       ..style = PaintingStyle.stroke
@@ -352,122 +351,87 @@ class SoccerRenderer {
     a.figure.render(canvas, a.root);
   }
 
-  /// A short directional motion streak behind a dashing / kicking striker, drawn
-  /// from [SoccerActor.trailFrom] along [SoccerActor.trailDir]. No-op when there
-  /// is no active trail.
+  /// A short directional motion streak behind a kicking striker, drawn from
+  /// [SoccerActor.trailFrom] along [SoccerActor.trailDir]. No-op when there is
+  /// no active trail. Uses layered solid strokes (no blur) for a soft look.
   static void drawDashTrail(Canvas canvas, SoccerActor a) {
     final from = a.trailFrom;
     final s = a.trailStrength.clamp(0.0, 1.0);
     if (from == null || s <= 0.01 || a.trailDir == Offset.zero) return;
     final r = a.radius;
     final to = from + a.trailDir * (r * 2.4);
-    canvas.drawLine(
-      from,
-      to,
-      Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = r * (0.55 + 0.8 * s)
-        ..color = a.color.withValues(alpha: 0.26 * s)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.3),
-    );
-  }
-
-  /// The player's control, drawn on top of the striker: a player-colored AIM
-  /// ARROW that sweeps around the body, growing + brightening with [charge] so
-  /// the player sees exactly where and how hard they will dash / kick. A charge
-  /// ring sweeps under the feet while [charging]. Nothing here is auto-aimed —
-  /// it is a pure readout of the striker's chosen aim + charge.
-  static void drawAim(
-    Canvas canvas,
-    Offset center,
-    double bodyR,
-    Color color, {
-    required double aim,
-    required double charge,
-    required bool charging,
-    required bool ready,
-    required double clock,
-  }) {
-    final c = charge.clamp(0.0, 1.0);
-    final dir = Offset(math.cos(aim), math.sin(aim));
-    final base = bodyR * _aimBaseFactor;
-    final len = bodyR * (_aimLenBase + _aimLenCharge * c) * (ready ? 1.0 : 0.55);
-    final start = center + dir * base;
-    final end = center + dir * (base + len);
-
-    final pulse = ready ? (0.85 + 0.15 * math.sin(clock * 6)) : 0.4;
-    final alpha = (charging ? 1.0 : pulse).clamp(0.0, 1.0);
-    final w = bodyR * (_aimWidthBase + _aimWidthCharge * c);
-
-    // Soft glow shaft.
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = color.withValues(alpha: (alpha * 0.7).clamp(0.0, 1.0))
-        ..strokeWidth = w * 1.8
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 6 * c),
-    );
-    // Crisp colored shaft + a white core so it pops over the turf.
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = color.withValues(alpha: alpha)
-        ..strokeWidth = w
-        ..strokeCap = StrokeCap.round,
-    );
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = _white.withValues(alpha: alpha * 0.6)
-        ..strokeWidth = w * 0.4
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Arrowhead (color + white outline).
-    final perp = Offset(-dir.dy, dir.dx);
-    final head = bodyR * (_aimHeadBase + _aimHeadCharge * c);
-    final tip = end + dir * head;
-    final left = end + perp * head * 0.66;
-    final right = end - perp * head * 0.66;
-    final headPath = Path()
-      ..moveTo(tip.dx, tip.dy)
-      ..lineTo(left.dx, left.dy)
-      ..lineTo(right.dx, right.dy)
-      ..close();
-    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: alpha));
-    canvas.drawPath(
-      headPath,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, bodyR * 0.08)
-        ..color = _white.withValues(alpha: alpha * 0.7),
-    );
-
-    // Charge ring sweeping under the feet while holding.
-    if (charging && c > 0.02) {
-      final groundCenter = center.translate(0, bodyR);
-      final ring = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = bodyR * 0.18
-        ..strokeCap = StrokeCap.round
-        ..color = (Color.lerp(color, _white, c) ?? color).withValues(alpha: 0.9);
-      canvas.drawArc(
-        Rect.fromCircle(center: groundCenter, radius: bodyR * 1.25),
-        -math.pi / 2,
-        _twoPi * c,
-        false,
-        ring,
+    final baseW = r * (0.55 + 0.8 * s);
+    // Outer-to-inner layered strokes fake a glow without a mask filter.
+    for (var i = _softLayers; i >= 1; i--) {
+      final f = i / _softLayers; // 1 outer → ~0.33 inner
+      canvas.drawLine(
+        from,
+        to,
+        Paint()
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = baseW * (0.5 + f)
+          ..color = a.color.withValues(alpha: 0.12 * s * (1.2 - f)),
       );
     }
   }
 
+  /// The on-screen virtual joystick for one human player: a translucent base
+  /// disc + ring at [origin] and a brighter thumb at [thumb], clamped to
+  /// [maxRadius]. Drawn in the player's [color] so each stick is identifiable.
+  static void drawJoystick(
+    Canvas canvas, {
+    required Offset origin,
+    required Offset thumb,
+    required double maxRadius,
+    required Color color,
+  }) {
+    if (maxRadius <= 1) return;
+    // Clamp the thumb inside the base radius.
+    final v = thumb - origin;
+    final d = v.distance;
+    final clamped =
+        d > maxRadius && d > 0 ? origin + (v / d) * maxRadius : thumb;
+
+    // Base disc + ring.
+    canvas.drawCircle(origin, maxRadius,
+        Paint()..color = color.withValues(alpha: _joyBaseAlpha));
+    canvas.drawCircle(
+      origin,
+      maxRadius,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(2.0, maxRadius * 0.06)
+        ..color = color.withValues(alpha: _joyRingAlpha),
+    );
+
+    // A faint line from base center to the thumb shows the steer direction.
+    canvas.drawLine(
+      origin,
+      clamped,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(2.0, maxRadius * 0.05)
+        ..color = color.withValues(alpha: 0.45),
+    );
+
+    // Thumb: solid color core + white rim.
+    final thumbR = maxRadius * _joyThumbFactor;
+    canvas.drawCircle(
+        clamped, thumbR, Paint()..color = color.withValues(alpha: 0.92));
+    canvas.drawCircle(
+      clamped,
+      thumbR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, thumbR * 0.18)
+        ..color = _white.withValues(alpha: 0.9),
+    );
+  }
+
   /// The ball: motion trail → contact shadow → white body with a faint
   /// pentagon/seam hint and a directional highlight. [squash] in 0..1 flattens
-  /// it along [velDir] after a hard hit; [trail] is newest→oldest centers.
+  /// it along [velDir] after a hard hit; [trail] is newest→oldest centers. The
+  /// shadow is a flat tinted oval (no mask filter).
   static void drawBall(
     Canvas canvas,
     Offset pos,
@@ -489,16 +453,14 @@ class SoccerRenderer {
       }
     }
 
-    // Contact shadow on the turf.
+    // Contact shadow on the turf (flat tint).
     canvas.drawOval(
       Rect.fromCenter(
         center: pos.translate(0, radius * _shadowDropFactor),
         width: radius * 2.0,
         height: radius * 0.7,
       ),
-      Paint()
-        ..color = _black.withValues(alpha: 0.30)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.25),
+      Paint()..color = _black.withValues(alpha: 0.28),
     );
 
     // Squash transform: flatten along travel direction, stretch across it.
@@ -580,8 +542,8 @@ class SoccerRenderer {
   static void drawScoreboard(
     Canvas canvas,
     Rect pitch,
-    SoccerSide left,
-    SoccerSide right,
+    SoccerSide top,
+    SoccerSide bottom,
     double secondsLeft,
   ) {
     final h = math.max(22.0, pitch.height * _scoreboardHeightFactor);
@@ -601,22 +563,22 @@ class SoccerRenderer {
         ..color = _white.withValues(alpha: 0.16),
     );
 
-    // Left chip.
+    // Top-side chip (left of the bar).
     final chipW = h * 1.5;
     _drawScoreChip(
       canvas,
       Rect.fromLTWH(bar.left, bar.top, chipW, h),
-      left.color,
-      '${left.score}',
-      left.label,
+      top.color,
+      '${top.score}',
+      top.label,
     );
-    // Right chip.
+    // Bottom-side chip (right of the bar).
     _drawScoreChip(
       canvas,
       Rect.fromLTWH(bar.right - chipW, bar.top, chipW, h),
-      right.color,
-      '${right.score}',
-      right.label,
+      bottom.color,
+      '${bottom.score}',
+      bottom.label,
     );
 
     // Clock in the middle.
@@ -644,7 +606,7 @@ class SoccerRenderer {
         canvas,
         label,
         rect.center.translate(0, -rect.height * 0.42),
-        rect.height * 0.22,
+        rect.height * 0.20,
         _readableText(color).withValues(alpha: 0.85),
         FontWeight.w700);
   }
@@ -665,6 +627,29 @@ class SoccerRenderer {
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────
+
+  /// Fake a soft glow on a line with a few translucent over-strokes (cheaper
+  /// than [MaskFilter.blur] and good enough at gameplay scale).
+  static void _strokeSoftLine(
+    Canvas canvas,
+    Offset a,
+    Offset b,
+    Color color,
+    double baseW,
+  ) {
+    for (var i = _softLayers; i >= 1; i--) {
+      final f = i / _softLayers; // 1 outer → inner
+      canvas.drawLine(
+        a,
+        b,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = baseW * (1.0 + 1.4 * f)
+          ..color = color.withValues(alpha: 0.18 * (1.2 - f)),
+      );
+    }
+  }
 
   static Color _readableText(Color bg) {
     final luma = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;

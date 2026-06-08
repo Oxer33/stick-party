@@ -29,6 +29,12 @@ void main() {
     expect(g.status, MiniGameStatus.finished);
     expect(g.winResult, isNotNull);
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
+
+    // Sim-length floor + ceiling: back-and-forth pulling must outlast the bot
+    // warmup, and the round must still resolve inside the (~20s) hard limit.
+    final simSeconds = n / 60.0;
+    expect(simSeconds, greaterThan(1.5));
+    expect(simSeconds, lessThanOrEqualTo(21.0));
   });
 
   test('tug of war 2v2 by team finishes; one full team ranks ahead', () {
