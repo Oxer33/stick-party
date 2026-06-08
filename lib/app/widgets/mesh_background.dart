@@ -80,9 +80,6 @@ const List<_Blob> _kBlobs = <_Blob>[
   ),
 ];
 
-/// Blur sigma applied to the whole blob layer (soft, dreamy edges).
-const double _kFieldBlur = 70;
-
 /// Per-blob alpha (kept low so accents stay subtle and text reads).
 const double _kBlobAlpha = 0.55;
 
@@ -128,15 +125,13 @@ class _MeshGradientBackgroundState extends State<MeshGradientBackground>
             ),
           ),
         ),
-        // Drifting blurred blobs.
+        // Drifting glow blobs. The radial gradients already fade to transparent,
+        // so they read soft WITHOUT a full-screen ImageFilter.blur every frame
+        // (that blur was the menu's main lag source) — now cheap: 4 gradients/frame.
         RepaintBoundary(
-          child: ImageFiltered(
-            imageFilter:
-                ui.ImageFilter.blur(sigmaX: _kFieldBlur, sigmaY: _kFieldBlur),
-            child: CustomPaint(
-              painter: _MeshPainter(_controller),
-              size: Size.infinite,
-            ),
+          child: CustomPaint(
+            painter: _MeshPainter(_controller),
+            size: Size.infinite,
           ),
         ),
         // Faint frosted scrim so foreground glass always reads.

@@ -1,9 +1,12 @@
-/// Home / main menu — the glass showcase. A shimmering gradient title, a frosted
-/// chip row (coins, streak, settings), a grid of large glass buttons, a
-/// daily-claim hint dot, and a house-ad teaser card (the cross-promo funnel).
+/// Home / main menu — the party showcase. A drifting mesh + confetti backdrop,
+/// a frosted top bar (coins, streak, settings cog), a hero block with the big
+/// gradient "STICK PARTY" logo and a lineup of animated procedural stickman
+/// mascots, a prominent QUICK PLAY button, a grid of illustrated action cards
+/// (CUP / SHOP / DAILY / STATS), a horizontal showcase of all 15 minigames, and
+/// a house-ad "more games" teaser at the bottom (the cross-promo funnel).
 ///
 /// Navigation, providers and the cross-promo flow are unchanged from the
-/// original; only the presentation is glass.
+/// original; only the presentation is richer.
 library;
 
 import 'package:flutter/material.dart';
@@ -19,16 +22,22 @@ import '../../services/analytics_service.dart';
 import '../../services/cross_promo_service.dart';
 import '../providers.dart';
 import '../router.dart';
+import '../widgets/games_showcase.dart';
 import '../widgets/glass_kit.dart';
 import '../widgets/glass_tokens.dart';
+import '../widgets/home_confetti.dart';
+import '../widgets/home_mascots.dart';
 import '../widgets/mesh_background.dart';
 import '../widgets/ui_kit.dart';
 
 /// Big logo type size.
-const double _kTitleSize = 64;
+const double _kTitleSize = 60;
 
-/// Height of each menu button.
-const double _kMenuButtonHeight = 76;
+/// Height of the prominent primary action button.
+const double _kPrimaryHeight = 84;
+
+/// Height of each secondary action card in the grid.
+const double _kCardHeight = 96;
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -41,37 +50,80 @@ class HomeScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: MeshGradientBackground(
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(GlassTokens.pagePadding),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                _TopChips(coins: progress.coins, streak: progress.streak)
-                    .animate()
-                    .fadeIn(duration: GlassTokens.entrance)
-                    .slideY(begin: -0.3, end: 0, curve: Curves.easeOutCubic),
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        const SizedBox(height: 28),
-                        const _Title(),
-                        const SizedBox(height: 28),
-                        _MenuGrid(dailyAvailable: dailyAvailable),
-                      ],
-                    ),
-                  ),
+        child: Stack(
+          children: <Widget>[
+            // Drifting confetti sits above the mesh, below the menu content.
+            const Positioned.fill(child: HomeConfetti()),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: GlassTokens.pagePadding,
                 ),
-                const SizedBox(height: GlassTokens.gap),
-                const _HouseAdTeaser()
-                    .animate()
-                    .fadeIn(delay: 360.ms, duration: GlassTokens.entrance)
-                    .slideY(begin: 0.4, end: 0, curve: Curves.easeOutCubic),
-              ],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    const SizedBox(height: GlassTokens.gapSmall),
+                    _TopBar(coins: progress.coins, streak: progress.streak)
+                        .animate()
+                        .fadeIn(duration: GlassTokens.entrance)
+                        .slideY(begin: -0.3, end: 0, curve: Curves.easeOutCubic),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.only(
+                          top: GlassTokens.gap,
+                          bottom: GlassTokens.gap,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            const _Hero(),
+                            const SizedBox(height: GlassTokens.gap),
+                            _PrimaryPlayButton()
+                                .animate()
+                                .fadeIn(
+                                  delay: 200.ms,
+                                  duration: GlassTokens.entrance,
+                                )
+                                .slideY(
+                                  begin: 0.3,
+                                  end: 0,
+                                  curve: Curves.easeOutCubic,
+                                ),
+                            const SizedBox(height: GlassTokens.gapSmall),
+                            _ActionGrid(dailyAvailable: dailyAvailable),
+                            const SizedBox(height: GlassTokens.gap + 4),
+                            _Showcase()
+                                .animate()
+                                .fadeIn(
+                                  delay: 460.ms,
+                                  duration: GlassTokens.entrance,
+                                )
+                                .slideY(
+                                  begin: 0.2,
+                                  end: 0,
+                                  curve: Curves.easeOutCubic,
+                                ),
+                            const SizedBox(height: GlassTokens.gap),
+                            const _HouseAdTeaser()
+                                .animate()
+                                .fadeIn(
+                                  delay: 560.ms,
+                                  duration: GlassTokens.entrance,
+                                )
+                                .slideY(
+                                  begin: 0.4,
+                                  end: 0,
+                                  curve: Curves.easeOutCubic,
+                                ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -86,9 +138,9 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
-/// The frosted top chip row: coins, streak (conditional) and a settings cog.
-class _TopChips extends StatelessWidget {
-  const _TopChips({required this.coins, required this.streak});
+/// The frosted top bar: coins, streak (conditional) and a settings cog.
+class _TopBar extends StatelessWidget {
+  const _TopBar({required this.coins, required this.streak});
 
   final int coins;
   final StreakState streak;
@@ -112,17 +164,20 @@ class _TopChips extends StatelessWidget {
   }
 }
 
-/// The two-word gradient logo + subtitle. Kept as two separate [Text] widgets
-/// ("STICK" / "PARTY") so the smoke test can find each independently.
-class _Title extends StatelessWidget {
-  const _Title();
+/// The hero: the two-word gradient logo + subtitle, with the animated mascot
+/// lineup as the centerpiece beneath it.
+class _Hero extends StatelessWidget {
+  const _Hero();
 
   @override
   Widget build(BuildContext context) {
     final TextStyle titleStyle = GlassText.display.copyWith(
       fontSize: _kTitleSize,
     );
-    return Column(
+    // Kept as two separate words ("STICK" / "PARTY") so the smoke test can find
+    // each independently, while still reading as the "STICK PARTY" logo.
+    final Widget title = Column(
+      mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         gradientText(
           'STICK',
@@ -152,63 +207,95 @@ class _Title extends StatelessWidget {
           style: GlassText.overline.copyWith(letterSpacing: 4),
         ),
       ],
-    )
-        .animate()
-        .fadeIn(duration: 600.ms)
-        .scale(begin: const Offset(0.9, 0.9), end: const Offset(1, 1));
+    );
+
+    return Column(
+      children: <Widget>[
+        title
+            .animate()
+            .fadeIn(duration: 600.ms)
+            .scale(begin: const Offset(0.92, 0.92), end: const Offset(1, 1)),
+        const SizedBox(height: 6),
+        const HomeMascots()
+            .animate()
+            .fadeIn(delay: 120.ms, duration: 700.ms)
+            .slideY(begin: 0.15, end: 0, curve: Curves.easeOutCubic),
+      ],
+    );
   }
 }
 
-/// The main menu: a primary QUICK PLAY button then a 2-col grid of glass tiles.
-class _MenuGrid extends StatelessWidget {
-  const _MenuGrid({required this.dailyAvailable});
+/// The prominent QUICK PLAY call-to-action.
+class _PrimaryPlayButton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return GlassButton(
+      label: 'QUICK PLAY',
+      icon: Icons.play_arrow_rounded,
+      primary: true,
+      accent: GlassColors.violet,
+      height: _kPrimaryHeight,
+      onTap: () => context.push(
+        AppRoutes.setup,
+        extra: const SetupArgs(isCup: false),
+      ),
+    );
+  }
+}
+
+/// Immutable spec for one secondary action card.
+class _Action {
+  const _Action({
+    required this.label,
+    required this.icon,
+    required this.accent,
+    required this.onTap,
+    this.showDot = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color accent;
+  final VoidCallback onTap;
+  final bool showDot;
+}
+
+/// The 2-column grid of illustrated secondary actions: CUP / SHOP / DAILY /
+/// STATS, each with its own accent color and a procedural glyph.
+class _ActionGrid extends StatelessWidget {
+  const _ActionGrid({required this.dailyAvailable});
 
   final bool dailyAvailable;
 
   @override
   Widget build(BuildContext context) {
-    final List<Widget> tiles = <Widget>[
-      GlassButton(
-        label: 'QUICK PLAY',
-        icon: Icons.sports_esports,
-        primary: true,
-        accent: GlassColors.violet,
-        height: _kMenuButtonHeight,
-        onTap: () => context.push(
-          AppRoutes.setup,
-          extra: const SetupArgs(isCup: false),
-        ),
-      ),
-      GlassButton(
+    final List<_Action> actions = <_Action>[
+      _Action(
         label: 'CUP',
         icon: Icons.emoji_events,
         accent: GlassColors.amber,
-        height: _kMenuButtonHeight,
         onTap: () => context.push(
           AppRoutes.setup,
           extra: const SetupArgs(isCup: true),
         ),
       ),
-      GlassButton(
+      _Action(
         label: 'SHOP',
         icon: Icons.storefront,
         accent: GlassColors.magenta,
-        height: _kMenuButtonHeight,
         onTap: () => context.push(AppRoutes.shop),
       ),
-      GlassButton(
+      _Action(
         label: 'DAILY',
         icon: Icons.calendar_today,
         accent: GlassColors.cyan,
-        height: _kMenuButtonHeight,
-        trailing: dailyAvailable ? const _NotifyDot() : null,
+        showDot: dailyAvailable,
         onTap: () => context.push(AppRoutes.daily),
       ),
-      GlassButton(
+      _Action(
         label: 'STATS',
         icon: Icons.bar_chart,
         accent: GlassColors.flame,
-        height: _kMenuButtonHeight,
         onTap: () => context.push(AppRoutes.stats),
       ),
     ];
@@ -217,19 +304,128 @@ class _MenuGrid extends StatelessWidget {
       crossAxisCount: 2,
       mainAxisSpacing: GlassTokens.gapSmall,
       crossAxisSpacing: GlassTokens.gapSmall,
-      childAspectRatio: 1.9,
+      childAspectRatio: 1.85,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       children: <Widget>[
-        for (int i = 0; i < tiles.length; i++)
-          tiles[i]
+        for (int i = 0; i < actions.length; i++)
+          _ActionCard(action: actions[i])
               .animate()
               .fadeIn(
-                delay: (GlassTokens.stagger * i) + const Duration(milliseconds: 120),
+                delay: (GlassTokens.stagger * i) +
+                    const Duration(milliseconds: 280),
                 duration: GlassTokens.entrance,
               )
               .slideY(begin: 0.25, end: 0, curve: Curves.easeOutCubic),
       ],
+    );
+  }
+}
+
+/// One illustrated action card: a procedural glyph badge + label, accent-tinted,
+/// with an optional notification dot.
+class _ActionCard extends StatefulWidget {
+  const _ActionCard({required this.action});
+
+  final _Action action;
+
+  @override
+  State<_ActionCard> createState() => _ActionCardState();
+}
+
+class _ActionCardState extends State<_ActionCard> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (_pressed == value) return;
+    setState(() => _pressed = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final _Action a = widget.action;
+    return GestureDetector(
+      onTapDown: (_) => _setPressed(true),
+      onTapUp: (_) => _setPressed(false),
+      onTapCancel: () => _setPressed(false),
+      onTap: a.onTap,
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedScale(
+        scale: _pressed ? GlassTokens.pressScale : 1,
+        duration: GlassTokens.pressDuration,
+        curve: Curves.easeOut,
+        child: GlassPanel(
+          tint: a.accent,
+          tintOpacity: 0.14,
+          borderColor: a.accent.withValues(alpha: 0.45),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: SizedBox(
+            height: _kCardHeight,
+            child: Row(
+              children: <Widget>[
+                _GlyphBadge(icon: a.icon, accent: a.accent),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    a.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GlassText.label,
+                  ),
+                ),
+                if (a.showDot) const _NotifyDot(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A small rounded accent badge holding an action's icon (the "illustration").
+class _GlyphBadge extends StatelessWidget {
+  const _GlyphBadge({required this.icon, required this.accent});
+
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[accent, accent.withValues(alpha: 0.55)],
+        ),
+        borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: accent.withValues(alpha: 0.4),
+            blurRadius: 14,
+            spreadRadius: -2,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, color: Colors.white, size: 24),
+    );
+  }
+}
+
+/// The games-catalog strip. Tapping a tile routes into quick-play setup.
+class _Showcase extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return GamesShowcase(
+      onTapGame: (_) => context.push(
+        AppRoutes.setup,
+        extra: const SetupArgs(isCup: false),
+      ),
     );
   }
 }
@@ -317,6 +513,15 @@ class _HouseAdTeaserState extends ConsumerState<_HouseAdTeaser> {
                     overflow: TextOverflow.ellipsis,
                     style: GlassText.heading,
                   ),
+                  if (ad.blurb.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 2),
+                    Text(
+                      ad.blurb,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GlassText.body.copyWith(fontSize: 12),
+                    ),
+                  ],
                 ],
               ),
             ),

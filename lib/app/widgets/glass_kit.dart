@@ -8,8 +8,6 @@
 /// pressing button never repaints siblings.
 library;
 
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 
 import 'glass_tokens.dart';
@@ -64,34 +62,35 @@ class GlassPanel extends StatelessWidget {
     final Color edge = borderColor ??
         GlassColors.frost.withValues(alpha: GlassTokens.borderOpacity);
 
+    // Fake frosted glass: a translucent light→dark gradient fill instead of a
+    // BackdropFilter blur. The blur was the menu's main lag source (one GPU
+    // backdrop pass per card); this reads as glass and is cheap to draw.
     Widget panel = ClipRRect(
       borderRadius: shape,
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            borderRadius: shape,
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: <Color>[
-                GlassColors.frost.withValues(alpha: GlassTokens.sheenTop),
-                GlassColors.frost.withValues(alpha: GlassTokens.sheenBottom),
-              ],
-            ),
-            border: border ? Border.all(color: edge, width: 1) : null,
+      child: Container(
+        padding: padding,
+        decoration: BoxDecoration(
+          borderRadius: shape,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[
+              GlassColors.frost.withValues(alpha: GlassTokens.sheenTop + 0.06),
+              GlassColors.base.withValues(alpha: 0.5),
+            ],
+            stops: const <double>[0.0, 0.9],
           ),
-          child: tint == null
-              ? child
-              : DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: shape,
-                    color: tint!.withValues(alpha: tintOpacity),
-                  ),
-                  child: child,
-                ),
+          border: border ? Border.all(color: edge, width: 1) : null,
         ),
+        child: tint == null
+            ? child
+            : DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: shape,
+                  color: tint!.withValues(alpha: tintOpacity),
+                ),
+                child: child,
+              ),
       ),
     );
 
