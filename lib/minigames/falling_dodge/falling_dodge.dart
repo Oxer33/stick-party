@@ -612,10 +612,15 @@ class FallingDodge extends MiniGameBase {
   }
 
   void _checkEnd() {
-    final alive = _tracks.where((t) => t.alive).toList();
     final timeUp = _elapsed >= _Tuning.timeLimit;
-    if (alive.length > 1 && !timeUp) return;
-    _finish(alive);
+    // Count survivors without allocating a list every frame; only materialize
+    // the survivor list on the single frame the round actually resolves.
+    var aliveCount = 0;
+    for (final t in _tracks) {
+      if (t.alive) aliveCount++;
+    }
+    if (aliveCount > 1 && !timeUp) return;
+    _finish(_tracks.where((t) => t.alive).toList());
   }
 
   void _finish(List<_Track> alive) {

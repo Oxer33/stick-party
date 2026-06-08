@@ -124,9 +124,15 @@ class SumoSmash extends MiniGameBase {
     _proportions = _sumoProportions();
     _footReach = _proportions.thigh + _proportions.shin;
 
+    // The arena's own ring-falloff must NOT cull bodies: this game owns
+    // elimination via [_detectRingOuts] against the *shrinking* radius so the KO
+    // juice, ragdoll fling and elimination order all fire. If the arena culled
+    // at [_ringRadius] it would silently kill (alive=false) any body launched
+    // out before the ring shrinks, and [_detectRingOuts] would then skip it.
+    // Use a radius beyond the screen so the arena never falls a body off.
     _arena = PushArena(
       center: _center,
-      ringRadius: _ringRadius,
+      ringRadius: _size.width + _size.height,
       friction: _ringFriction,
       restitution: _ringRestitution,
     );

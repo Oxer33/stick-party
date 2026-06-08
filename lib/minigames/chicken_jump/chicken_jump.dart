@@ -400,10 +400,15 @@ class ChickenJump extends MiniGameBase {
   }
 
   void _checkEnd() {
-    final alive = _climbers.where((c) => c.alive).toList();
     final timeUp = _elapsed >= _Tuning.timeLimit;
-    if (alive.length > 1 && !timeUp) return;
-    _finish(alive);
+    // Count survivors without allocating a list every frame; only materialize
+    // the survivor list on the single frame the round actually resolves.
+    var aliveCount = 0;
+    for (final c in _climbers) {
+      if (c.alive) aliveCount++;
+    }
+    if (aliveCount > 1 && !timeUp) return;
+    _finish(_climbers.where((c) => c.alive).toList());
   }
 
   void _finish(List<_Climber> alive) {

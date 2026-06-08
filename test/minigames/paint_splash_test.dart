@@ -80,6 +80,51 @@ void main() {
     expect(g.scores.of(0), greaterThan(0));
   });
 
+  test('a human holding still keeps spraying past the idle timeout', () {
+    // Regression: a stationary held finger emits only per-frame holdTicks with
+    // no position (normPos == Offset.zero). Those ticks must keep the brush
+    // spraying for the whole hold. Previously the idle-touch timeout in update()
+    // flipped spraying off ~0.18s after the finger stopped moving, so a held
+    // brush that wasn't being wiggled died and stopped covering ground.
+    //
+    // The dwell bonus makes "still spraying" observable at one spot: lingering
+    // ramps the splat radius up, so a brush that keeps firing paints a steadily
+    // fatter circle (more owned cells). We compare a full-round hold against a
+    // hold cut short right at the idle window: pre-fix both stopped spraying at
+    // ~0.18s and covered the same; with the fix the long hold keeps spraying and
+    // covers strictly more. Solo human so the score is exactly this coverage.
+    int coverageForHoldFrames(int holdFrames) {
+      final ctx = MiniGameContext(
+        players: [PlayerSlot.defaults(0)], // lone human
+        arena: const Size(800, 1200),
+        rng: SeededRng(9),
+        zones: ZoneLayout.forPlayers(1),
+      );
+      final g = PaintSplash()..init(ctx);
+      g.onInput(const PlayerInput(
+          playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5)));
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+        g.update(1 / 60);
+        if (n <= holdFrames) {
+          // Hold still: positionless per-frame ticks, the exact event a still
+          // finger produces every frame.
+          g.onInput(const PlayerInput(
+              playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+        }
+      }
+      expect(g.status, MiniGameStatus.finished);
+      return g.scores.of(0).toInt();
+    }
+
+    // ~0.18s touchIdleTimeout ≈ 11 frames at 60fps; 16 frames is just past it.
+    final shortHold = coverageForHoldFrames(16);
+    final longHold = coverageForHoldFrames(60 * 5); // 5s of continuous holding
+    expect(longHold, greaterThan(shortHold),
+        reason: 'holding still must keep spraying past the idle timeout '
+            '(short=$shortHold long=$longHold)');
+  });
+
   test('render does not throw', () {
     final g = PaintSplash()..init(ctxFor(4, 3));
     final canvas = Canvas(PictureRecorder());

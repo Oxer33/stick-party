@@ -252,6 +252,11 @@ class PaintSplash extends MiniGameBase {
         // only dt (normPos == Offset.zero) and just keeps the spray flowing.
         if (input.normPos != Offset.zero) _steerTo(c, input.normPos);
         c.spraying = true;
+        // Any held tick is proof the finger is still down, so refresh the
+        // idle-touch timer. Without this a stationary held finger (which emits
+        // only positionless per-frame ticks) would trip the idle timeout in
+        // update() after touchIdleTimeout and stop spraying mid-hold.
+        c.sinceTouch = 0;
       case InputPhase.up:
         c.spraying = false;
     }

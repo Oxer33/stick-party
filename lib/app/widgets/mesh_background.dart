@@ -153,6 +153,11 @@ class _MeshPainter extends CustomPainter {
 
   final Animation<double> animation;
 
+  /// Reused across blobs and frames; only its shader is reassigned per blob
+  /// (the radial center drifts, so the shader itself must be rebuilt, but the
+  /// Paint object need not be reallocated 4× per frame on the always-on menu).
+  final Paint _paint = Paint();
+
   @override
   void paint(Canvas canvas, Size size) {
     final double t = animation.value; // 0..1
@@ -168,17 +173,16 @@ class _MeshPainter extends CustomPainter {
       );
       final double radius = blob.radius * shortest;
 
-      final Paint paint = Paint()
-        ..shader = ui.Gradient.radial(
-          center,
-          radius,
-          <Color>[
-            blob.color.withValues(alpha: _kBlobAlpha),
-            blob.color.withValues(alpha: 0),
-          ],
-          <double>[0, 1],
-        );
-      canvas.drawCircle(center, radius, paint);
+      _paint.shader = ui.Gradient.radial(
+        center,
+        radius,
+        <Color>[
+          blob.color.withValues(alpha: _kBlobAlpha),
+          blob.color.withValues(alpha: 0),
+        ],
+        <double>[0, 1],
+      );
+      canvas.drawCircle(center, radius, _paint);
     }
   }
 

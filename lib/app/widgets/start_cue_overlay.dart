@@ -173,6 +173,12 @@ class _StartCuePainter extends CustomPainter {
   final double total;
   final bool Function() showNow;
 
+  /// Caches laid-out paragraphs (the word + each player's name) so we don't
+  /// rebuild a [ui.Paragraph] per zone every countdown frame (4 zones × 2 texts
+  /// × 60fps). Keyed by the text + its (constant-per-slot) color; the painter
+  /// instance is stable across the whole countdown, so this fills once.
+  final Map<String, ui.Paragraph> _paragraphCache = <String, ui.Paragraph>{};
+
   @override
   void paint(Canvas canvas, Size size) {
     if (!showNow()) return;
@@ -390,8 +396,9 @@ class _StartCuePainter extends CustomPainter {
     );
   }
 
-  /// Lays out [text] once and paints it horizontally centred at [topCenter]
-  /// (which is the *top* of the text box, so callers position by edge).
+  /// Paints [text] horizontally centred at [topCenter] (the *top* of the text
+  /// box, so callers position by edge). The laid-out paragraph is cached and
+  /// reused across frames (see [_paragraphCache]).
   void _drawCenteredText(
     Canvas canvas,
     String text,
@@ -400,6 +407,22 @@ class _StartCuePainter extends CustomPainter {
     double fontSize, {
     double letterSpacing = 0,
   }) {
+    final ui.Paragraph paragraph = _paragraph(text, color, fontSize, letterSpacing);
+    canvas.drawParagraph(paragraph, Offset(topCenter.dx - 120, topCenter.dy));
+  }
+
+  /// Builds (and caches) a laid-out paragraph for [text]/[color]/[fontSize].
+  ui.Paragraph _paragraph(
+    String text,
+    Color color,
+    double fontSize,
+    double letterSpacing,
+  ) {
+    final String key =
+        '$text|${color.toARGB32()}|$fontSize|$letterSpacing';
+    final ui.Paragraph? cached = _paragraphCache[key];
+    if (cached != null) return cached;
+
     final ui.ParagraphBuilder builder = ui.ParagraphBuilder(
       ui.ParagraphStyle(
         textAlign: TextAlign.center,
@@ -417,7 +440,8 @@ class _StartCuePainter extends CustomPainter {
       ..addText(text);
     final ui.Paragraph paragraph = builder.build()
       ..layout(const ui.ParagraphConstraints(width: 240));
-    canvas.drawParagraph(paragraph, Offset(topCenter.dx - 120, topCenter.dy));
+    _paragraphCache[key] = paragraph;
+    return paragraph;
   }
 
   @override

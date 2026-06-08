@@ -182,6 +182,11 @@ class _MascotPainter extends CustomPainter {
   final ValueListenable<int> repaintFrame;
   final List<_Mascot> mascots;
 
+  /// Reused across mascots and frames; only the shader is reassigned (the glow
+  /// follows each bobbing mascot, so the shader is rebuilt, but the Paint object
+  /// is not reallocated per mascot per frame on the always-on menu).
+  final Paint _glowPaint = Paint();
+
   @override
   void paint(Canvas canvas, Size size) {
     if (mascots.isEmpty) return;
@@ -204,16 +209,15 @@ class _MascotPainter extends CustomPainter {
   void _drawGroundGlow(Canvas canvas, _Mascot m, Offset root, double slot) {
     final Color tint = m.figure.style.outline;
     final double gy = root.dy + 56;
-    final Paint glow = Paint()
-      ..shader = ui.Gradient.radial(
-        Offset(root.dx, gy),
-        slot * 0.42,
-        <Color>[
-          tint.withValues(alpha: 0.20),
-          tint.withValues(alpha: 0.0),
-        ],
-      );
-    canvas.drawCircle(Offset(root.dx, gy), slot * 0.42, glow);
+    _glowPaint.shader = ui.Gradient.radial(
+      Offset(root.dx, gy),
+      slot * 0.42,
+      <Color>[
+        tint.withValues(alpha: 0.20),
+        tint.withValues(alpha: 0.0),
+      ],
+    );
+    canvas.drawCircle(Offset(root.dx, gy), slot * 0.42, _glowPaint);
   }
 
   @override

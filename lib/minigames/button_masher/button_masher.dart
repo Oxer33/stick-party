@@ -88,12 +88,17 @@ class ButtonMasher extends MiniGameBase {
   double _animClock = 0; // real-time clock (never scaled) for bg shimmer
 
   final Map<int, _Striker> _strikers = <int, _Striker>{};
+  // Lane layout depends only on the (fixed) arena + roster, so build it once at
+  // init rather than re-allocating the whole map every frame AND every tap
+  // (bots tap many times a second, so the per-tap rebuild was the hot path).
+  late final Map<int, _Lane> _laneByPlayer;
 
   @override
   void init(MiniGameContext ctx) {
     prepare(ctx);
     _juice = Juice(rng: ctx.rng);
     _size = ctx.arena;
+    _laneByPlayer = _lanes(_size);
 
     final proportions = _strikerProportions();
     // Legs are near-vertical at rest, so pelvis→foot ≈ thigh + shin.
@@ -319,10 +324,9 @@ class ButtonMasher extends MiniGameBase {
 
     MasherRenderer.drawBackground(canvas, size, _animClock);
 
-    final lanes = _lanes(size);
     for (final p in ctx.players) {
       final s = _strikers[p.id];
-      final lane = lanes[p.id];
+      final lane = _laneByPlayer[p.id];
       if (s == null || lane == null) continue;
       _drawStriker(canvas, s, lane);
     }
@@ -432,13 +436,13 @@ class ButtonMasher extends MiniGameBase {
   }
 
   Offset _leverAnchor(_Striker s) {
-    final lane = _lanes(_size)[s.slot.id];
+    final lane = _laneByPlayer[s.slot.id];
     if (lane == null) return Offset(_size.width / 2, _size.height / 2);
     return _Tower.of(lane).leverPlate;
   }
 
   Offset _bellAnchor(_Striker s) {
-    final lane = _lanes(_size)[s.slot.id];
+    final lane = _laneByPlayer[s.slot.id];
     if (lane == null) return Offset(_size.width / 2, _size.height * 0.1);
     return _Tower.of(lane).bell;
   }

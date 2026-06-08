@@ -143,9 +143,15 @@ class BumperBalls extends MiniGameBase {
     _currentRingRadius = _ringRadius;
     _bodyRadius = minSide * _bodyRadiusFactor;
 
+    // The arena's own ring-falloff must NOT cull balls: this game owns
+    // elimination via [_detectRingOuts] against the *shrinking* radius so the KO
+    // juice, impact ring and elimination order all fire. If the arena culled at
+    // [_ringRadius] it would silently kill (alive=false) any ball launched out
+    // before the platform shrinks, and [_detectRingOuts] would then skip it.
+    // Use a radius beyond the screen so the arena never falls a ball off.
     _arena = PushArena(
       center: _center,
-      ringRadius: _ringRadius,
+      ringRadius: _size.width + _size.height,
       friction: _ringFriction,
       restitution: _ringRestitution,
     );
