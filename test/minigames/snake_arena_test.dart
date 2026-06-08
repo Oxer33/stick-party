@@ -75,9 +75,29 @@ void main() {
     }
   });
 
-  test('a tap does not throw and game still finishes', () {
+  test('left/right side taps steer and the game still finishes', () {
+    // New control: tapping the LEFT half of the zone turns left, the RIGHT half
+    // turns right (via input.normPos). Player 0's zone in a 2p layout is the
+    // bottom half, so x<0.5 is its left and x>=0.5 its right. Alternating sides
+    // must never throw and the round must still resolve.
     final g = SnakeArena()..init(ctxFor(2, 3));
-    g.onInput(PlayerInput.down(0, const Offset(0.5, 0.5)));
+    g.onInput(PlayerInput.down(0, const Offset(0.2, 0.75))); // left half → left
+    g.onInput(PlayerInput.down(0, const Offset(0.8, 0.75))); // right half → right
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+      g.update(1 / 60);
+      if (n % 17 == 0) {
+        final left = (n ~/ 17).isEven;
+        g.onInput(PlayerInput.down(0, Offset(left ? 0.2 : 0.8, 0.75)));
+      }
+    }
+    expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('a positionless tap still steers without throwing', () {
+    // A synthetic tap with no position (origin) must still be a valid steer (it
+    // reads as the left half) so test/automation paths never stall.
+    final g = SnakeArena()..init(ctxFor(2, 3));
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
       g.update(1 / 60);

@@ -56,7 +56,14 @@ class GameSelectScreen extends ConsumerWidget {
                   colorArgb: PlayerPalette.argb[i % PlayerPalette.argb.length],
                   onTap: () => context.push(
                     AppRoutes.play,
-                    extra: PlayArgs(gameId: meta.id, players: players),
+                    // A lone human always gets one CPU opponent so every game
+                    // (sumo, soccer, …) makes sense played solo.
+                    extra: PlayArgs(
+                      gameId: meta.id,
+                      players: players.count == 1
+                          ? players.addSlot(isBot: true)
+                          : players,
+                    ),
                   ),
                 )
                     .animate()

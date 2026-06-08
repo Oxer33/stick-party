@@ -17,6 +17,7 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
 import 'glass_tokens.dart';
+import 'start_cue_overlay.dart';
 
 /// Tuning for the runner shell (no magic numbers at call sites).
 class _RunnerTune {
@@ -275,6 +276,16 @@ class _MiniGameViewState extends State<MiniGameView>
                 showHints: widget.showInputHints,
                 showHintsNow: () => !_countdownDone,
               ),
+              if (widget.showInputHints)
+                StartCueOverlay(
+                  hudTick: _hudTick,
+                  zones: _zones,
+                  players: widget.players,
+                  inputHint: _meta.inputHint,
+                  remaining: () => _countdown,
+                  total: _RunnerTune.countdownSec,
+                  showNow: () => !_countdownDone,
+                ),
               _CountdownOverlay(
                 hudTick: _hudTick,
                 remaining: () => _countdown,

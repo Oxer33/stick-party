@@ -43,11 +43,10 @@ class SnakeRenderer {
   static const double _pipRadius = 4.0;
   static const double _speedTintMax = 0.16; // max red screen tint alpha
 
-  // Turn indicator (the clockwise "tap = turn" hint that orbits a head).
-  static const double _turnArcRadiusFactor = 0.95; // arc radius / cell
-  static const double _turnArcSweep = 1.5; // radians of the guide arc
-  static const double _turnArcWidthFactor = 0.12; // stroke width / cell
-  static const double _turnGhostFactor = 0.30; // ghost-dot radius / cell
+  // Turn indicator (the "tap left / tap right to steer" hint flanking a head).
+  static const double _turnArrowGapFactor = 1.05; // arrow distance from head / cell
+  static const double _turnArrowSizeFactor = 0.55; // arrowhead size / cell
+  static const double _turnGhostFactor = 0.26; // landing-dot radius / cell
 
   /// Arena backdrop: vertical gradient + soft top-down vignette. Drawn first,
   /// fills the whole surface so the neon reads against deep black.
@@ -284,86 +283,78 @@ class SnakeRenderer {
     }
   }
 
-  /// The "tap = turn CLOCKWISE" affordance: a curved arrow that orbits the head
-  /// from its current facing toward the next clockwise facing, plus a faint
-  /// ghost dot on the cell the snake would step into after one tap. Drawn for the
-  /// human's snake so the one rule of the game is unmistakable. [forward] is the
-  /// current unit heading; [next] is the unit heading after one clockwise turn.
-  /// [pulse] (0..1) breathes the brightness; [emphasis] (0..1) fades it in at the
-  /// round start then settles to a calm idle level.
+  /// The "tap LEFT = turn left, tap RIGHT = turn right" affordance: two arrows
+  /// flanking the head, each pointing where that tap would send the snake, plus a
+  /// faint landing dot on the cell each turn would step into. Drawn over every
+  /// snake so the one rule of the game is unmistakable. [forward] is the current
+  /// unit heading (accepted for API symmetry / future use); [left] and [right]
+  /// are the unit headings after a left / right turn. [pulse] (0..1) breathes the
+  /// brightness; [emphasis] (0..1) fades it in at the round start then settles to
+  /// a calm idle level.
   static void drawTurnHint(
     Canvas canvas,
     Offset head,
     Offset forward,
-    Offset next,
+    Offset left,
+    Offset right,
     double cell,
     Color color, {
     double pulse = 1.0,
     double emphasis = 1.0,
   }) {
     if (cell <= 0) return;
-    var fwd = forward;
-    if (fwd.distance < 1e-3) fwd = const Offset(0, -1);
-    fwd = fwd / fwd.distance;
-    var nxt = next;
-    if (nxt.distance < 1e-3) nxt = const Offset(1, 0);
-    nxt = nxt / nxt.distance;
-
     final em = emphasis.clamp(0.0, 1.0);
     if (em <= 0.01) return;
-    final a = (0.30 + 0.45 * pulse.clamp(0.0, 1.0)) * em;
-    final r = cell * _turnArcRadiusFactor;
+    final a = ((0.30 + 0.45 * pulse.clamp(0.0, 1.0)) * em).clamp(0.0, 1.0);
 
-    // The arc sweeps CLOCKWISE from the current heading by [_turnArcSweep].
-    final startAngle = math.atan2(fwd.dy, fwd.dx);
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = math.max(1.5, cell * _turnArcWidthFactor)
-      ..color = color.withValues(alpha: a.clamp(0.0, 1.0));
-    canvas.drawArc(
-      Rect.fromCircle(center: head, radius: r),
-      startAngle,
-      _turnArcSweep, // positive = clockwise in screen space (y-down)
-      false,
-      paint,
-    );
+    _drawTurnArrow(canvas, head, left, cell, color, a, em);
+    _drawTurnArrow(canvas, head, right, cell, color, a, em);
+  }
 
-    // Arrowhead at the end of the arc, tangent to the sweep (points clockwise).
-    final endA = startAngle + _turnArcSweep;
-    final tipPos = head + Offset(math.cos(endA), math.sin(endA)) * r;
-    final tangent = Offset(-math.sin(endA), math.cos(endA)); // clockwise tangent
-    final headLen = cell * 0.30;
-    final perp = Offset(-tangent.dy, tangent.dx);
-    final tip = tipPos + tangent * headLen * 0.5;
-    final back = tipPos - tangent * headLen * 0.5;
-    final headPath = Path()
-      ..moveTo(tip.dx, tip.dy)
-      ..lineTo((back + perp * headLen * 0.5).dx, (back + perp * headLen * 0.5).dy)
-      ..lineTo((back - perp * headLen * 0.5).dx, (back - perp * headLen * 0.5).dy)
-      ..close();
-    canvas.drawPath(
-        headPath, Paint()..color = color.withValues(alpha: (a * 1.1).clamp(0.0, 1.0)));
+  /// One steering arrow: a chevron sitting just beyond the head along [dir] (the
+  /// heading that tap produces) and pointing that way, with a faint landing dot
+  /// on the cell the snake would move into.
+  static void _drawTurnArrow(
+    Canvas canvas,
+    Offset head,
+    Offset dir,
+    double cell,
+    Color color,
+    double a,
+    double em,
+  ) {
+    var d = dir;
+    if (d.distance < 1e-3) d = const Offset(1, 0);
+    d = d / d.distance;
+    final perp = Offset(-d.dy, d.dx);
 
-    // Ghost dot: where the head lands after one tap (one cell along [next]).
-    final ghost = head + nxt * cell;
+    // Landing dot: the cell the head reaches after this turn (one cell along d).
+    final ghost = head + d * cell;
     final ghostR = cell * _turnGhostFactor;
-    // Two stacked translucent dots (wide+faint, tight+stronger) hint the landing
-    // cell without a blur.
-    canvas.drawCircle(
-      ghost,
-      ghostR * 1.3,
-      Paint()..color = color.withValues(alpha: (0.10 * em).clamp(0.0, 1.0)),
-    );
-    canvas.drawCircle(
-      ghost,
-      ghostR,
-      Paint()..color = color.withValues(alpha: (0.2 * em).clamp(0.0, 1.0)),
-    );
-    canvas.drawCircle(
-      ghost,
-      ghostR * 0.5,
-      Paint()..color = _white.withValues(alpha: (0.30 * em).clamp(0.0, 1.0)),
+    canvas.drawCircle(ghost, ghostR * 1.3,
+        Paint()..color = color.withValues(alpha: (0.10 * em).clamp(0.0, 1.0)));
+    canvas.drawCircle(ghost, ghostR,
+        Paint()..color = color.withValues(alpha: (0.20 * em).clamp(0.0, 1.0)));
+    canvas.drawCircle(ghost, ghostR * 0.5,
+        Paint()..color = _white.withValues(alpha: (0.30 * em).clamp(0.0, 1.0)));
+
+    // Chevron pointing along d, placed just beyond the head.
+    final tip = head + d * (cell * _turnArrowGapFactor);
+    final size = cell * _turnArrowSizeFactor;
+    final back = tip - d * size;
+    final path = Path()
+      ..moveTo((back + perp * size * 0.5).dx, (back + perp * size * 0.5).dy)
+      ..lineTo(tip.dx, tip.dy)
+      ..lineTo((back - perp * size * 0.5).dx, (back - perp * size * 0.5).dy);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = math.max(1.5, cell * 0.12)
+        ..color = (Color.lerp(color, _white, 0.25) ?? color)
+            .withValues(alpha: (a * 1.1).clamp(0.0, 1.0)),
     );
   }
 

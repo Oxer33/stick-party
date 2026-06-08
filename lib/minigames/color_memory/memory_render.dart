@@ -47,7 +47,6 @@ class MemoryRenderer {
   static const double _clusterPadFactor = 0.10; // inset of pads inside plate
   static const double _baseAlpha = 0.34; // resting pad fill alpha
   static const double _hubGapFactor = 0.30; // hub hole / half (cluster center)
-  static const double _ringFactor = 1.10; // cursor ring radius / quadrant
   static const double _seqDiscFactor = 0.085; // center disc radius / minSide
   static const double _pipRadiusFactor = 0.010; // progress pip radius / blockW
   static const double _bannerFontFrac = 0.052; // phase banner font / width
@@ -95,11 +94,12 @@ class MemoryRenderer {
   }
 
   /// A player's Simon cluster: a dark rounded console plate carrying four
-  /// glowing colored quadrants. [blooms] holds a 0..1 brightness per slot (red,
-  /// blue, green, yellow) so flashing-in-sequence and just-tapped pads bloom
-  /// brightly with an afterglow halo. [alive] dims a whole cluster on death;
-  /// [highlightSlot] (>=0) draws the auto-cycling cursor ring; [cursorPulse]
-  /// 0..1 throbs that ring.
+  /// glowing colored quadrants the player TAPS directly. [blooms] holds a 0..1
+  /// brightness per slot (red, blue, green, yellow) so flashing-in-sequence and
+  /// just-tapped pads bloom brightly with an afterglow halo. [alive] dims a whole
+  /// cluster on death. [turnPulse] (0..1) gently breathes a "your turn — tap the
+  /// colors" rim during the input phase (no per-pad cursor); [oops] (0..1)
+  /// flashes the plate when a forgiven wrong tap happened.
   static void drawCluster(
     Canvas canvas,
     Rect block, {
@@ -107,8 +107,8 @@ class MemoryRenderer {
     required bool alive,
     required bool done,
     required Color accent,
-    int highlightSlot = -1,
-    double cursorPulse = 0,
+    double turnPulse = 0,
+    double oops = 0,
   }) {
     if (block.width <= 2) return;
     final side = math.min(block.width, block.height);
@@ -144,14 +144,39 @@ class MemoryRenderer {
         ..color = accent.withValues(alpha: alive ? 0.6 : 0.2),
     );
 
-    // Auto-cycling highlight ring around the live cursor's quadrant.
-    if (alive && !done && highlightSlot >= 0 && highlightSlot < palette.length) {
-      final left =
-          plate.left + inset + (highlightSlot % 2) * (half - inset + gap);
-      final top =
-          plate.top + inset + (highlightSlot ~/ 2) * (half - inset + gap);
-      final cell = Rect.fromLTWH(left, top, quadW, quadW);
-      _drawCursorRing(canvas, cell, palette[highlightSlot], cursorPulse);
+    // "Your turn" rim: a soft pulsing accent frame around the whole plate so the
+    // child knows it is time to tap the colors (replaces the old cursor ring).
+    final tp = turnPulse.clamp(0.0, 1.0);
+    if (alive && !done && tp > 0.0) {
+      final rr = RRect.fromRectAndRadius(
+          plate, Radius.circular(plate.width * _clusterCornerFactor));
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, plate.width * (0.02 + 0.02 * tp))
+          ..color = _blend(accent, _white, 0.4)
+              .withValues(alpha: (0.30 + 0.4 * tp).clamp(0.0, 1.0)),
+      );
+    }
+
+    // Forgiven-miss flash: a soft yellow plate wash + rim so a kid sees "oops,
+    // try again" without it reading as elimination.
+    final op = oops.clamp(0.0, 1.0);
+    if (alive && op > 0.02) {
+      final rr = RRect.fromRectAndRadius(
+          plate, Radius.circular(plate.width * _clusterCornerFactor));
+      canvas.drawRRect(
+        rr,
+        Paint()..color = palette[3].withValues(alpha: 0.18 * op),
+      );
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, plate.width * 0.04)
+          ..color = palette[3].withValues(alpha: 0.7 * op),
+      );
     }
   }
 
@@ -257,34 +282,6 @@ class MemoryRenderer {
         ..strokeWidth = math.max(1.0, cell.width * 0.04)
         ..color = _blend(color, _white, 0.5)
             .withValues(alpha: (0.25 + 0.7 * bloom).clamp(0.0, 1.0)),
-    );
-  }
-
-  static void _drawCursorRing(
-      Canvas canvas, Rect cell, Color color, double pulse) {
-    final p = pulse.clamp(0.0, 1.0);
-    final ring = Rect.fromCenter(
-      center: cell.center,
-      width: cell.width * _ringFactor,
-      height: cell.height * _ringFactor,
-    );
-    final rr =
-        RRect.fromRectAndRadius(ring, Radius.circular(cell.width * 0.28));
-    // Glow: a wide faint solid stroke under the crisp core (no per-frame blur).
-    canvas.drawRRect(
-      rr,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(4.0, cell.width * (0.14 + 0.05 * p))
-        ..color = _white.withValues(alpha: (0.22 + 0.18 * p).clamp(0.0, 1.0)),
-    );
-    // Core.
-    canvas.drawRRect(
-      rr,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.5, cell.width * 0.05)
-        ..color = _blend(color, _white, 0.6).withValues(alpha: 0.85 + 0.15 * p),
     );
   }
 

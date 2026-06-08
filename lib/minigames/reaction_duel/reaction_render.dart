@@ -28,8 +28,8 @@ class ReactionRenderer {
   static const Color _vignette = Color(0xAA050208);
   static const Color _waitRed = Color(0xFFE23B3B);
   static const Color _waitDeep = Color(0xFF7A1414);
-  static const Color _strikeGold = Color(0xFFFFF4C2);
-  static const Color _strikeEdge = Color(0xFFFFC23A);
+  static const Color _goGreen = Color(0xFF24D16A); // GO! word + halo (matches zone)
+  static const Color _goGreenDeep = Color(0xFF12A653); // halo edge
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _tooSoon = Color(0xFFFF5466);
@@ -323,8 +323,8 @@ class ReactionRenderer {
 
   static void _drawStrikeCue(
       Canvas canvas, Size size, Offset center, double flash, double word) {
-    // A tight gold burst behind the word that fades as `flash` → 0. Kept tight
-    // (the full-screen blinding wash is the separate screen-flash overlay) so it
+    // A tight green burst behind the "GO!" word that fades as `flash` → 0. Kept
+    // tight (the full-screen wash is the separate screen-flash overlay) so it
     // reads as a halo around the banner rather than washing the whole sky.
     if (flash > 0.01) {
       final r = size.width * (0.28 + 0.12 * (1 - flash));
@@ -336,8 +336,8 @@ class ReactionRenderer {
             center,
             r,
             [
-              _strikeGold.withValues(alpha: 0.6 * flash),
-              _strikeEdge.withValues(alpha: 0.28 * flash),
+              _goGreen.withValues(alpha: 0.6 * flash),
+              _goGreenDeep.withValues(alpha: 0.28 * flash),
               const Color(0x00000000),
             ],
             const [0.0, 0.45, 1.0],
@@ -345,18 +345,19 @@ class ReactionRenderer {
       );
     }
     // The word punches in big then fades out (alpha + scale from `word`) so it
-    // never lingers over the KO that follows.
+    // never lingers over the KO that follows. "GO!" in bright green reinforces
+    // the per-zone green flash (the kid-clear "tap now" signal).
     if (word <= 0.01) return;
     final scale = 1.0 + 0.45 * (1 - word); // grows as it fades for a "boom" feel
     _drawText(
       canvas,
-      'STRIKE!',
+      'GO!',
       center,
       size.width * _strikeFontFrac * scale,
-      _strikeGold.withValues(alpha: word),
+      _goGreen.withValues(alpha: word),
       weight: FontWeight.w900,
       glow: true,
-      glowColor: _strikeEdge.withValues(alpha: word),
+      glowColor: _white.withValues(alpha: word),
     );
   }
 
@@ -434,24 +435,66 @@ class ReactionRenderer {
     }
   }
 
-  /// "TOO SOON!" stamp over a false-starter, with a thin strike-through, fading
-  /// as [strength] → 0.
-  static void drawTooSoon(
-      Canvas canvas, Offset at, double u, double strength) {
+  /// A gentle "X" over a false-starter (the soft "too early" gesture), fading as
+  /// [strength] → 0. No text — the big per-zone "TOO EARLY!" word names it; this
+  /// is just a soft visual mark so it never reads as harsh.
+  static void drawEarlyX(Canvas canvas, Offset at, double u, double strength) {
     final s = strength.clamp(0.0, 1.0);
     if (s <= 0.02) return;
-    _drawText(canvas, 'TOO SOON!', at, u * 0.7,
-        _tooSoon.withValues(alpha: 0.95 * s),
-        weight: FontWeight.w900, glow: true, glowColor: _tooSoon);
-    final half = u * 1.6;
+    final half = u * 1.4;
+    final paint = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(2.0, u * 0.18)
+      ..color = _tooSoon.withValues(alpha: 0.7 * s);
     canvas.drawLine(
-      at.translate(-half, 0),
-      at.translate(half, 0),
+        at.translate(-half, -half), at.translate(half, half), paint);
+    canvas.drawLine(
+        at.translate(half, -half), at.translate(-half, half), paint);
+  }
+
+  /// Wash a whole player zone with its signal [color] at [alpha] — the dominant
+  /// RED-wait / GREEN-go cue. A rounded fill with a slightly brighter inner rim
+  /// so the colored ground reads clearly under the figures.
+  static void drawZoneWash(Canvas canvas, Rect rect, Color color, double alpha) {
+    final a = alpha.clamp(0.0, 1.0);
+    if (a <= 0.01 || rect.width <= 1 || rect.height <= 1) return;
+    final pad = math.min(rect.width, rect.height) * 0.04;
+    final r = rect.deflate(pad);
+    final radius = Radius.circular(math.min(r.width, r.height) * 0.06);
+    final rr = RRect.fromRectAndRadius(r, radius);
+    canvas.drawRRect(rr, Paint()..color = color.withValues(alpha: a));
+    // Brighter rim so each zone reads as its own lit panel.
+    canvas.drawRRect(
+      rr,
       Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = math.max(2.0, u * 0.16)
-        ..color = _tooSoon.withValues(alpha: 0.85 * s),
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(2.0, math.min(r.width, r.height) * 0.012)
+        ..color = (Color.lerp(color, _white, 0.4) ?? color)
+            .withValues(alpha: (a + 0.2).clamp(0.0, 1.0)),
     );
+  }
+
+  /// A big readable word centered in a player [rect], rotated by
+  /// [rotationQuarters] quarter-turns so it faces that seat (top-edge players
+  /// read it upside-up). Sits near the top of the zone so it never hides the
+  /// figure. [color] is the text color (always glows for contrast).
+  static void drawZoneLabel(
+    Canvas canvas,
+    Rect rect,
+    String text,
+    Color color,
+    int rotationQuarters,
+  ) {
+    if (text.isEmpty || rect.width <= 1 || rect.height <= 1) return;
+    final font = math.min(rect.width, rect.height) * 0.16;
+    canvas.save();
+    canvas.translate(rect.center.dx, rect.center.dy);
+    canvas.rotate((rotationQuarters % 4) * math.pi / 2);
+    // Place the word toward the upper part of the (rotated) zone.
+    final up = -rect.height * 0.26;
+    _drawText(canvas, text, Offset(0, up), font, color,
+        weight: FontWeight.w900, glow: true, glowColor: _black);
+    canvas.restore();
   }
 
   /// Best-of round pips along the top: filled in each player's color for rounds

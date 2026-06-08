@@ -30,7 +30,6 @@ class ChickenRenderer {
   static const Color _platMid = Color(0xFF63708A);
   static const Color _platLo = Color(0xFF333C52);
   static const Color _platEdge = Color(0xFF1A1F2C);
-  static const Color _crack = Color(0xFF11141C);
 
   static const Color _lavaCore = Color(0xFFFF7321); // main molten body
   static const Color _lavaDeep = Color(0xFFB81E12); // deep red toward bottom
@@ -208,29 +207,24 @@ class ChickenRenderer {
 
   // ── Platform ────────────────────────────────────────────────────────────────
 
-  /// A stone/neon platform centered at [center]. [crumbly] platforms get a
-  /// cracked face; [crumble] in 0..1 makes a leaving rung tilt, sink and fade
-  /// (1 = gone). [lit] highlights the rung the climber currently stands on.
-  /// [anticipate] in 0..1 marks the rung the climber will hop to NEXT: a pulsing
-  /// player-colored halo + chevrons so the target is always readable (it swells
-  /// as the lava nears, screaming "jump here now").
+  /// A clear stone/neon platform centered at [center]. [lit] highlights the rung
+  /// the climber currently stands on. [anticipate] in 0..1 marks the rung the
+  /// climber will hop to NEXT: a pulsing player-colored halo + chevrons so the
+  /// target is always readable (it swells as the lava nears, screaming "jump
+  /// here now"). Platforms are always solid — a kid only has to learn "tap to
+  /// hop up".
   static void drawPlatform(
     Canvas canvas,
     Offset center,
     double columnWidth,
     Color color, {
-    required bool crumbly,
-    required double crumble,
     required bool lit,
     double anticipate = 0,
   }) {
     if (columnWidth <= 1) return;
-    final cr = crumble.clamp(0.0, 1.0);
-    if (cr >= 1) return;
 
     final w = columnWidth * _platWidthFactor;
     final h = math.max(6.0, columnWidth * _platHeightFactor);
-    final fade = 1.0 - cr;
 
     // Next-rung target cue, drawn beneath the platform so the stone reads on top.
     final ant = anticipate.clamp(0.0, 1.0);
@@ -239,9 +233,7 @@ class ChickenRenderer {
     }
 
     canvas.save();
-    // Crumbling rungs tilt and sink as they go.
-    canvas.translate(center.dx, center.dy + h * 2.4 * cr);
-    if (cr > 0) canvas.rotate((cr * 0.5) - 0.25);
+    canvas.translate(center.dx, center.dy);
 
     final rect = Rect.fromCenter(center: Offset.zero, width: w, height: h);
     final rr = RRect.fromRectAndRadius(rect, Radius.circular(h * 0.4));
@@ -268,8 +260,8 @@ class ChickenRenderer {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = math.max(1.5, h * 0.16)
-          ..color = _blend(color, _white, 0.3)
-              .withValues(alpha: (0.35 + 0.45 * ant) * fade),
+          ..color =
+              _blend(color, _white, 0.3).withValues(alpha: 0.35 + 0.45 * ant),
       );
     }
 
@@ -278,10 +270,7 @@ class ChickenRenderer {
       ..shader = Gradient.linear(
         Offset(0, -h * 0.5),
         Offset(0, h * 0.5),
-        [
-          _platMid.withValues(alpha: fade),
-          _platLo.withValues(alpha: fade),
-        ],
+        const [_platMid, _platLo],
       );
     canvas.drawRRect(rr, body);
 
@@ -293,7 +282,7 @@ class ChickenRenderer {
       Paint()
         ..strokeWidth = math.max(1.5, h * 0.22)
         ..strokeCap = StrokeCap.round
-        ..color = lipColor.withValues(alpha: fade),
+        ..color = lipColor,
     );
 
     // Dark base edge.
@@ -302,22 +291,44 @@ class ChickenRenderer {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(1.0, h * 0.12)
-        ..color = _platEdge.withValues(alpha: fade),
+        ..color = _platEdge,
     );
-
-    // Crumbly rungs show a couple of cracks; deepen as they break.
-    if (crumbly) {
-      final crack = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, h * 0.1)
-        ..strokeCap = StrokeCap.round
-        ..color = _crack.withValues(alpha: (0.55 + 0.4 * cr) * fade);
-      canvas.drawLine(
-          Offset(-w * 0.12, -h * 0.4), Offset(-w * 0.02, h * 0.4), crack);
-      canvas.drawLine(
-          Offset(w * 0.22, -h * 0.4), Offset(w * 0.3, h * 0.35), crack);
-    }
     canvas.restore();
+  }
+
+  /// A bobbing "tap to hop" cue floating just above the climber during the
+  /// warmup: a stack of upward chevrons + a soft halo, in the player color, so
+  /// the one control reads instantly before the lava starts. [t] is a free clock
+  /// for the bob; [head] is the climber's render root (pelvis).
+  static void drawTapHint(
+    Canvas canvas,
+    Offset head,
+    double columnWidth,
+    Color color,
+    double t,
+  ) {
+    if (columnWidth <= 1) return;
+    final h = math.max(6.0, columnWidth * _platHeightFactor);
+    final bob = math.sin(t * 4.0) * h * 0.5;
+    final base = head.translate(0, -columnWidth * 0.42 + bob);
+    final chevColor = _blend(color, _white, 0.4);
+    final cw = columnWidth * 0.14;
+    for (var i = 0; i < 2; i++) {
+      final cy = base.dy - i * h * 1.1;
+      final path = Path()
+        ..moveTo(base.dx - cw, cy + h * 0.6)
+        ..lineTo(base.dx, cy - h * 0.2)
+        ..lineTo(base.dx + cw, cy + h * 0.6);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, h * 0.3)
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = chevColor.withValues(alpha: i == 0 ? 0.95 : 0.55),
+      );
+    }
   }
 
   /// The "hop here next" cue under a target rung: a soft halo plus a stack of

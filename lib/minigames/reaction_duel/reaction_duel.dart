@@ -8,6 +8,7 @@ import '../../art/stick/stick_style.dart';
 import '../../art/stick/weapon_visual.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/reaction_gate.dart';
+import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'reaction_render.dart';
@@ -83,6 +84,20 @@ class ReactionDuel extends MiniGameBase {
   static const double _vignettePulseHz = 5.0;
   static const double _cueCenterFrac = 0.21; // banner in the clean sky above sun
   static const Color _accentGold = Color(0xFFFFE08A); // confetti highlight
+
+  // ── Per-zone signal (the unmistakable kid-clear cue) ─────────────────────────
+  // Each player's whole zone is washed RED while waiting, then flashes a sudden
+  // bright GREEN on GO ("TAP!"). The wash is the dominant signal; the samurai
+  // figures + center cue ride on top as flavor. A false-starter's zone goes a
+  // calm grey with a gentle "TOO EARLY!" — readable, never harsh.
+  static const Color _zoneRed = Color(0xFFE53935); // WAIT red
+  static const Color _zoneGreen = Color(0xFF24D16A); // GO green
+  static const Color _zoneGrey = Color(0xFF6B6B72); // false-start grey
+  static const double _zoneWaitAlpha = 0.30; // resting red wash strength
+  static const double _zoneWaitPulse = 0.10; // red wash throb amplitude
+  static const double _zoneGoBaseAlpha = 0.42; // steady green while GO holds
+  static const double _zoneGoFlashAlpha = 0.45; // extra green at the GO edge
+  static const double _zoneWinPulse = 0.18; // winner zone celebratory throb
 
   late Juice _juice;
   late ReactionGate _gate;
@@ -370,11 +385,11 @@ class ReactionDuel extends MiniGameBase {
   /// A false start: the gate already penalized them. Stamp "TOO SOON!", stagger
   /// them with a hurt pose, and a light shake.
   void _onFalseStart(_Reactor reactor) {
+    // Gentle, kid-friendly: a soft hurt stagger + a light shake. The big GREY
+    // zone wash + "TOO EARLY!" word (drawn per zone) is the real feedback, so we
+    // keep the figure beat understated and never harsh.
     reactor.tooSoon = 1.0;
     reactor.figure.hurt();
-    _juice.popup(_chestOf(reactor).translate(0, -_scaleUnit * 2.2), 'EARLY',
-        _colorOf(reactor.slot.id),
-        size: 26);
     _juice.shake.light();
   }
 
@@ -465,8 +480,16 @@ class ReactionDuel extends MiniGameBase {
     ReactionRenderer.drawGround(canvas, size);
     ReactionRenderer.drawVignette(canvas, size, _vignettePulse());
 
+    // The per-zone RED→GREEN wash is the dominant, kid-clear signal. Drawn under
+    // the figures so the swordsmen sit on top of their colored ground.
+    _drawZoneWashes(canvas, size);
+
     _drawDuelists(canvas);
     _drawSlashes(canvas);
+
+    // Big per-zone word ("WAIT" / "TAP!" / "TOO EARLY!") over the figures so
+    // every player reads their own state at a glance.
+    _drawZoneLabels(canvas, size);
 
     ReactionRenderer.drawCenterCue(
       canvas,
@@ -518,13 +541,15 @@ class ReactionDuel extends MiniGameBase {
       );
       ReactionRenderer.drawDuelist(canvas, fig, _rootOf(r));
 
-      // Per-duelist readout above the head.
+      // Per-duelist readout above the head: a small reaction time once they
+      // draw, for flavor. The WAIT/TAP/TOO-EARLY state is carried by the big
+      // per-zone wash + word; a false start adds a gentle X over the figure.
       final above = _chestOf(r).translate(0, -_scaleUnit * 2.4);
       ReactionRenderer.drawReadout(
           canvas, above, _scaleUnit, _readoutFor(r), _colorOf(r.slot.id));
 
       if (r.tooSoon > 0) {
-        ReactionRenderer.drawTooSoon(canvas, above, _scaleUnit, r.tooSoon);
+        ReactionRenderer.drawEarlyX(canvas, _chestOf(r), _scaleUnit, r.tooSoon);
       }
     }
   }
@@ -536,10 +561,79 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
-  /// The text shown above a duelist: their slash time once they react, "EARLY"
-  /// while penalized, else nothing during the WAIT.
+  /// Wash each player's whole zone with its signal color — the unmistakable
+  /// cue. RED while waiting (gentle throb), a sudden bright GREEN on GO (a flash
+  /// that spikes at the edge then settles to a steady "TAP!" green), GREEN for a
+  /// player who has drawn, and a calm GREY for a false-starter.
+  void _drawZoneWashes(Canvas canvas, Size size) {
+    for (final r in _reactors.values) {
+      final zone = ctx.zones.forPlayer(r.slot.id);
+      if (zone == null) continue;
+      final rect = _zoneRect(zone, size);
+      final (color, alpha) = _zoneWash(r.slot.id);
+      ReactionRenderer.drawZoneWash(canvas, rect, color, alpha);
+    }
+  }
+
+  /// Big per-zone word over the figures, rotated to face that seat.
+  void _drawZoneLabels(Canvas canvas, Size size) {
+    for (final r in _reactors.values) {
+      final zone = ctx.zones.forPlayer(r.slot.id);
+      if (zone == null) continue;
+      final rect = _zoneRect(zone, size);
+      final (text, color) = _zoneLabel(r.slot.id);
+      if (text.isEmpty) continue;
+      ReactionRenderer.drawZoneLabel(
+          canvas, rect, text, color, zone.rotationQuarters);
+    }
+  }
+
+  Rect _zoneRect(PlayerZone zone, Size size) => Rect.fromLTRB(
+        zone.normRect.left * size.width,
+        zone.normRect.top * size.height,
+        zone.normRect.right * size.width,
+        zone.normRect.bottom * size.height,
+      );
+
+  /// Signal wash (color, alpha) for a player's zone given the gate state.
+  (Color, double) _zoneWash(int id) {
+    if (_gate.penalized.contains(id)) {
+      return (_zoneGrey, _zoneWaitAlpha * 0.7);
+    }
+    final reacted = _gate.reactionTimes.containsKey(id);
+    final isWinner = _gate.winner == id;
+    if (isWinner) {
+      final throb = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
+      return (_zoneGreen, _zoneGoBaseAlpha + _zoneWinPulse * throb);
+    }
+    if (reacted) return (_zoneGreen, _zoneGoBaseAlpha * 0.85);
+    if (_signalSeen) {
+      // Bright GREEN: a flash spike at the GO edge that settles to a steady "TAP".
+      return (_zoneGreen, _zoneGoBaseAlpha + _zoneGoFlashAlpha * _strikeFlash);
+    }
+    // Waiting: a gently throbbing RED so the kid feels "not yet".
+    final throb = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
+    return (_zoneRed, _zoneWaitAlpha + _zoneWaitPulse * throb);
+  }
+
+  /// The big readable word for a player's zone: "WAIT" (red), "TAP!" (green),
+  /// "WINNER!" / "GOT IT!" once drawn, or a gentle "TOO EARLY!" on a false start.
+  (String, Color) _zoneLabel(int id) {
+    if (_gate.penalized.contains(id)) {
+      return ('TOO EARLY!', const Color(0xFFFFFFFF));
+    }
+    if (_gate.winner == id) return ('WINNER!', const Color(0xFFFFFFFF));
+    if (_gate.reactionTimes.containsKey(id)) {
+      return ('GOT IT!', const Color(0xFFFFFFFF));
+    }
+    if (_signalSeen) return ('TAP!', const Color(0xFFFFFFFF));
+    return ('WAIT', const Color(0xFFFFFFFF));
+  }
+
+  /// The small flavor text above a duelist: their reaction time once they draw,
+  /// nothing otherwise (the per-zone word carries the WAIT/TAP/EARLY state).
   String _readoutFor(_Reactor r) {
-    if (_gate.penalized.contains(r.slot.id)) return 'EARLY';
+    if (_gate.penalized.contains(r.slot.id)) return '';
     final t = _gate.reactionTimes[r.slot.id];
     if (t != null) return '${(t * 1000).round()} ms';
     return '';

@@ -8,7 +8,7 @@ import '../../engine/player_manager.dart';
 import 'memory_render.dart';
 
 /// Round phase. [showing] flashes the sequence (the light show); [input] takes
-/// each player's one-touch reproduction.
+/// each player's reproduction by direct pad taps.
 enum _Phase { showing, input }
 
 /// Per-player reproduction state for the current round. Mutable round-scoped
@@ -19,8 +19,9 @@ class _Pad {
   bool alive = true;
   bool done = false; // finished this round's reproduction correctly
   int progress = 0; // correct entries so far this round
-  int highlight = 0; // currently highlighted pad (one-touch cursor)
+  int retriesLeft = 0; // forgiving extra tries this round (round 1 only)
   double koFlash = 0; // 0..1 elimination flash that fades after a KO
+  double oopsFlash = 0; // 0..1 gentle "wrong, try again" flash on a forgiven miss
   final ReactionClock? clock;
 
   /// Bot only: the step index at which this bot will deliberately slip THIS
@@ -45,21 +46,31 @@ class _Pad {
       if (bloom[i] > 0) bloom[i] = math.max(0, bloom[i] - perSec * dt);
     }
     if (koFlash > 0) koFlash = math.max(0, koFlash - dt);
+    if (oopsFlash > 0) oopsFlash = math.max(0, oopsFlash - dt);
   }
 }
 
-/// Color Memory — a Simon-style game on a shared, growing color sequence.
+/// Color Memory — a classic Simon a young child can read at a glance.
 ///
-/// One-touch rule (documented): during the [_Phase.input] phase each player has
-/// a highlight that auto-cycles through their four pads every [_cycleSec]. A tap
-/// **locks the currently-highlighted color** as that player's next entry:
-/// - correct → progress advances; once progress == sequence length the player
-///   has cleared the round and waits;
-/// - wrong → that player is eliminated ([Juice.ko]).
+/// Rule (documented, one clear scheme):
+///  * Each round the shared color sequence first **plays back**: the matching
+///    colored pad flashes on every cluster, one at a time ([_Phase.showing], the
+///    "light show"). A central orb echoes the current color so it reads across
+///    the room.
+///  * Then everyone **repeats it by TAPPING their own colored pads directly, in
+///    order** ([_Phase.input]). The pads are big quadrants in each player's zone;
+///    a tap is hit-tested to the quadrant it lands in (forgiving, finger-sized
+///    targets) and that real color is the player's next entry:
+///    - correct → progress advances; once progress == sequence length the player
+///      has cleared the round and waits;
+///    - wrong → that player is eliminated ([Juice.ko]) — except on round 1, where
+///      everyone gets a single forgiving retry ([_round1Retries]): the first
+///      wrong tap just buzzes "OOPS" and lets them try the same step again.
+///  * A tap that misses every pad (the center hub / a gap) is ignored, so a
+///    fumbled touch never eliminates a kid.
 ///
-/// Each round the sequence first flashes (showing = the light show), then
-/// everyone reproduces. When the round resolves, the sequence grows by one.
-/// Last player standing wins via [finishByOrder].
+/// When the round resolves, the sequence grows by one and replays. Last player
+/// standing wins via [finishByOrder].
 ///
 /// Termination is guaranteed several ways: a per-round input deadline
 /// ([_roundDeadlineSec]) eliminates anyone who hasn't finished, a sequence
@@ -79,12 +90,12 @@ class ColorMemory extends MiniGameBase {
   // ── Rules / timing tuning (no magic numbers inline) ─────────────────────────
   static const int _palette = 4;
   static const double _timeLimit = 45;
-  static const double _showStepSec = 0.45; // per-color flash during showing
-  static const double _showLeadSec = 0.35; // calm beat before the light show
-  static const double _cycleSec = 0.4; // per-pad highlight dwell during input
-  static const double _roundDeadlineSec = 6.0; // hard cap on one input phase
-  static const int _maxSeqLen = 24; // absolute cap so it always terminates
+  static const double _showStepSec = 0.6; // per-color flash during showing (slow, clear)
+  static const double _showLeadSec = 0.5; // calm beat before the light show
+  static const double _roundDeadlineSec = 8.0; // generous cap on one input phase
+  static const int _maxSeqLen = 20; // absolute cap so it always terminates
   static const int _startSeqLen = 1;
+  static const int _round1Retries = 1; // forgiving extra tries on round 1
 
   // ── Bot memory model (fairness) ─────────────────────────────────────────────
   // A bot rolls ONE planned slip per round (not per entry). The chance it slips
@@ -96,12 +107,15 @@ class ColorMemory extends MiniGameBase {
   static const double _botSlipPerColor = 0.16; // added slip chance per color held
   static const double _botSlipCap = 0.85; // never a guaranteed slip
   static const int _botFreeRecall = 1; // colors a bot always nails (no slip)
+  // Bots tap a little after the GO so an easy human can out-react them, and so
+  // the light show clearly finishes before the first bot answer lands.
+  static const double _botFirstAnswerDelaySec = 0.6;
 
   // ── Feel tuning ─────────────────────────────────────────────────────────────
   static const double _bloomDecayPerSec = 2.6; // pad afterglow fade rate
-  static const double _flashHoldFrac = 0.55; // share of a step the orb stays lit
+  static const double _flashHoldFrac = 0.6; // share of a step the orb stays lit
   static const double _koFlashSec = 0.5;
-  static const double _cursorThrobHz = 3.2;
+  static const double _oopsFlashSec = 0.45;
   static const double _bannerThrobHz = 2.4;
 
   late Juice _juice;
@@ -115,7 +129,6 @@ class ColorMemory extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock for pulses (never time-scaled)
   double _phaseTimer = 0; // time spent in the current phase
-  double _cycleAcc = 0; // drives the input-highlight cursor
   int _showIndex = -1; // which sequence color is flashing (-1 = lead-in)
   int _round = 1; // 1-based round counter (== sequence length)
   Size _lastSize = const Size(1, 1);
@@ -149,14 +162,15 @@ class ColorMemory extends MiniGameBase {
   void _enterInput() {
     _phase = _Phase.input;
     _phaseTimer = 0;
-    _cycleAcc = 0;
     for (final pad in _pads) {
       if (!pad.alive) continue;
       pad.progress = 0;
       pad.done = false;
-      pad.highlight = 0;
-      pad.clock?.arm(ctx.botProfile, ctx.rng);
-      if (pad.clock != null) pad.mistakeStep = _rollBotMistakeStep();
+      pad.retriesLeft = _round == 1 ? _round1Retries : 0;
+      if (pad.clock != null) {
+        pad.clock!.arm(ctx.botProfile, ctx.rng);
+        pad.mistakeStep = _rollBotMistakeStep();
+      }
     }
   }
 
@@ -190,8 +204,11 @@ class ColorMemory extends MiniGameBase {
     }
     final pad = _padOf(input.playerId);
     if (pad == null || !pad.alive || pad.done) return;
-    // One-touch rule: lock whatever color is currently highlighted.
-    _commit(pad, pad.highlight);
+    // Tap a real colored pad: hit-test the quadrant the touch landed in. A tap
+    // that misses every pad (the hub / a gap) is ignored, never fatal.
+    final slot = _padHitTest(input.playerId, input.normPos);
+    if (slot < 0) return;
+    _commit(pad, slot);
   }
 
   _Pad? _padOf(int id) {
@@ -201,8 +218,25 @@ class ColorMemory extends MiniGameBase {
     return null;
   }
 
-  /// Apply a chosen color for [pad]: advance on a match, eliminate on a miss.
-  /// Fires the matching pad's bloom + a hit spark either way so taps feel solid.
+  /// Map a full-screen 0..1 tap to one of the four pad slots in [playerId]'s
+  /// cluster (0 = red TL, 1 = blue TR, 2 = green BL, 3 = yellow BR), or -1 if the
+  /// tap is outside that player's pad plate. The plate is split into four equal
+  /// quadrants (bigger than the drawn pads) so little fingers land reliably.
+  int _padHitTest(int playerId, Offset normPos) {
+    final index = _pads.indexWhere((p) => p.playerId == playerId);
+    if (index < 0) return -1;
+    final plate = _padBlockRect(_playerRegion(index, _pads.length));
+    final px = normPos.dx * _lastSize.width;
+    final py = normPos.dy * _lastSize.height;
+    if (!plate.contains(Offset(px, py))) return -1;
+    final col = px >= plate.center.dx ? 1 : 0;
+    final row = py >= plate.center.dy ? 1 : 0;
+    return row * 2 + col;
+  }
+
+  /// Apply a chosen color for [pad]: advance on a match, eliminate on a miss
+  /// (with a forgiving round-1 retry). Fires the matching pad's bloom + a hit
+  /// spark on a correct tap so taps feel solid.
   void _commit(_Pad pad, int color) {
     pad.bumpBloom(color);
     final expected = _sequence[pad.progress];
@@ -217,16 +251,30 @@ class ColorMemory extends MiniGameBase {
             pad.accent,
             size: 26);
       }
-    } else {
-      // Make the miss legible: a red "WRONG!" over the cluster names the failure
-      // (a wrong color, not just "out"), then the KO beat fells the player.
+      return;
+    }
+
+    // Wrong color. On round 1 the first miss is forgiven: buzz "OOPS" and let
+    // the kid try the same step again (progress unchanged).
+    if (pad.retriesLeft > 0) {
+      pad.retriesLeft -= 1;
+      pad.oopsFlash = _oopsFlashSec;
       _juice.popup(
           _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
-          'WRONG!',
-          MemoryRenderer.palette[0],
-          size: 30);
-      _eliminate(pad);
+          'OOPS!',
+          MemoryRenderer.palette[3],
+          size: 24);
+      _juice.shake.light();
+      return;
     }
+
+    // Out of retries → a red "WRONG!" names the failure, then the KO beat.
+    _juice.popup(
+        _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
+        'WRONG!',
+        MemoryRenderer.palette[0],
+        size: 30);
+    _eliminate(pad);
   }
 
   void _eliminate(_Pad pad) {
@@ -295,19 +343,9 @@ class ColorMemory extends MiniGameBase {
     _juice.shake.light();
   }
 
-  /// Drive the highlight cursor + bots, then resolve the round when everyone
-  /// alive is done or the input deadline passes.
+  /// Drive bots, then resolve the round when everyone alive is done or the input
+  /// deadline passes.
   void _updateInput(double dt) {
-    _cycleAcc += dt;
-    while (_cycleAcc >= _cycleSec) {
-      _cycleAcc -= _cycleSec;
-      for (final pad in _pads) {
-        if (pad.alive && !pad.done) {
-          pad.highlight = (pad.highlight + 1) % _palette;
-        }
-      }
-    }
-
     _driveBots(dt);
 
     final deadlineHit = _phaseTimer >= _roundDeadlineSec;
@@ -321,12 +359,15 @@ class ColorMemory extends MiniGameBase {
     if (_roundResolved()) _resolveRound();
   }
 
-  /// Bots commit on their reaction cadence. They reproduce the pattern from
-  /// their per-round plan ([_Pad.mistakeStep]): correct on every step except the
-  /// one planned slip, where they press a wrong color (→ elimination). This
-  /// makes a bot's run a coherent "remembered N colors then fumbled" rather than
-  /// an independent dice roll per tap, so patterns grow and difficulty is fair.
+  /// Bots tap one pad per reaction tick. They reproduce the pattern from their
+  /// per-round plan ([_Pad.mistakeStep]): correct on every step except the one
+  /// planned slip, where they press a wrong color (→ elimination, unless a
+  /// round-1 retry forgives it). This makes a bot's run a coherent "remembered N
+  /// colors then fumbled" rather than an independent dice roll per tap, so
+  /// patterns grow and difficulty is fair. The first answer is held a beat past
+  /// the light show so a human can react first.
   void _driveBots(double dt) {
+    if (_phaseTimer < _botFirstAnswerDelaySec) return;
     for (final pad in _pads) {
       if (pad.clock == null || !pad.alive || pad.done) continue;
       if (!pad.clock!.tick(dt)) continue;
@@ -456,11 +497,14 @@ class ColorMemory extends MiniGameBase {
   }
 
   /// Draw one player's Simon cluster + identity tab + progress pips, plus the
-  /// elimination stamp once they are out.
+  /// elimination stamp once they are out. During input the whole plate gives a
+  /// gentle "your turn" pulse so a kid knows it is time to tap the colors (no
+  /// per-pad cursor); a forgiven miss flashes the plate.
   void _drawCluster(Canvas canvas, _Pad pad, int index, bool watching) {
     final block = _padBlockRect(_playerRegion(index, _pads.length));
-    final throb = 0.5 + 0.5 * math.sin(_animClock * _cursorThrobHz);
-    final showCursor = !watching && pad.alive && !pad.done;
+    final turnPulse = (!watching && pad.alive && !pad.done)
+        ? 0.5 + 0.5 * math.sin(_animClock * _bannerThrobHz)
+        : 0.0;
 
     MemoryRenderer.drawCluster(
       canvas,
@@ -469,8 +513,10 @@ class ColorMemory extends MiniGameBase {
       alive: pad.alive,
       done: pad.done,
       accent: pad.accent,
-      highlightSlot: showCursor ? pad.highlight : -1,
-      cursorPulse: throb,
+      turnPulse: turnPulse,
+      oops: pad.oopsFlash > 0
+          ? (pad.oopsFlash / _oopsFlashSec).clamp(0.0, 1.0)
+          : 0.0,
     );
     MemoryRenderer.drawPlayerTab(canvas, block, pad.accent, pad.playerId + 1,
         alive: pad.alive);

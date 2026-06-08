@@ -7,8 +7,8 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'snake_render.dart';
 
-/// Four cardinal headings on the grid, ordered clockwise so a tap can rotate
-/// to the next one with `(index + 1) % 4`.
+/// Four cardinal headings on the grid, ordered clockwise so a right turn is
+/// `(index + 1) % 4` and a left turn is `(index + 3) % 4`.
 enum _Heading { up, right, down, left }
 
 const Map<_Heading, _Cell> _kStep = {
@@ -68,8 +68,15 @@ class _Snake {
 ///    accumulated, so the sim is deterministic regardless of frame rate). The
 ///    tick interval starts at [_stepSecStart] and ramps toward [_stepSecMin]
 ///    over the round so matches converge.
-///  * **TAP rotates that snake's heading CLOCKWISE** (up→right→down→left→up).
-///    One control, and reversing into your own neck is impossible by design.
+///  * **TAP a SIDE of your zone to steer**: tapping the LEFT half of your
+///    zone turns the snake LEFT (counter-clockwise), the RIGHT half turns it
+///    RIGHT (clockwise) — "tap the side you want to turn toward". This is the
+///    most intuitive control for young children (steer like a wheel), and
+///    reversing into your own neck is impossible by design. Turns are relative
+///    to the snake's current heading; the zone's own rotation (top-edge players
+///    are flipped 180°) is accounted for so left/right always match what that
+///    player sees. A tap with no position (e.g. a synthetic/test tap) defaults
+///    to a right turn so the old one-tap behavior still works.
 ///  * Eat a glowing food pellet to grow by [_growPerFood] segments and +1 score;
 ///    a fresh pellet then respawns on a free cell.
 ///  * A snake dies when its next head cell hits a wall, its own body, or any
@@ -215,14 +222,36 @@ class SnakeArena extends MiniGameBase {
     if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
       return;
     }
-    _turn(input.playerId);
+    _turn(input.playerId, _tapTurnsRight(input.playerId, input.normPos));
   }
 
-  /// Rotate a snake's heading CLOCKWISE (up→right→down→left→up).
-  void _turn(int id) {
+  /// Which half of the player's zone the tap landed in. Returns true for a RIGHT
+  /// turn (right half), false for a LEFT turn (left half). The tap [pos] is in
+  /// full-screen 0..1 space; it is mapped into the player's [PlayerZone] and the
+  /// zone's own 180° rotation (top-edge seats) is undone so "right" always means
+  /// the player's own right. A degenerate/zero tap defaults to a right turn so a
+  /// positionless synthetic tap still steers (and never stalls).
+  bool _tapTurnsRight(int id, Offset pos) {
+    final zone = ctx.zones.forPlayer(id);
+    if (zone == null) return true;
+    final rect = zone.normRect;
+    if (rect.width <= 0) return true;
+    // Fraction across the zone, 0 at its left edge → 1 at its right edge.
+    var fx = ((pos.dx - rect.left) / rect.width).clamp(0.0, 1.0);
+    // A 180°-rotated seat sees its zone upside-down, so its left/right are
+    // mirrored relative to screen space.
+    if (zone.rotationQuarters % 4 == 2) fx = 1.0 - fx;
+    return fx >= 0.5;
+  }
+
+  /// Turn a snake: RIGHT = clockwise (`+1`), LEFT = counter-clockwise (`+3`).
+  /// Reversing straight back is impossible because a single ±90° turn can never
+  /// flip the heading 180°.
+  void _turn(int id, bool right) {
     for (final s in _snakes) {
       if (s.playerId == id && s.alive) {
-        s.heading = _Heading.values[(s.heading.index + 1) % 4];
+        final delta = right ? 1 : 3;
+        s.heading = _Heading.values[(s.heading.index + delta) % 4];
         return;
       }
     }
@@ -632,7 +661,8 @@ class SnakeArena extends MiniGameBase {
       _drawSnake(canvas, s, size);
     }
 
-    // The clockwise "tap = turn" hint, on top of the snakes so it always reads.
+    // The "tap left / tap right to steer" hint, on top of the snakes so it
+    // always reads.
     for (final s in _snakes.where((s) => s.alive)) {
       _drawTurnHint(canvas, s, size);
     }
@@ -658,9 +688,11 @@ class SnakeArena extends MiniGameBase {
     );
   }
 
-  /// Draw the clockwise turn affordance over [s]'s head. Humans (no bot clock)
-  /// get a bold hint that fades from full to a calm idle level over [_hintFadeSec]
-  /// so the rule lands at the start without nagging forever; bots show a faint
+  /// Draw the "tap left = turn left, tap right = turn right" affordance over
+  /// [s]'s head: a left-pointing and a right-pointing arrow flanking the head,
+  /// each showing where that tap would send the snake. Humans (no bot clock) get
+  /// a bold hint that fades from full to a calm idle level over [_hintFadeSec] so
+  /// the rule lands at the start without nagging forever; bots show a faint
   /// version so every snake visibly obeys the same rule.
   void _drawTurnHint(Canvas canvas, _Snake s, Size size) {
     final isHuman = s.clock == null;
@@ -668,12 +700,14 @@ class SnakeArena extends MiniGameBase {
     final emphasis = isHuman
         ? _hintIdleLevel + (1.0 - _hintIdleLevel) * fadeIn
         : _hintIdleLevel * 0.5;
-    final next = _Heading.values[(s.heading.index + 1) % 4]; // one tap clockwise
+    final leftHeading = _Heading.values[(s.heading.index + 3) % 4];
+    final rightHeading = _Heading.values[(s.heading.index + 1) % 4];
     SnakeRenderer.drawTurnHint(
       canvas,
       _cellCenter(s.head, size),
       _headingPixelDir(s.heading),
-      _headingPixelDir(next),
+      _headingPixelDir(leftHeading),
+      _headingPixelDir(rightHeading),
       _cell(),
       s.color,
       pulse: _gridPulse(),

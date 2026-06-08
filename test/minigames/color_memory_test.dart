@@ -63,7 +63,33 @@ void main() {
     }
   });
 
-  test('a tap during play does not throw and round still resolves', () {
+  test('tapping the colored pads directly does not throw and round resolves',
+      () {
+    // New control: players tap the real colored quadrants in their cluster via
+    // input.normPos (no auto-cycling cursor). Player 0's cluster in a 2p layout
+    // sits in the bottom band; these four points land in its four quadrants.
+    // Cycling taps across them exercises the pad hit-testing (correct → advance,
+    // wrong → forgiven on round 1 then out) and the round must always resolve.
+    const quadrants = <Offset>[
+      Offset(0.365, 0.65), // red   (top-left)
+      Offset(0.635, 0.65), // blue  (top-right)
+      Offset(0.365, 0.83), // green (bottom-left)
+      Offset(0.635, 0.83), // yellow(bottom-right)
+    ];
+    final g = ColorMemory()..init(ctxFor(2, 3));
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+      g.update(1 / 60);
+      if (n % 9 == 0) g.onInput(PlayerInput.down(0, quadrants[(n ~/ 9) % 4]));
+    }
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.winResult!.ranking.toSet(), {0, 1});
+  });
+
+  test('a positionless tap is ignored (never eliminates) and round resolves',
+      () {
+    // A tap with no position (origin) misses every pad, so it must be ignored
+    // rather than counting as a wrong color — a fumbled touch never KO's a kid.
     final g = ColorMemory()..init(ctxFor(2, 3));
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {

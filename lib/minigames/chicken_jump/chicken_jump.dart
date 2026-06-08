@@ -22,15 +22,16 @@ class _Tuning {
   // stay put, so everyone gets a moment to read the board before the climb. The
   // host also shows a 3-2-1-GO overlay; this in-sim warmup makes the all-bot /
   // test path fair too and lets the lava "build" dramatically before it rises.
-  static const double warmupSec = 1.5;
+  // Kept generous (~2s) so the first hop is never a surprise.
+  static const double warmupSec = 1.9;
 
   static const int platformCount = 16; // rungs in each player's tower
   static const double topInset = 96; // px from the top to the highest platform
   static const double bottomInset = 150; // px from the bottom to the lowest
 
-  // Rising lava (after the warmup): starts brisk and accelerates so the round
-  // always resolves, with a fair reaction window per rung early on.
-  static const double lavaRiseStart = 46; // px/s initial climb
+  // Rising lava (after the warmup): starts calm and accelerates so the round
+  // always resolves, with a forgiving reaction window per rung early on.
+  static const double lavaRiseStart = 40; // px/s initial climb (gentle start)
   static const double lavaAccel = 8.0; // px/s^2 ramp
   static const double lavaStartGap = 10; // px the lava starts below the lowest
 
@@ -45,21 +46,16 @@ class _Tuning {
   static const double figureScaleHiColumn = 560; // column px at max scale
   static const double figureLiftExtra = 6; // raise feet above the platform top
 
-  // Crumbling platforms: a rung the climber leaves begins to crumble and is
-  // gone shortly after, so camping a single platform is impossible.
-  static const double crumbleAfterSec = 0.9; // delay before a left rung falls
-  static const double crumbleFallSec = 0.45; // crumble animation length
-  static const int crumbleEveryN = 2; // only every Nth rung is crumbly
-
   // Danger / near-catch feel.
   static const double dangerGapPx = 170; // lava within this → danger glow ramps
   static const double nearCatchGapPx = 30; // lava this close → tension shake
   static const double nearCatchShakeGap = 0.5; // min seconds between tics
 
-  // Anticipation: the rung directly above the climber pulses so the player
-  // always sees where the next hop lands (readability), and it brightens with
-  // danger so it screams "jump NOW" as the lava closes in.
+  // Anticipation: the rung directly above the climber always shows a cue so the
+  // player can never miss where the next hop lands (readability), and it
+  // brightens with danger so it screams "jump NOW" as the lava closes in.
   static const double nextRungPulseHz = 3.2; // pulse speed of the next rung cue
+  static const double nextRungFloor = 0.4; // min cue strength when safe
 
   // Bots time their hops with the reaction clock; they jump when the lava is
   // within a safety buffer of their rung, and occasionally fumble (errorRate).
@@ -93,14 +89,10 @@ class _Climber {
   bool alive = true;
   double jumpHold = 0; // jump pose timer after a hop
   double landHold = 0; // squash timer after landing
-  double standTimer = 0; // seconds standing on the current rung
   int topReached = 0; // highest rung touched (for ranking)
   double sinceShake = _Tuning.nearCatchShakeGap; // throttle near-catch shakes
   double lavaY = 0; // lava surface y for this column (rising = decreasing y)
   ReactionClock? clock;
-
-  /// Per-rung crumble timer (seconds since it was triggered). Absent = solid.
-  final Map<int, double> crumbling = <int, double>{};
 
   _Climber({
     required this.playerId,
@@ -115,25 +107,24 @@ class _Climber {
     this.clock,
   });
 
-  /// Whether [lane] is a crumbly rung (every Nth, never the lowest or top).
-  bool isCrumblyRung(int lane) =>
-      lane > 0 && lane % _Tuning.crumbleEveryN == 0 && lane < rungs.count - 1;
-
   double rungYOf(int lane) => rungs.coordOf(lane);
   double visualRungY() => rungs.coordOfVisual(hopper.visualLane);
 }
 
-/// Chicken Jump — a vertical survival climb. Each player owns a neon tower of
-/// platforms; one tap HOPS the climber up to the next rung. Lava floods up from
-/// the bottom of every tower, accelerating so the round always converges. A
-/// rung the climber leaves crumbles away, so you must keep climbing. Get caught
-/// by the lava → ragdoll fling + KO and you're out. Last climber standing wins;
-/// on the time limit the survivors are ranked by height reached.
+/// Chicken Jump — a vertical survival climb a young child reads instantly:
+/// **TAP to hop up to the next platform, escape the rising lava.**
+///
+/// Each player owns a tower of clear stone platforms; one tap HOPS the climber
+/// up to the next rung (a satisfying hop with dust + squash). Lava floods up
+/// from the bottom of every tower, accelerating so the round always converges.
+/// The rung directly above always shows a glowing "hop here next" cue. Get
+/// caught by the lava (fall behind) → ragdoll fling + KO and you're out. Last
+/// climber standing wins; on the time limit the survivors are ranked by height.
 ///
 /// Bots read the same rising lava and hop on a [BotProfile]-timed reaction
 /// clock: better accuracy keeps a larger safety buffer, while [errorRate] makes
 /// them occasionally hesitate and get caught — so they feel reactive, not
-/// scripted.
+/// scripted, and easy bots are beatable.
 class ChickenJump extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -241,11 +232,6 @@ class ChickenJump extends MiniGameBase {
     c.hopper.hop(); // up one platform
     if (c.hopper.lane == before) return; // already at the top rung
 
-    // The rung we leave begins to crumble if it is a crumbly type.
-    if (c.isCrumblyRung(before)) {
-      c.crumbling.putIfAbsent(before, () => 0);
-    }
-    c.standTimer = 0;
     c.topReached = math.max(c.topReached, c.hopper.lane);
 
     c.jumpHold = _Tuning.jumpHoldSec;
@@ -306,22 +292,11 @@ class ChickenJump extends MiniGameBase {
 
     if (!c.alive) {
       c.figure.update(dt);
-      _tickCrumbles(c, dt);
       return;
     }
 
     c.hopper.update(sdt, speed: _Tuning.hopAnimSpeed);
     _tickPose(c, dt);
-    _tickCrumbles(c, dt);
-
-    // Standing too long on a crumbly rung starts it crumbling under you.
-    if (c.hopper.settled) {
-      c.standTimer += dt;
-      if (c.isCrumblyRung(c.hopper.lane) &&
-          c.standTimer >= _Tuning.crumbleAfterSec) {
-        c.crumbling.putIfAbsent(c.hopper.lane, () => 0);
-      }
-    }
 
     c.figure.update(dt);
     _checkLava(c);
@@ -358,18 +333,6 @@ class ChickenJump extends MiniGameBase {
       gravity: 320,
       life: 0.3,
     );
-  }
-
-  /// Advance per-rung crumble timers; drop a rung once fully crumbled.
-  ///
-  /// A fully-crumbled rung must stay gone: we cap its timer at [total] (instead
-  /// of removing the entry) so [_crumbleProgress] keeps returning 1 and the rung
-  /// stays skipped in render. Removing it would make the entry absent, which
-  /// reads as "solid" again and resurrects the dropped platform.
-  void _tickCrumbles(_Climber c, double dt) {
-    if (c.crumbling.isEmpty) return;
-    final total = _Tuning.crumbleAfterSec + _Tuning.crumbleFallSec;
-    c.crumbling.updateAll((lane, t) => math.min(total, t + dt));
   }
 
   void _checkLava(_Climber c) {
@@ -412,9 +375,7 @@ class ChickenJump extends MiniGameBase {
     final gap = c.lavaY - rungY; // positive while the lava is still below
     final buffer = _Tuning.botSafetyGapPx *
         (0.45 + _Tuning.botBufferPerAccuracy * ctx.botProfile.accuracy);
-    // Also bail off a rung that is actively crumbling beneath the bot.
-    final crumblingHere = c.crumbling.containsKey(c.hopper.lane);
-    if (gap <= buffer || crumblingHere) {
+    if (gap <= buffer) {
       return !ctx.rng.chance(ctx.botProfile.errorRate);
     }
     return false;
@@ -516,15 +477,13 @@ class ChickenJump extends MiniGameBase {
       c.alive,
     );
 
-    // The rung the climber will hop to next — pulses so the player always sees
-    // the target; sharpens with danger to read as "jump now".
+    // The rung the climber will hop to next — always cued so the player sees the
+    // target; sharpens with danger to read as "jump now".
     final nextLane = c.hopper.lane + 1;
     final showNext = c.alive && c.hopper.settled && nextLane < c.rungs.count;
 
-    // Platforms (skip a fully-dropped crumbled rung; pass crumble progress).
+    // Platforms.
     for (var lane = 0; lane < c.rungs.count; lane++) {
-      final crumble = _crumbleProgress(c, lane);
-      if (crumble >= 1) continue; // gone
       final anticipate = (showNext && lane == nextLane)
           ? _anticipationPulse(danger)
           : 0.0;
@@ -533,8 +492,6 @@ class ChickenJump extends MiniGameBase {
         Offset(c.columnX, c.rungYOf(lane)),
         c.column.width,
         c.color,
-        crumbly: c.isCrumblyRung(lane),
-        crumble: crumble,
         lit: lane == c.hopper.lane && c.alive,
         anticipate: anticipate,
       );
@@ -558,6 +515,18 @@ class ChickenJump extends MiniGameBase {
       c.figure,
       Offset(c.columnX, rungY - c.figureLift),
     );
+
+    // A bobbing "TAP to hop" arrow over the climber during the warmup so the one
+    // control is unmistakable before the lava starts to rise.
+    if (c.alive && _inWarmup) {
+      ChickenRenderer.drawTapHint(
+        canvas,
+        Offset(c.columnX, rungY - c.figureLift),
+        c.column.width,
+        c.color,
+        _animClock,
+      );
+    }
 
     // Altitude indicator + player pip in the column corner.
     ChickenRenderer.drawAltitude(
@@ -584,13 +553,15 @@ class ChickenJump extends MiniGameBase {
     return (1.0 - (gap / _Tuning.dangerGapPx)).clamp(0.0, 1.0);
   }
 
-  /// 0..1 strength of the next-rung anticipation cue: a calm pulse when safe
-  /// that swells (and pulses faster, via the phase) as the lava closes in.
+  /// 0..1 strength of the next-rung anticipation cue: a calm pulse (never below
+  /// [nextRungFloor], so the target is always visible) that swells (and pulses
+  /// faster, via the phase) as the lava closes in.
   double _anticipationPulse(double danger) {
     final d = danger.clamp(0.0, 1.0);
     final hz = _Tuning.nextRungPulseHz * (1.0 + d);
     final throb = 0.5 + 0.5 * math.sin(_animClock * hz * math.pi);
-    return (0.35 + 0.65 * d) * (0.6 + 0.4 * throb);
+    final base = _Tuning.nextRungFloor + (1.0 - _Tuning.nextRungFloor) * d;
+    return (base * (0.7 + 0.3 * throb)).clamp(0.0, 1.0);
   }
 
   /// 0..1 fraction of the tower climbed (for the altitude bar).
@@ -598,15 +569,6 @@ class ChickenJump extends MiniGameBase {
     final maxLane = (c.rungs.count - 1).toDouble();
     if (maxLane <= 0) return 0;
     return (c.hopper.visualLane / maxLane).clamp(0.0, 1.0);
-  }
-
-  /// Crumble progress for [lane] in 0..1 (0 = solid, 1 = gone).
-  double _crumbleProgress(_Climber c, int lane) {
-    final t = c.crumbling[lane];
-    if (t == null) return 0;
-    if (t <= _Tuning.crumbleAfterSec) return 0; // still solid, just "armed"
-    final fall = (t - _Tuning.crumbleAfterSec) / _Tuning.crumbleFallSec;
-    return fall.clamp(0.0, 1.0);
   }
 
   static Color _brighten(Color c, double t) =>
