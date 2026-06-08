@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -97,6 +98,33 @@ void main() {
       if (n % 9 == 0) g.onInput(PlayerInput.down(0));
     }
     expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('DRUMROLL climax: a long pattern is reached and the round still resolves',
+      () {
+    // CLIMAX mechanic. A lone HARD bot rarely slips, so the sequence climbs past
+    // the climax threshold (where the show speeds up + a drumroll fires). We
+    // assert it both reaches a climax-length pattern (the survivor's score is the
+    // sequence length cleared) and still terminates cleanly within the limit.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0, isBot: true)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(0), // a solo hard bot drives the pattern deep on this seed
+      zones: ZoneLayout.forPlayers(1),
+      difficulty: BotDifficulty.hard,
+    );
+    final g = ColorMemory()..init(ctx);
+    var frames = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished);
+    // The solo bot recalls a long pattern, so its score is the deep final
+    // sequence length — comfortably past the 5-color climax (drumroll) trigger.
+    expect(g.scores.of(0), greaterThanOrEqualTo(5),
+        reason: 'the sequence should grow into the climax (drumroll) range');
+    expect(frames / 60.0, greaterThan(1.5));
+    expect(frames / 60.0, lessThanOrEqualTo(46.0));
   });
 
   test('render does not throw in either phase', () {

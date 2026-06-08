@@ -70,6 +70,18 @@ class TapSprint extends MiniGameBase {
   static const double _photoFinishSlowScale = 0.32; // slow-mo time scale
   static const double _photoFinishSec = 0.55; // slow-mo duration
 
+  // ── Final-stretch climax ─────────────────────────────────────────────────────
+  // When the leader passes [_finalStretchProgress] a one-shot "FINAL STRETCH!"
+  // banner + shake fire, so the finale is unmistakable well before the tape.
+  static const double _finalStretchProgress = 0.74; // leader past this → cue
+
+  // ── Comeback (rubber-band, kid-assist) ───────────────────────────────────────
+  // Trailing runners convert each tap into a touch more ground, scaled by how
+  // far behind the leader they are. Capped + small so it keeps a behind kid in
+  // the race without ever letting them leapfrog a steady leader on its own.
+  static const double _catchUpMaxBonusPerTap = 0.010; // extra fill / tap at full gap
+  static const double _catchUpGapFull = 0.35; // gap (progress) for the full bonus
+
   // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
   static const double _botBaseInterval = 0.15;
   static const double _botAccuracyBonus = 0.07; // faster at high accuracy
@@ -88,6 +100,7 @@ class TapSprint extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for crowd/dust/tape
   bool _photoFinishFired = false;
+  bool _finalStretchFired = false; // one-shot "FINAL STRETCH!" climax cue latch
 
   late double _startX;
   late double _finishX;
@@ -202,8 +215,24 @@ class TapSprint extends MiniGameBase {
 
     _driveBots(sdt);
     _tickRunners(sdt);
+    _maybeFinalStretch();
     _maybePhotoFinish();
     _resolve();
+  }
+
+  /// Fire the one-shot "FINAL STRETCH!" climax cue once the leader is deep into
+  /// the track — a clear "the finish is close, push!" beat before the tape.
+  void _maybeFinalStretch() {
+    if (_finalStretchFired || _finishOrder.isNotEmpty) return;
+    if (_leadProgress() < _finalStretchProgress) return;
+    _finalStretchFired = true;
+    _juice.popup(
+      Offset(_size.width / 2, _size.height * 0.2),
+      'FINAL STRETCH!',
+      _accent,
+      size: 34,
+    );
+    _juice.shake.medium();
   }
 
   // ── Tap → rhythm + meter fill ───────────────────────────────────────────────
@@ -229,7 +258,20 @@ class TapSprint extends MiniGameBase {
     r.meter.tap();
     r.rhythmBonus += _rhythmBonusPerTap * r.rhythm;
 
+    // Comeback (rubber-band): a runner behind the leader earns a touch more
+    // ground per tap, scaled by the gap — keeps a behind kid in the race.
+    r.rhythmBonus += _catchUpBonus(r);
+
     r.figure.setLoco(LocoState.run);
+  }
+
+  /// Extra per-tap fill for a trailing runner, scaled 0..1 by how far behind the
+  /// current leader it sits (capped at [_catchUpGapFull]). Zero for the leader.
+  double _catchUpBonus(_Runner r) {
+    final gap = _leadProgress() - r.progress;
+    if (gap <= 0) return 0;
+    final t = (gap / _catchUpGapFull).clamp(0.0, 1.0);
+    return _catchUpMaxBonusPerTap * t;
   }
 
   void _tickRunners(double dt) {

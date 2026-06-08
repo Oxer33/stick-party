@@ -12,8 +12,8 @@ import 'package:flutter/material.dart';
 import '../../core/constants.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/registry.dart';
+import 'game_glyphs.dart';
 import 'glass_tokens.dart';
-import 'ui_kit.dart';
 
 /// Height of the horizontal tile strip.
 const double _kStripHeight = 104;
@@ -112,7 +112,8 @@ class _GameTile extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            ProceduralIcon(label: meta.name, colorArgb: colorArgb, size: 52),
+            GameGlyph(
+                id: meta.id, label: meta.name, colorArgb: colorArgb, size: 52),
             const SizedBox(height: 6),
             Text(
               meta.name,

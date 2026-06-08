@@ -69,6 +69,31 @@ void main() {
     expect(setEquals(topTeam, teamA) || setEquals(topTeam, teamB), isTrue);
   });
 
+  test('all-bot round outlasts warmup and resolves within the cap across seeds '
+      '(climax surge + comeback never break resolution)', () {
+    for (final seed in [1, 12, 99, 250]) {
+      final players = [
+        for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(4),
+      );
+      final g = TugOfWar()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        g.update(1 / 60);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3}, reason: 'seed $seed');
+      final simSeconds = n / 60.0;
+      expect(simSeconds, greaterThan(1.5), reason: 'seed $seed floor');
+      expect(simSeconds, lessThanOrEqualTo(21.0), reason: 'seed $seed cap');
+    }
+  });
+
   test('tug of war duel 1v1 finishes', () {
     final players = [
       PlayerSlot.defaults(0, isBot: true),

@@ -8,6 +8,7 @@ import '../../engine/bots.dart';
 import '../../engine/helpers/aim_sweep.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'tank_fx.dart';
 import 'tank_render.dart';
 
 /// Tank Duel — every player owns a tank mounted on a screen edge with a turret
@@ -100,6 +101,26 @@ class TankDuel extends MiniGameBase {
   static const double _botArcDt = 0.05; // arc-probe timestep (seconds)
   static const double _botWildChance = 0.4; // share of errorRate → wild shots
 
+  // ── Climax (frenzy) tuning ──────────────────────────────────────────────────
+  // The final ~30% of the match: bots fire faster (shorter re-arm) and a FRENZY
+  // banner throbs, so the round visibly ramps to a finish.
+  static const double _frenzyFrac = 0.7; // enters at this share of the limit
+  static const double _frenzyBotReloadMul = 0.55; // bot re-arm × this in frenzy
+
+  // ── Airdrop pickup (chaos) tuning ───────────────────────────────────────────
+  // A supply crate any tank can shoot; popping it grants the shooter a brief
+  // OVERCHARGE (double-damage, heavier) shells — a swingy surprise.
+  static const double _airHalfFactor = 0.7; // crate half-size / baseR (× scale)
+  static const double _airFirstDropSec = 5.0;
+  static const double _airRespawnSec = 7.0;
+  static const double _airLifeSec = 8.0;
+  static const double _airAppearPerSec = 3.0;
+  static const double _airBobPerSec = 2.2;
+  static const double _airFieldInset = 0.14; // field inset / min(arena side)
+  static const double _overchargeSec = 5.0; // buff duration
+  static const int _overchargeDamage = 2; // damage per shell while overcharged
+  static const Color _airColor = Color(0xFFFFE45C);
+
   // ── Ambient ─────────────────────────────────────────────────────────────────
   static const int _emberCount = 26;
   static const double _horizonFactor = 0.34; // horizon Y / arena height
@@ -116,6 +137,9 @@ class TankDuel extends MiniGameBase {
   late Size _size;
   late double _scale;
   late double _horizonY;
+  late AirdropController _airdrop;
+  late Rect _airField; // where airdrops may land
+  bool _frenzyAnnounced = false;
 
   @override
   void init(MiniGameContext ctx) {
@@ -129,8 +153,22 @@ class TankDuel extends MiniGameBase {
     _buildTanks();
     _buildCrates();
     _seedEmbers();
+    final inset = minSide * _airFieldInset;
+    _airField = Rect.fromLTRB(
+        inset, inset, _size.width - inset, _size.height - inset);
+    _airdrop = AirdropController(
+      half: _baseR * _scale * _airHalfFactor,
+      firstDropSec: _airFirstDropSec,
+      respawnSec: _airRespawnSec,
+      lifeSec: _airLifeSec,
+      appearPerSec: _airAppearPerSec,
+      bobPerSec: _airBobPerSec,
+    );
     begin();
   }
+
+  /// True once the match has entered its climax (frenzy) window.
+  bool get _isFrenzy => _elapsed >= _timeLimit * _frenzyFrac;
 
   // ── World construction ──────────────────────────────────────────────────────
 
@@ -303,14 +341,27 @@ class TankDuel extends MiniGameBase {
       t.barrel.update(aimDt);
       if (t.holding) t.holdSec += dt;
       t.tickTimers(dt, _flashSec, _recoilSec, _muzzleSec, _invulnSec);
+      t.tickOvercharge(dt);
     }
     for (final c in _crates) {
       c.tickFlash(dt, _crateFlashSec);
     }
     _ageScorches(dt);
+    _airdrop.tick(dt, ctx.rng, _airField);
     _driveBots(dt);
     _stepShells(sdt);
+    _announceFrenzy();
     _checkEnd();
+  }
+
+  /// Announce the climax once (shake + popup); banner + faster bots then carry.
+  void _announceFrenzy() {
+    if (_frenzyAnnounced || !_isFrenzy) return;
+    _frenzyAnnounced = true;
+    _juice.shake.medium();
+    _juice.popup(Offset(_size.width / 2, _size.height * 0.22), 'FRENZY!',
+        const Color(0xFFFF7A2E),
+        size: 38);
   }
 
   void _ageScorches(double dt) {
@@ -324,10 +375,13 @@ class TankDuel extends MiniGameBase {
 
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return; // grace so the human gets first move
+    // In the frenzy climax bots re-arm faster: their reaction clock runs at an
+    // accelerated rate so shells come thicker as the round closes.
+    final clockDt = _isFrenzy ? dt / _frenzyBotReloadMul : dt;
     for (final t in _tanks) {
       final clock = t.clock;
       if (clock == null) continue;
-      if (!clock.tick(dt)) continue;
+      if (!clock.tick(clockDt)) continue;
       if (_botShouldFire(t)) _fire(t.playerId);
       clock.arm(ctx.botProfile, ctx.rng);
     }
@@ -357,46 +411,27 @@ class TankDuel extends MiniGameBase {
     return ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance);
   }
 
-  /// Probe a set of launch angles across the tank's sweep band; return the one
-  /// whose simulated arc passes closest to any opponent within the band, or null
-  /// when nothing is reasonably reachable. Cheap and bounded — never throws.
+  /// Best lead angle for [shooter] (see [TankFx.bestLaunchAngle]); builds the
+  /// live opponent-pivot list and delegates the arc search.
   double? _bestLaunchAngle(_Tank shooter) {
-    final lo = shooter.barrel.minAngle;
-    final hi = shooter.barrel.maxAngle;
-    final muzzle = _muzzleOf(shooter);
-    double? bestAngle;
-    var bestMiss = double.infinity;
-    for (var i = 0; i < _botArcCandidates; i++) {
-      final f = _botArcCandidates == 1 ? 0.5 : i / (_botArcCandidates - 1);
-      final angle = lo + (hi - lo) * f;
-      final miss = _arcClosestMiss(muzzle, angle, shooter.playerId);
-      if (miss < bestMiss) {
-        bestMiss = miss;
-        bestAngle = angle;
-      }
-    }
-    // Only commit if the best arc actually grazes a target.
-    final reach = _baseR * _scale * 2.2;
-    return (bestAngle != null && bestMiss <= reach) ? bestAngle : null;
-  }
-
-  /// Closest distance a shell launched at [angle] from [muzzle] gets to any
-  /// opponent of [ownerId], integrating the same gravity arc as live shells.
-  double _arcClosestMiss(Offset muzzle, double angle, int ownerId) {
-    var pos = muzzle;
-    var vel = Offset(math.cos(angle), math.sin(angle)) * _shellSpeed;
-    var best = double.infinity;
-    for (var step = 0; step < _botArcSteps; step++) {
-      vel = vel + Offset(0, _gravity * _botArcDt);
-      pos = pos + vel * _botArcDt;
-      if (_outOfBounds(pos)) break;
-      for (final t in _tanks) {
-        if (t.playerId == ownerId) continue;
-        final d = (_turretPivotOf(t) - pos).distance;
-        if (d < best) best = d;
-      }
-    }
-    return best;
+    final targets = <Offset>[
+      for (final t in _tanks)
+        if (t.playerId != shooter.playerId) _turretPivotOf(t),
+    ];
+    return TankFx.bestLaunchAngle(
+      lo: shooter.barrel.minAngle,
+      hi: shooter.barrel.maxAngle,
+      muzzle: _muzzleOf(shooter),
+      targets: targets,
+      shellSpeed: _shellSpeed,
+      gravity: _gravity,
+      candidates: _botArcCandidates,
+      steps: _botArcSteps,
+      arcDt: _botArcDt,
+      reach: _baseR * _scale * 2.2,
+      bounds: _size,
+      outPad: _outOfBoundsPad,
+    );
   }
 
   // ── Shells ──────────────────────────────────────────────────────────────────
@@ -416,6 +451,10 @@ class TankDuel extends MiniGameBase {
       final crate = _hitCrate(pos);
       if (crate != null) {
         _chipCrate(crate, s, pos);
+        continue; // shell consumed
+      }
+      if (_airdrop.contains(pos)) {
+        _popAirdrop(s, pos);
         continue; // shell consumed
       }
       if (life <= 0 || _outOfBounds(pos)) {
@@ -453,11 +492,14 @@ class TankDuel extends MiniGameBase {
     final victim = _tankOf(victimId);
     final shooter = _tankOf(shooterId);
     if (victim == null || shooter == null) return;
-    victim.hp = (victim.hp - 1).clamp(0, _maxHp);
+    // An overcharged shooter deals double damage (and scores both pips), so a
+    // popped airdrop is a real swing.
+    final damage = shooter.overcharged ? _overchargeDamage : 1;
+    victim.hp = (victim.hp - damage).clamp(0, _maxHp);
     victim.flash = _flashSec;
     victim.invuln = _invulnSec;
-    addScore(shooterId, 1);
-    _explode(at, shooter.color, heavy: true);
+    addScore(shooterId, damage);
+    TankFx.explode(_juice, at, shooter.color, heavy: true);
     _scorches.add(_Scorch(at: at));
 
     // A knock-out blow (victim's last pip, or the shooter clinching the win)
@@ -489,40 +531,29 @@ class TankDuel extends MiniGameBase {
     _juice.hitStop.trigger(0.03);
     if (crate.hp <= 0) {
       // Shatter: bigger burst + a scorch where the crate stood.
-      _explode(crate.rect.center, shell.color, heavy: false);
+      TankFx.explode(_juice, crate.rect.center, shell.color, heavy: false);
       _scorches.add(_Scorch(at: crate.rect.center));
     }
   }
 
-  /// Impact explosion: a hot two-tone particle burst + shake + hit-stop.
-  void _explode(Offset at, Color color, {required bool heavy}) {
+  /// A shell popped the airdrop: grant the shooter a brief OVERCHARGE (double
+  /// damage, heavier shells) + a gold burst + popup, then re-arm the drop.
+  void _popAirdrop(_Shell shell, Offset at) {
+    final shooter = _tankOf(shell.ownerId);
+    if (shooter != null) shooter.overcharge = _overchargeSec;
+    _airdrop.consume();
+    TankFx.explode(_juice, at, _airColor, heavy: false);
     _juice.particles.burst(
       at: at,
-      count: heavy ? 20 : 12,
-      color: color,
-      speed: heavy ? 360 : 260,
-      spread: math.pi * 2,
-      size: heavy ? 8 : 6,
-      gravity: 520,
-      life: heavy ? 0.7 : 0.5,
+      count: 20,
+      color: _airColor,
+      speed: 320,
+      size: 6,
+      gravity: 200,
+      life: 0.6,
     );
-    _juice.particles.burst(
-      at: at,
-      count: heavy ? 12 : 7,
-      color: const Color(0xFFFFE6A0),
-      speed: heavy ? 300 : 220,
-      spread: math.pi * 2,
-      size: heavy ? 6 : 4,
-      gravity: 400,
-      life: 0.4,
-    );
-    if (heavy) {
-      _juice.shake.heavy();
-      _juice.hitStop.trigger(0.1, scale: 0.1);
-    } else {
-      _juice.shake.medium();
-      _juice.hitStop.trigger(0.05);
-    }
+    _juice.popup(at.translate(0, -_baseR * _scale), 'OVERCHARGE!', _airColor,
+        size: 28);
   }
 
   void _fizzle(Offset at, Color color) {
@@ -602,12 +633,16 @@ class TankDuel extends MiniGameBase {
       TankRenderer.drawCrate(canvas, c.view(_crateHp));
     }
 
+    final drop = _airdrop.crate;
+    if (drop != null) TankFx.drawAirdrop(canvas, drop);
+
     // Aim guides first (under the tanks), then the tanks themselves.
     for (final t in _tanks) {
       if (t.hp <= 0) continue;
       TankRenderer.drawAimGuide(canvas, _viewOf(t));
     }
     for (final t in _tanks) {
+      if (t.overcharged && t.hp > 0) _drawOverchargeRing(canvas, t);
       TankRenderer.drawTank(canvas, _viewOf(t));
     }
 
@@ -615,8 +650,28 @@ class TankDuel extends MiniGameBase {
       TankRenderer.drawShell(canvas, s.view());
     }
 
+    if (_isFrenzy) {
+      TankFx.drawFrenzyBanner(canvas, size, 1.0, _animClock);
+    }
+
     _juice.render(canvas);
     canvas.restore();
+  }
+
+  /// A pulsing gold ring under an overcharged tank so the table sees who is
+  /// dangerous right now (double-damage shells).
+  void _drawOverchargeRing(Canvas canvas, _Tank t) {
+    final r = _baseR * _scale;
+    final pulse = 0.5 + 0.5 * math.sin(_animClock * 6.0);
+    canvas.drawCircle(
+      _turretPivotOf(t),
+      r * (1.2 + 0.15 * pulse),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.14
+        ..color = _airColor
+            .withValues(alpha: (0.5 + 0.3 * pulse).clamp(0.0, 1.0)),
+    );
   }
 
   TankView _viewOf(_Tank t) {
@@ -659,6 +714,7 @@ class _Tank {
   double invuln = 0; // invulnerability timer
   bool holding = false; // finger down → sweep slows for precision
   double holdSec = 0; // how long the current hold has lasted
+  double overcharge = 0; // seconds of airdrop double-damage buff remaining
 
   _Tank({
     required this.playerId,
@@ -669,12 +725,18 @@ class _Tank {
     this.clock,
   });
 
+  bool get overcharged => overcharge > 0;
+
   void tickTimers(double dt, double flashSec, double recoilSec,
       double muzzleSec, double invulnSec) {
     if (flash > 0) flash = (flash - dt).clamp(0, flashSec);
     if (recoil > 0) recoil = (recoil - dt).clamp(0, recoilSec);
     if (muzzle > 0) muzzle = (muzzle - dt).clamp(0, muzzleSec);
     if (invuln > 0) invuln = (invuln - dt).clamp(0, invulnSec);
+  }
+
+  void tickOvercharge(double dt) {
+    if (overcharge > 0) overcharge = math.max(0, overcharge - dt);
   }
 }
 

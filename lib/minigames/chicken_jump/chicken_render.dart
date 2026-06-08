@@ -15,6 +15,9 @@ class ChickenRenderer {
   /// Base hop-dust particle size (scaled by the figure scale by the caller).
   static const double dustSize = 4;
 
+  /// Hot accent for the one-shot "HURRY!" climax popup (matches the lava crest).
+  static const Color hurryColor = Color(0xFFFFC93C);
+
   // ── Palette (no magic colors inline elsewhere) ─────────────────────────────
   static const Color _skyTop = Color(0xFF1A1230); // upper cave sky
   static const Color _skyMid = Color(0xFF241733);

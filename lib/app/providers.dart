@@ -144,12 +144,24 @@ class PlayersSetupController extends StateNotifier<PlayerManager> {
 
   /// Adds one seat (bot by default) up to the 4-player cap.
   void addPlayer({bool isBot = true}) {
-    state = state.addSlot(isBot: isBot);
+    state = _withValidMode(state.addSlot(isBot: isBot));
   }
 
   /// Removes the last seat (keeps at least one).
   void removePlayer() {
-    state = state.removeLast();
+    state = _withValidMode(state.removeLast());
+  }
+
+  /// Keeps [PlayerManager.mode] consistent with the seat count after a roster
+  /// change. A 2-seat match is always a 1-v-1 (no FFA distinction); 1/3 seats are
+  /// free-for-all; 4 seats keep an explicitly chosen team mode, else FFA.
+  PlayerManager _withValidMode(PlayerManager m) {
+    final GameMode next = switch (m.count) {
+      2 => GameMode.duel1v1,
+      4 => m.mode == GameMode.team2v2 ? GameMode.team2v2 : GameMode.ffa,
+      _ => GameMode.ffa,
+    };
+    return m.mode == next ? m : m.withMode(next);
   }
 
   /// Flips the human/CPU flag for the seat at [index].

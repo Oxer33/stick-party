@@ -6,6 +6,7 @@ import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/minigames/bumper_balls/bumper_balls.dart';
+import 'package:stick_party/minigames/bumper_balls/bumper_fx.dart';
 
 /// Frames-per-second the headless sim is stepped at.
 const int _fps = 60;
@@ -138,5 +139,50 @@ void main() {
     expect(() => g.render(canvas, size), returnsNormally);
     _runToFinish(g);
     expect(() => g.render(canvas, size), returnsNormally);
+  });
+
+  group('StarController (chaos pickup)', () {
+    StarController make() => StarController(
+          radius: 14,
+          firstSpawnSec: 2.0,
+          respawnSec: 5.0,
+          lifeSec: 4.0,
+          appearPerSec: 3.0,
+          spinPerSec: 3.0,
+          spawnSpreadFactor: 0.4,
+        );
+
+    test('never spawns with a single ball alive', () {
+      final c = make();
+      final rng = SeededRng(1);
+      for (var i = 0; i < 60 * 5; i++) {
+        c.tick(1 / 60, 1, rng, const Offset(400, 600), 300);
+      }
+      expect(c.star, isNull);
+    });
+
+    test('spawns inside the platform after the delay with >= 2 alive', () {
+      final c = make();
+      final rng = SeededRng(2);
+      for (var i = 0; i < 60 * 3; i++) {
+        c.tick(1 / 60, 2, rng, const Offset(400, 600), 300);
+      }
+      final star = c.star;
+      expect(star, isNotNull);
+      expect(star!.ready, isTrue);
+      expect((star.pos - const Offset(400, 600)).distance,
+          lessThanOrEqualTo(300 * 0.4 + 1));
+    });
+
+    test('consume clears the live star', () {
+      final c = make();
+      final rng = SeededRng(3);
+      for (var i = 0; i < 60 * 3; i++) {
+        c.tick(1 / 60, 2, rng, const Offset(400, 600), 300);
+      }
+      expect(c.star, isNotNull);
+      c.consume();
+      expect(c.star, isNull);
+    });
   });
 }

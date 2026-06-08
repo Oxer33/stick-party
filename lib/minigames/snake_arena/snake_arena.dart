@@ -5,60 +5,9 @@ import '../../art/fx/juice.dart';
 import '../../engine/bots.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'snake_arena_bot.dart';
+import 'snake_arena_types.dart';
 import 'snake_render.dart';
-
-/// Four cardinal headings on the grid, ordered clockwise so a right turn is
-/// `(index + 1) % 4` and a left turn is `(index + 3) % 4`.
-enum _Heading { up, right, down, left }
-
-const Map<_Heading, _Cell> _kStep = {
-  _Heading.up: _Cell(0, -1),
-  _Heading.right: _Cell(1, 0),
-  _Heading.down: _Cell(0, 1),
-  _Heading.left: _Cell(-1, 0),
-};
-
-/// Immutable integer grid coordinate.
-class _Cell {
-  final int col;
-  final int row;
-  const _Cell(this.col, this.row);
-
-  _Cell plus(_Cell o) => _Cell(col + o.col, row + o.row);
-
-  @override
-  bool operator ==(Object other) =>
-      other is _Cell && other.col == col && other.row == row;
-
-  @override
-  int get hashCode => col * 31337 + row;
-}
-
-/// One player's snake: an ordered body (head first) on the shared grid.
-/// Mutable round-scoped state (allowed for the duration of one round).
-class _Snake {
-  final int playerId;
-  final Color color;
-  final List<_Cell> body; // index 0 == head
-  _Heading heading;
-  bool alive = true;
-  int pendingGrowth = 0; // segments still to grow (skips tail removal)
-  int score = 0; // pellets eaten (HUD readout)
-
-  // Bot steering only.
-  final ReactionClock? clock;
-
-  _Snake({
-    required this.playerId,
-    required this.color,
-    required _Cell head,
-    required this.heading,
-    this.clock,
-  }) : body = [head];
-
-  _Cell get head => body.first;
-  int get length => body.length;
-}
 
 /// Snake Arena — every player drives a glowing TRON snake on one shared neon
 /// grid.
@@ -112,6 +61,23 @@ class SnakeArena extends MiniGameBase {
   static const int _growPerFood = 2;
   static const int _foodCount = 4; // simultaneous pellets on the board
 
+  // ── Climax: SUDDEN DEATH (the arena closes in) ──────────────────────────────
+  // In the final [_suddenDeathSec] the walls march inward one ring at a time
+  // (every [_shrinkRingSec]), squeezing the snakes together so the round can
+  // never drag — a snake caught in a freshly closed ring dies. A one-shot cue
+  // (banner + heavy shake) announces it. Capped so a sliver of arena always
+  // remains for the survivors to fight over.
+  static const double _suddenDeathSec = 9.0; // length of the closing finale
+  static const double _shrinkRingSec = 1.4; // seconds per closed border ring
+  static const int _shrinkRingsMax = 6; // hard cap on closed rings per side
+
+  // ── Chaos: the GOLDEN pellet (a swingy bonus any snake can grab) ─────────────
+  static const double _goldenChance = 0.16; // odds a fresh pellet is golden
+  static const int _goldenGrow = 4; // extra segments a golden pellet grants
+  static const int _goldenScore = 3; // score a golden pellet is worth
+  static const int _goldenEatSparks = 18; // bigger burst on a golden eat
+  static const Color _goldFx = Color(0xFFFFD24A); // golden pellet / cue accent
+
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botFoodBias = 0.55; // chance to chase food when safe
   static const int _botLookahead = 5; // cells of free space a bot wants ahead
@@ -133,8 +99,10 @@ class SnakeArena extends MiniGameBase {
   static const double _hintIdleLevel = 0.55; // resting turn-hint brightness
 
   late Juice _juice;
-  final List<_Snake> _snakes = [];
-  final List<_Cell> _food = [];
+  final List<Snake> _snakes = [];
+  final List<Cell> _food = [];
+  final Set<Cell> _golden = <Cell>{}; // which active pellets are golden
+  bool _suddenDeathAnnounced = false; // the closing-arena cue fired once
 
   // Death order, worst→best as snakes die (used to build the final ranking).
   final List<int> _deathOrder = [];
@@ -164,18 +132,18 @@ class SnakeArena extends MiniGameBase {
       final row = ((i + 1) * _rows) ~/ (count + 1);
       final fromLeft = i.isEven;
       final col = fromLeft ? _startLength : _cols - 1 - _startLength;
-      final heading = fromLeft ? _Heading.right : _Heading.left;
-      final snake = _Snake(
+      final heading = fromLeft ? Heading.right : Heading.left;
+      final snake = Snake(
         playerId: p.id,
         color: Color(p.colorArgb),
-        head: _Cell(col, row),
+        head: Cell(col, row),
         heading: heading,
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       );
       // Seed an initial body trailing behind the head.
-      final back = _kStep[heading]!;
+      final back = kStep[heading]!;
       for (var s = 1; s < _startLength; s++) {
-        snake.body.add(_Cell(col - back.col * s, row - back.row * s));
+        snake.body.add(Cell(col - back.col * s, row - back.row * s));
       }
       _snakes.add(snake);
     }
@@ -187,29 +155,37 @@ class SnakeArena extends MiniGameBase {
     }
   }
 
-  /// Spawn one pellet on a free cell (not on a body, not on another pellet).
-  /// Tries random cells; falls back to a deterministic scan so it never hangs.
+  /// Spawn one pellet on a free cell (not on a body, not on another pellet, not
+  /// in a closed SUDDEN-DEATH ring). Tries random cells; falls back to a
+  /// deterministic scan so it never hangs. A fresh pellet may be GOLDEN — a
+  /// swingy bonus worth more growth + score that any snake can race for.
   void _spawnOneFood() {
     const maxTries = 40;
     for (var t = 0; t < maxTries; t++) {
-      final c = _Cell(ctx.rng.intRange(0, _cols), ctx.rng.intRange(0, _rows));
-      if (_isFree(c)) {
-        _food.add(c);
+      final c = Cell(ctx.rng.intRange(0, _cols), ctx.rng.intRange(0, _rows));
+      if (_isFree(c) && !_hitsWall(c)) {
+        _addFood(c);
         return;
       }
     }
     for (var r = 0; r < _rows; r++) {
       for (var c = 0; c < _cols; c++) {
-        final cell = _Cell(c, r);
-        if (_isFree(cell)) {
-          _food.add(cell);
+        final cell = Cell(c, r);
+        if (_isFree(cell) && !_hitsWall(cell)) {
+          _addFood(cell);
           return;
         }
       }
     }
   }
 
-  bool _isFree(_Cell c) {
+  /// Place a pellet and roll whether it is golden (tracked in [_golden]).
+  void _addFood(Cell c) {
+    _food.add(c);
+    if (ctx.rng.chance(_goldenChance)) _golden.add(c);
+  }
+
+  bool _isFree(Cell c) {
     if (_food.contains(c)) return false;
     for (final s in _snakes) {
       if (s.body.contains(c)) return false;
@@ -251,7 +227,7 @@ class SnakeArena extends MiniGameBase {
     for (final s in _snakes) {
       if (s.playerId == id && s.alive) {
         final delta = right ? 1 : 3;
-        s.heading = _Heading.values[(s.heading.index + delta) % 4];
+        s.heading = Heading.values[(s.heading.index + delta) % 4];
         return;
       }
     }
@@ -269,6 +245,9 @@ class SnakeArena extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
+    _maybeAnnounceSuddenDeath();
+    _cullClosedRing();
+    if (status == MiniGameStatus.finished) return;
     _driveBots(sdt);
 
     final step = _currentStepSec();
@@ -294,136 +273,60 @@ class SnakeArena extends MiniGameBase {
 
   // ── Bots ────────────────────────────────────────────────────────────────────
 
-  /// Bots look SEVERAL cells ahead, not one. On each reaction tick a bot scores
-  /// every non-reverse heading by how much open space it opens up (a capped
-  /// flood-fill so it won't drive into a pocket it can't escape) plus a pull
-  /// toward the nearest pellet, and steers to the best one. This makes them read
-  /// as competent — they hug walls, weave through trails and grab food — without
-  /// being psychic. [BotProfile.errorRate] makes them occasionally take a worse
-  /// (but still legal) turn, so easy bots fumble and a human can win.
+  /// Drive every bot's reaction clock; when one fires, steer it via [SnakeBot]
+  /// (a several-cells-ahead flood-fill + food pull + head-on dodge), which reads
+  /// as competent without being psychic. [BotProfile.errorRate] makes it fumble.
+  /// The AI is fed the game's own wall/body tests so it respects SUDDEN DEATH.
   void _driveBots(double dt) {
+    final bot = SnakeBot(
+      snakes: _snakes,
+      food: _food,
+      cols: _cols,
+      rows: _rows,
+      profile: ctx.botProfile,
+      rng: ctx.rng,
+      hitsWall: _hitsWall,
+      hitsBody: (c, mover) => _hitsAnyBody(c, ignoreTailOf: mover),
+      foodBias: _botFoodBias,
+      lookahead: _botLookahead,
+      floodCap: _botFloodCap,
+      spaceWeight: _botSpaceWeight,
+      headOnPenalty: _botHeadOnPenalty,
+    );
     for (final s in _snakes) {
       if (!s.alive || s.clock == null) continue;
       if (!s.clock!.tick(dt)) continue;
       s.clock!.arm(ctx.botProfile, ctx.rng);
-      _steerBot(s);
+      bot.steer(s);
     }
   }
 
-  /// Choose this bot's heading. Considers straight + both turns (reverse is
-  /// illegal by design). Picks the highest-scoring legal heading; on an error
-  /// roll it instead picks a random *legal* heading (a misjudgment, not instant
-  /// suicide). Leaves the heading unchanged only when fully boxed in.
-  void _steerBot(_Snake s) {
-    final options = <_Heading>[];
-    var best = s.heading;
-    var bestScore = -double.infinity;
-    final target = _nearestFood(s.head);
-
-    for (final i in const [0, 1, 3]) {
-      // 0 = straight, 1 = clockwise, 3 = counter-clockwise (2 = reverse, skip).
-      final h = _Heading.values[(s.heading.index + i) % 4];
-      if (_isBlocked(s, h)) continue;
-      options.add(h);
-      final score = _headingScore(s, h, target);
-      if (score > bestScore) {
-        bestScore = score;
-        best = h;
-      }
-    }
-
-    if (options.isEmpty) return; // boxed in — it will crash (correct).
-    if (options.length > 1 && ctx.rng.chance(ctx.botProfile.errorRate)) {
-      s.heading = ctx.rng.pick(options); // believable misjudgment
-      return;
-    }
-    s.heading = best;
+  /// In SUDDEN DEATH the playable box shrinks: [_shrinkRings] border rings on
+  /// every side are closed off and count as wall. Zero until the finale opens,
+  /// then it ramps one ring at a time (capped so a core arena always remains).
+  int _shrinkRings() {
+    final intoSd = _elapsed - (_timeLimit - _suddenDeathSec);
+    if (intoSd <= 0) return 0;
+    final rings = (intoSd / _shrinkRingSec).floor() + 1;
+    // Never close so far that no interior is left (keep at least a 3-wide core).
+    final maxByGrid = ((math.min(_cols, _rows) - 3) / 2).floor();
+    return rings.clamp(0, math.min(_shrinkRingsMax, math.max(0, maxByGrid)));
   }
 
-  /// Higher is better. Reward open space reachable after the step (so the bot
-  /// avoids trapping itself) and, when food bias fires, reward getting closer to
-  /// the nearest pellet. Penalise stepping into a cell a rival head could also
-  /// enter next tick (a likely fatal head-on). Space dominates so survival beats
-  /// greed, and dodging beats both.
-  double _headingScore(_Snake s, _Heading h, _Cell? target) {
-    final next = s.head.plus(_kStep[h]!);
-    var score = _reachableSpace(next, s).toDouble() * _botSpaceWeight;
-    if (target != null && ctx.rng.chance(_botFoodBias)) {
-      // Closer pellet → higher score (negative distance), modestly weighted.
-      score += (_cols + _rows) - _manhattan(next, target);
-    }
-    if (_rivalCanEnter(next, s)) score -= _botHeadOnPenalty;
-    return score;
+  /// True if [c] is outside the (possibly shrunk) playable box. Routing the
+  /// closing arena through the one wall test makes the whole sim — deaths, food
+  /// spawns and bot pathing — respect SUDDEN DEATH automatically.
+  bool _hitsWall(Cell c) {
+    final m = _shrinkRings();
+    return c.col < m ||
+        c.col >= _cols - m ||
+        c.row < m ||
+        c.row >= _rows - m;
   }
-
-  /// True if some OTHER living snake's head is one cell away from [cell] — i.e.
-  /// it could move into [cell] on the same tick, killing both. Lets bots steer
-  /// out of head-on standoffs instead of trading kills (smarter, fairer, and it
-  /// keeps rounds from collapsing in the first seconds).
-  bool _rivalCanEnter(_Cell cell, _Snake self) {
-    for (final o in _snakes) {
-      if (!o.alive || identical(o, self)) continue;
-      if (_manhattan(o.head, cell) == 1) return true;
-    }
-    return false;
-  }
-
-  /// Capped flood-fill: how many free cells are reachable starting from [from],
-  /// treating living snake bodies (except [mover]'s about-to-move tail) and the
-  /// walls as solid. Counts at most [_botFloodCap] cells and explores at most
-  /// [_botLookahead] rings deep — cheap, deterministic, enough to tell "roomy"
-  /// from "dead end". Returns 0 if [from] itself is solid.
-  int _reachableSpace(_Cell from, _Snake mover) {
-    if (_hitsWall(from) || _hitsAnyBody(from, ignoreTailOf: mover)) return 0;
-    final seen = <_Cell>{from};
-    var frontier = <_Cell>[from];
-    var count = 1;
-    for (var depth = 0; depth < _botLookahead && count < _botFloodCap; depth++) {
-      final next = <_Cell>[];
-      for (final cell in frontier) {
-        for (final step in _kStep.values) {
-          final n = cell.plus(step);
-          if (seen.contains(n)) continue;
-          if (_hitsWall(n) || _hitsAnyBody(n, ignoreTailOf: mover)) continue;
-          seen.add(n);
-          next.add(n);
-          if (++count >= _botFloodCap) break;
-        }
-        if (count >= _botFloodCap) break;
-      }
-      if (next.isEmpty) break;
-      frontier = next;
-    }
-    return count;
-  }
-
-  _Cell? _nearestFood(_Cell from) {
-    _Cell? best;
-    var bestDist = 1 << 30;
-    for (final f in _food) {
-      final d = _manhattan(from, f);
-      if (d < bestDist) {
-        bestDist = d;
-        best = f;
-      }
-    }
-    return best;
-  }
-
-  static int _manhattan(_Cell a, _Cell b) =>
-      (a.col - b.col).abs() + (a.row - b.row).abs();
-
-  bool _isBlocked(_Snake s, _Heading h) {
-    final next = s.head.plus(_kStep[h]!);
-    return _hitsWall(next) || _hitsAnyBody(next, ignoreTailOf: s);
-  }
-
-  bool _hitsWall(_Cell c) =>
-      c.col < 0 || c.col >= _cols || c.row < 0 || c.row >= _rows;
 
   /// True if [c] overlaps any living snake's body. The moving snake's own tail
   /// is ignored when it is about to vacate that cell (no pending growth).
-  bool _hitsAnyBody(_Cell c, {required _Snake ignoreTailOf}) {
+  bool _hitsAnyBody(Cell c, {required Snake ignoreTailOf}) {
     for (final s in _snakes) {
       if (!s.alive) continue;
       for (var i = 0; i < s.body.length; i++) {
@@ -446,12 +349,12 @@ class SnakeArena extends MiniGameBase {
     final living = _snakes.where((s) => s.alive).toList();
     if (living.isEmpty) return;
 
-    final nextHeads = <_Snake, _Cell>{
-      for (final s in living) s: s.head.plus(_kStep[s.heading]!),
+    final nextHeads = <Snake, Cell>{
+      for (final s in living) s: s.head.plus(kStep[s.heading]!),
     };
 
     // Phase 1: flag deaths (wall, body, head-on swap, shared target cell).
-    final dying = <_Snake>{};
+    final dying = <Snake>{};
     for (final s in living) {
       final nh = nextHeads[s]!;
       if (_hitsWall(nh) || _hitsAnyBody(nh, ignoreTailOf: s)) {
@@ -476,10 +379,11 @@ class SnakeArena extends MiniGameBase {
       s.body.insert(0, nh);
       final ate = _food.remove(nh);
       if (ate) {
-        s.pendingGrowth += _growPerFood;
-        s.score += 1;
+        final wasGolden = _golden.remove(nh);
+        s.pendingGrowth += wasGolden ? _goldenGrow : _growPerFood;
+        s.score += wasGolden ? _goldenScore : 1;
         setScore(s.playerId, s.score);
-        _onEat(nh, s.color);
+        _onEat(nh, s.color, golden: wasGolden);
         _spawnOneFood();
       }
       if (s.pendingGrowth > 0) {
@@ -513,12 +417,12 @@ class SnakeArena extends MiniGameBase {
   /// (a wall, another snake, or its own deeper body) — a "phew" beat that makes
   /// dodging feel earned. Throttled by [_nearMissCooldownSec] so a snake gliding
   /// along a wall doesn't fizz every tick.
-  void _maybeNearMiss(_Snake s) {
+  void _maybeNearMiss(Snake s) {
     if (_nearMissCd > 0) return;
-    final ahead = s.head.plus(_kStep[s.heading]!); // the cell it's about to enter
+    final ahead = s.head.plus(kStep[s.heading]!); // the cell it's about to enter
     var hazard = false;
     Offset? toward;
-    for (final step in _kStep.values) {
+    for (final step in kStep.values) {
       final n = s.head.plus(step);
       if (n == ahead) continue; // that's its path, not a near miss
       if (_hitsWall(n) || _isHazardBody(n, s)) {
@@ -548,7 +452,7 @@ class SnakeArena extends MiniGameBase {
   /// True if cell [c] holds a body segment that is a real hazard to [self] — any
   /// other snake's body, or [self]'s own body beyond the neck (ignores the head
   /// and the segment right behind it, which can never be a "near miss").
-  bool _isHazardBody(_Cell c, _Snake self) {
+  bool _isHazardBody(Cell c, Snake self) {
     for (final o in _snakes) {
       if (!o.alive) continue;
       if (identical(o, self)) {
@@ -562,25 +466,62 @@ class SnakeArena extends MiniGameBase {
     return false;
   }
 
-  /// Eat feedback: pop sparks at the pellet + a small score popup + a light wall
-  /// flare — snappy, but quieter than a death.
-  void _onEat(_Cell at, Color color) {
+  /// Eat feedback: pop sparks at the pellet + a score popup + a light wall flare
+  /// — snappy, but quieter than a death. A GOLDEN pellet pops a bigger gold
+  /// burst, a "+N" with a louder shake, so a swingy grab reads as a big deal.
+  void _onEat(Cell at, Color color, {bool golden = false}) {
     final p = _cellCenter(at, _lastSize);
+    final burstColor = golden ? _goldFx : color;
     _juice.particles.burst(
       at: p,
-      count: _eatSparks,
-      color: color,
-      speed: 220,
-      size: 5,
+      count: golden ? _goldenEatSparks : _eatSparks,
+      color: burstColor,
+      speed: golden ? 300 : 220,
+      size: golden ? 7 : 5,
       gravity: 120,
-      life: 0.45,
+      life: golden ? 0.6 : 0.45,
     );
-    _juice.popup(p.translate(0, -_cell() * 0.8), '+1', color, size: 22);
-    _juice.shake.light();
-    _wallFlare = math.max(_wallFlare, 0.4);
+    _juice.popup(p.translate(0, -_cell() * 0.8),
+        golden ? '+$_goldenScore' : '+1', burstColor,
+        size: golden ? 30 : 22);
+    if (golden) {
+      _juice.shake.medium();
+    } else {
+      _juice.shake.light();
+    }
+    _wallFlare = math.max(_wallFlare, golden ? 0.7 : 0.4);
   }
 
-  void _kill(_Snake s) {
+  /// Fire the one-shot SUDDEN DEATH cue the instant the arena starts closing: a
+  /// banner, a heavy shake and a full wall flare so the closing walls read.
+  void _maybeAnnounceSuddenDeath() {
+    if (_suddenDeathAnnounced || _shrinkRings() <= 0) return;
+    _suddenDeathAnnounced = true;
+    final center = Offset(_lastSize.width / 2, _lastSize.height * 0.42);
+    _juice.popup(center, 'SUDDEN DEATH!', _goldFx, size: 44);
+    _juice.shake.heavy();
+    _wallFlare = 1.0;
+  }
+
+  /// Kill any living snake whose head is caught inside a freshly closed SUDDEN
+  /// DEATH ring (the wall closed on it), then resolve the round if that leaves
+  /// one (or zero) snakes — so the closing arena always forces a finish.
+  void _cullClosedRing() {
+    if (_shrinkRings() <= 0) return;
+    var killedAny = false;
+    for (final s in _snakes) {
+      if (s.alive && _hitsWall(s.head)) {
+        _kill(s);
+        killedAny = true;
+      }
+    }
+    if (!killedAny) return;
+    if (_aliveCount() == 0 || (_aliveCount() <= 1 && _snakes.length > 1)) {
+      _finishByLength();
+    }
+  }
+
+  void _kill(Snake s) {
     if (!s.alive) return;
     s.alive = false;
     _deathOrder.add(s.playerId);
@@ -644,12 +585,21 @@ class SnakeArena extends MiniGameBase {
     SnakeRenderer.drawGrid(canvas, field, _cols, _rows, _gridPulse());
     SnakeRenderer.drawWalls(canvas, field, _wallFlare);
 
+    // SUDDEN DEATH: draw the closing inner walls as a bright, throbbing border
+    // around the still-playable box so the squeeze is unmistakable.
+    final rings = _shrinkRings();
+    if (rings > 0) {
+      SnakeRenderer.drawClosingWalls(
+          canvas, _shrunkFieldRect(size, rings), 0.6 + 0.4 * _gridPulse());
+    }
+
     for (final f in _food) {
       SnakeRenderer.drawFood(
         canvas,
         _cellCenter(f, size),
         _cell(),
         _animClock + f.col * 0.6 + f.row * 0.4, // per-pellet phase offset
+        golden: _golden.contains(f),
       );
     }
 
@@ -676,7 +626,7 @@ class SnakeArena extends MiniGameBase {
     SnakeRenderer.drawSpeedTint(canvas, size, _speedHeat());
   }
 
-  void _drawSnake(Canvas canvas, _Snake s, Size size) {
+  void _drawSnake(Canvas canvas, Snake s, Size size) {
     final pixels = [for (final c in s.body) _cellCenter(c, size)];
     SnakeRenderer.drawSnake(
       canvas,
@@ -694,14 +644,14 @@ class SnakeArena extends MiniGameBase {
   /// a bold hint that fades from full to a calm idle level over [_hintFadeSec] so
   /// the rule lands at the start without nagging forever; bots show a faint
   /// version so every snake visibly obeys the same rule.
-  void _drawTurnHint(Canvas canvas, _Snake s, Size size) {
+  void _drawTurnHint(Canvas canvas, Snake s, Size size) {
     final isHuman = s.clock == null;
     final fadeIn = (1.0 - _elapsed / _hintFadeSec).clamp(0.0, 1.0);
     final emphasis = isHuman
         ? _hintIdleLevel + (1.0 - _hintIdleLevel) * fadeIn
         : _hintIdleLevel * 0.5;
-    final leftHeading = _Heading.values[(s.heading.index + 3) % 4];
-    final rightHeading = _Heading.values[(s.heading.index + 1) % 4];
+    final leftHeading = Heading.values[(s.heading.index + 3) % 4];
+    final rightHeading = Heading.values[(s.heading.index + 1) % 4];
     SnakeRenderer.drawTurnHint(
       canvas,
       _cellCenter(s.head, size),
@@ -735,8 +685,8 @@ class SnakeArena extends MiniGameBase {
   /// Grid breathing 0..1, gentle sine.
   double _gridPulse() => 0.5 + 0.5 * math.sin(_animClock * 1.4);
 
-  Offset _headingPixelDir(_Heading h) {
-    final step = _kStep[h]!;
+  Offset _headingPixelDir(Heading h) {
+    final step = kStep[h]!;
     return Offset(step.col.toDouble(), step.row.toDouble());
   }
 
@@ -764,7 +714,21 @@ class SnakeArena extends MiniGameBase {
   /// Side length of one grid cell in pixels (square).
   double _cell() => _fieldRect(_lastSize).width / _cols;
 
-  Offset _cellCenter(_Cell c, Size size) {
+  /// Pixel rect of the still-playable box once [rings] border rings are closed
+  /// (the SUDDEN DEATH inner wall), inset from the full field by whole cells.
+  Rect _shrunkFieldRect(Size size, int rings) {
+    final f = _fieldRect(size);
+    final cw = f.width / _cols;
+    final ch = f.height / _rows;
+    return Rect.fromLTRB(
+      f.left + rings * cw,
+      f.top + rings * ch,
+      f.right - rings * cw,
+      f.bottom - rings * ch,
+    );
+  }
+
+  Offset _cellCenter(Cell c, Size size) {
     final f = _fieldRect(size);
     final cw = f.width / _cols;
     final ch = f.height / _rows;

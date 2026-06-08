@@ -8,10 +8,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../meta/daily.dart';
 import '../providers.dart';
-import '../widgets/glass_kit.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
+import 'premium_card.dart';
 
 class DailyScreen extends ConsumerStatefulWidget {
   const DailyScreen({super.key});
@@ -110,33 +110,32 @@ class _LoginBonusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isCoins = bonus.reward.kind == LoginRewardKind.coins;
-    return GlassPanel(
-      tint: GlassColors.amber,
-      tintOpacity: 0.12,
-      borderColor: GlassColors.amber.withValues(alpha: 0.6),
+    return PremiumPanel(
+      accent: GlassColors.amber,
+      highlight: true,
       padding: const EdgeInsets.all(16),
       child: Row(
         children: <Widget>[
-          Icon(
-            isCoins ? Icons.monetization_on : Icons.checkroom,
-            color: GlassColors.amber,
-            size: 40,
+          _RewardBadge(
+            icon: isCoins ? Icons.monetization_on : Icons.checkroom,
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text(
-                  'Day ${bonus.dayIndex + 1}',
-                  style: GlassText.overline,
-                ),
-                const SizedBox(height: 2),
+                Text('DAY ${bonus.dayIndex + 1}', style: GlassText.overline),
+                const SizedBox(height: 3),
                 Text(
                   isCoins
                       ? '+${bonus.reward.amount} coins'
                       : '${bonus.reward.amount} cosmetic reward',
                   style: GlassText.heading,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  claimed ? 'Come back tomorrow' : 'Tap claim to collect',
+                  style: GlassText.body.copyWith(fontSize: 12),
                 ),
               ],
             ),
@@ -156,6 +155,42 @@ class _LoginBonusCard extends StatelessWidget {
   }
 }
 
+/// The amber illustration badge for the login-bonus card.
+class _RewardBadge extends StatelessWidget {
+  const _RewardBadge({required this.icon});
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: kPremiumTileArtSize,
+      height: kPremiumTileArtSize,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            GlassColors.amber,
+            GlassColors.amber.withValues(alpha: 0.55),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: GlassColors.amber.withValues(alpha: 0.45),
+            blurRadius: 14,
+            spreadRadius: -2,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, color: GlassColors.base, size: 28),
+    );
+  }
+}
+
 class _MissionTile extends StatelessWidget {
   const _MissionTile({required this.mission});
 
@@ -165,7 +200,8 @@ class _MissionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: GlassTokens.gap),
-      child: GlassPanel(
+      child: PremiumPanel(
+        accent: GlassColors.cyan,
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -173,7 +209,11 @@ class _MissionTile extends StatelessWidget {
             Row(
               children: <Widget>[
                 Expanded(child: Text(_label(mission), style: GlassText.heading)),
-                _RewardPill(coins: mission.rewardCoins),
+                AccentTag(
+                  label: '+${mission.rewardCoins}',
+                  accent: GlassColors.amber,
+                  icon: Icons.monetization_on,
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -203,29 +243,3 @@ class _MissionTile extends StatelessWidget {
   }
 }
 
-/// A small amber pill showing a mission's coin reward.
-class _RewardPill extends StatelessWidget {
-  const _RewardPill({required this.coins});
-
-  final int coins;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: GlassColors.amber.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: GlassColors.amber.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        '+$coins',
-        style: const TextStyle(
-          color: GlassColors.amber,
-          fontWeight: FontWeight.w800,
-          fontSize: 12,
-        ),
-      ),
-    );
-  }
-}

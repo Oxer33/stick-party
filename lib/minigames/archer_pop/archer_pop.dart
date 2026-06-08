@@ -10,6 +10,7 @@ import '../../engine/bots.dart';
 import '../../engine/helpers/aim_sweep.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'archer_fx.dart';
 import 'archer_render.dart';
 
 /// Archer Pop — every player is a stickman archer on a screen edge with a bow
@@ -109,6 +110,15 @@ class ArcherPop extends MiniGameBase {
   static const double _botWildChance = 0.35; // share of errorRate → wild loose
   static const double _botGoldenBias = 1.6; // bots favor golden lineups
 
+  // ── Climax (frenzy) tuning ──────────────────────────────────────────────────
+  // The final ~30% of the round: balloons rush in faster, more of them are
+  // golden, and a FRENZY banner throbs — a clear ramp where a trailing player
+  // can still rack up a comeback off fat golden pops.
+  static const double _frenzyFrac = 0.7; // enters at this share of the limit
+  static const double _frenzySpawnMul = 0.5; // spawn interval × this in frenzy
+  static const int _frenzyMaxBalloons = 16; // higher field cap in frenzy
+  static const double _frenzyGoldenChance = 0.26; // golden share in frenzy
+
   // ── Visuals / ambient ───────────────────────────────────────────────────────
   static const double _horizonFactor = 0.40; // horizon Y / arena height
   static const int _cloudCount = 5;
@@ -130,6 +140,7 @@ class ArcherPop extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for ambient/flash
   double _spawnTimer = 0;
+  bool _frenzyAnnounced = false;
 
   // Wind: a single crosswind value eased toward a fresh random target.
   double _windX = 0;
@@ -320,7 +331,22 @@ class ArcherPop extends MiniGameBase {
     _stepBalloons(sdt);
     _driveBots(dt);
     _stepArrows(sdt);
+    _announceFrenzy();
     _checkEnd();
+  }
+
+  /// True once the round has entered its climax (frenzy) window.
+  bool get _isFrenzy => _elapsed >= _timeLimit * _frenzyFrac;
+
+  /// Announce the climax once (shake + center popup); the banner + faster rush
+  /// of mostly-golden balloons then carry the moment.
+  void _announceFrenzy() {
+    if (_frenzyAnnounced || !_isFrenzy) return;
+    _frenzyAnnounced = true;
+    _juice.shake.medium();
+    _juice.popup(Offset(_size.width / 2, _size.height * 0.28), 'FRENZY!',
+        _comboColor,
+        size: 38);
   }
 
   // ── Wind ──────────────────────────────────────────────────────────────────
@@ -342,7 +368,10 @@ class ArcherPop extends MiniGameBase {
 
   void _spawnTick(double dt) {
     _spawnTimer += dt;
-    if (_spawnTimer >= _spawnEvery && _balloons.length < _maxBalloons) {
+    // Frenzy: balloons rush in roughly twice as fast and the field holds more.
+    final every = _isFrenzy ? _spawnEvery * _frenzySpawnMul : _spawnEvery;
+    final cap = _isFrenzy ? _frenzyMaxBalloons : _maxBalloons;
+    if (_spawnTimer >= every && _balloons.length < cap) {
       _spawnTimer = 0;
       _spawnBalloon();
     }
@@ -350,7 +379,9 @@ class ArcherPop extends MiniGameBase {
 
   void _spawnBalloon({bool seeded = false}) {
     final w = _size.width, h = _size.height;
-    final golden = ctx.rng.chance(_goldenChance);
+    // Frenzy mints far more golden balloons (fat points for a late comeback).
+    final golden =
+        ctx.rng.chance(_isFrenzy ? _frenzyGoldenChance : _goldenChance);
     // Smaller balloons are worth more; golden ones use a mid radius.
     final radius = golden
         ? (_radiusSmall + _radiusLarge) * 0.5
@@ -612,6 +643,9 @@ class ArcherPop extends MiniGameBase {
     }
 
     ArcherRenderer.drawWindBanner(canvas, size, _windX);
+    if (_isFrenzy) {
+      ArcherFx.drawFrenzyBanner(canvas, size, 1.0, _animClock);
+    }
 
     _juice.render(canvas);
     canvas.restore();

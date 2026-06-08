@@ -22,11 +22,13 @@ import '../../services/analytics_service.dart';
 import '../../services/cross_promo_service.dart';
 import '../providers.dart';
 import '../router.dart';
+import '../widgets/game_glyphs.dart';
 import '../widgets/glass_kit.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/glass_tokens.dart';
 import '../widgets/mini_game_view.dart';
 import '../widgets/ui_kit.dart';
+import 'premium_card.dart';
 
 /// Internal cup phase.
 enum _CupPhase { playing, standings, complete }
@@ -146,6 +148,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
 
   Widget _buildStandings() {
     final List<int> standings = _cup.board.standings();
+    final String? nextGameId = _cup.currentGameId;
     return GlassScaffold(
       title: 'STANDINGS • ${_cup.index}/${_cup.total}',
       showBack: false,
@@ -153,6 +156,13 @@ class _CupScreenState extends ConsumerState<CupScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
+          if (nextGameId != null)
+            _NextGameCard(
+              gameId: nextGameId,
+              gameNumber: _cup.index + 1,
+              total: _cup.total,
+            ),
+          const SizedBox(height: GlassTokens.gap),
           Expanded(
             child: ListView(
               children: <Widget>[
@@ -281,24 +291,25 @@ class _CupScreenState extends ConsumerState<CupScreen> {
     final PlayerSlot? slot = _slotById(championId);
     if (slot == null) return const SizedBox.shrink();
     final Color color = Color(slot.colorArgb);
-    return GlassPanel(
-      tint: color,
-      tintOpacity: 0.18,
-      borderColor: color.withValues(alpha: 0.8),
-      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+    return PremiumPanel(
+      accent: color,
+      highlight: true,
+      padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 16),
       child: Column(
         children: <Widget>[
-          const Text('🏆', style: TextStyle(fontSize: 56)),
-          const SizedBox(height: 8),
+          _ChampionTrophy(color: color),
+          const SizedBox(height: 10),
+          Text(
+            'CUP CHAMPION',
+            style: GlassText.overline.copyWith(letterSpacing: 4),
+          ),
+          const SizedBox(height: 4),
           Text(
             slot.name,
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w900,
-              fontSize: 28,
-            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GlassText.display.copyWith(fontSize: 30, color: color),
           ),
-          Text('CUP CHAMPION', style: GlassText.overline),
         ],
       ),
     ).animate().fadeIn().scale(
@@ -353,35 +364,111 @@ class _CupHouseAdCardState extends ConsumerState<_CupHouseAdCard> {
     final HouseAd? ad = _ad;
     if (ad == null) return const SizedBox.shrink();
     final Color color = Color(ad.iconArgb);
-    return GestureDetector(
+    return PremiumMediaTile(
+      accent: color,
+      leading: ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
+      eyebrow: 'MORE GAMES',
+      title: ad.title,
+      supporting: ad.blurb.isNotEmpty ? ad.blurb : null,
+      trailing: const Icon(Icons.chevron_right, color: GlassColors.textMuted),
       onTap: () => ref.read(crossPromoProvider).openStore(ad),
-      behavior: HitTestBehavior.opaque,
-      child: GlassPanel(
-        tint: color,
-        tintOpacity: 0.12,
-        borderColor: color.withValues(alpha: 0.6),
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: <Widget>[
-            ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(ad.title, style: GlassText.heading),
-                  const SizedBox(height: 2),
-                  Text(
-                    ad.blurb,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: GlassText.body.copyWith(fontSize: 12),
-                  ),
-                ],
-              ),
+    );
+  }
+}
+
+/// The "next game" round card on the cup standings: the upcoming mini-game's
+/// procedural glyph, a "NEXT GAME" eyebrow and the round position — a premium
+/// bracket-style header that makes each round feel like a real tournament step.
+class _NextGameCard extends StatelessWidget {
+  const _NextGameCard({
+    required this.gameId,
+    required this.gameNumber,
+    required this.total,
+  });
+
+  final String gameId;
+  final int gameNumber;
+  final int total;
+
+  /// Glyph size inside the round card.
+  static const double _glyphSize = 56;
+
+  @override
+  Widget build(BuildContext context) {
+    return PremiumPanel(
+      accent: GlassColors.amber,
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        children: <Widget>[
+          GameGlyph(
+            id: gameId,
+            label: gameId,
+            colorArgb: GlassColors.amber.toARGB32(),
+            size: _glyphSize,
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text('NEXT GAME', style: GlassText.overline),
+                const SizedBox(height: 3),
+                Text('Round $gameNumber of $total', style: GlassText.heading),
+              ],
             ),
+          ),
+          AccentTag(
+            label: '$gameNumber/$total',
+            accent: GlassColors.amber,
+            icon: Icons.emoji_events,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The amber trophy emblem at the top of the champion banner — a procedural
+/// badge (no asset) matching the premium illustration footprint.
+class _ChampionTrophy extends StatelessWidget {
+  const _ChampionTrophy({required this.color});
+
+  final Color color;
+
+  /// Edge length of the trophy badge.
+  static const double _size = 76;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: _size,
+      height: _size,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            GlassColors.amber,
+            Color(0xFFF59E0B),
           ],
         ),
+        borderRadius: BorderRadius.circular(GlassTokens.radius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: GlassColors.amber.withValues(alpha: 0.5),
+            blurRadius: 22,
+            spreadRadius: -4,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: const Icon(
+        Icons.emoji_events,
+        color: GlassColors.base,
+        size: 42,
       ),
     );
   }

@@ -318,6 +318,69 @@ class SumoRenderer {
     figure.render(canvas, root);
   }
 
+  /// The charge telegraph: while charging, a solid layered arrow points where
+  /// the shove will fire and a ground arc shows the charge [charge] (0..1). No
+  /// blur — cheap to draw every frame. A no-op when not charging.
+  static void drawAim(
+    Canvas canvas,
+    Offset center,
+    double bodyR,
+    Color color, {
+    required double aim,
+    required double charge,
+  }) {
+    final c = charge.clamp(0.0, 1.0);
+    if (c <= 0.01) return;
+    final dir = Offset(math.cos(aim), math.sin(aim));
+    final base = bodyR * 0.95;
+    final len = bodyR * (1.8 + 2.4 * c);
+    final start = center + dir * base;
+    final end = center + dir * (base + len);
+    final w = bodyR * (0.22 + 0.26 * c);
+
+    canvas.drawLine(
+        start,
+        end,
+        Paint()
+          ..color = color.withValues(alpha: 0.95)
+          ..strokeWidth = w
+          ..strokeCap = StrokeCap.round);
+    canvas.drawLine(
+        start,
+        end,
+        Paint()
+          ..color = _white.withValues(alpha: 0.6)
+          ..strokeWidth = w * 0.4
+          ..strokeCap = StrokeCap.round);
+
+    final perp = Offset(-dir.dy, dir.dx);
+    final head = bodyR * (0.55 + 0.34 * c);
+    final tip = end + dir * head;
+    final l = end + perp * head * 0.66;
+    final r = end - perp * head * 0.66;
+    canvas.drawPath(
+      Path()
+        ..moveTo(tip.dx, tip.dy)
+        ..lineTo(l.dx, l.dy)
+        ..lineTo(r.dx, r.dy)
+        ..close(),
+      Paint()..color = color.withValues(alpha: 0.95),
+    );
+
+    final groundCenter = center.translate(0, bodyR);
+    canvas.drawArc(
+      Rect.fromCircle(center: groundCenter, radius: bodyR * 1.25),
+      -math.pi / 2,
+      math.pi * 2 * c,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = bodyR * 0.18
+        ..strokeCap = StrokeCap.round
+        ..color = (_blend(color, _white, c)).withValues(alpha: 0.9),
+    );
+  }
+
   // ── Small private helpers ──────────────────────────────────────────────────
 
   static Color _blend(Color a, Color b, double t) =>

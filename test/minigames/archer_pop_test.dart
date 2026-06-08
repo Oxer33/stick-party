@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
@@ -50,5 +52,36 @@ void main() {
     // 30s limit at 60fps ~= 1800 frames; allow slack for hit-stop scaling.
     expect(n, lessThan(60 * 60));
     expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('PACING: all-bot 4p round lasts > 1.5s and finishes within the limit',
+      () {
+    // The frenzy climax (faster, denser, more golden) must neither end the round
+    // early nor stop it converging: across seeds it runs a real beat (> 1.5s)
+    // yet always resolves by the 30s limit (~1800 frames; allow hit-stop slack).
+    for (final seed in const [1, 7, 13, 21, 99]) {
+      final g = ArcherPop()..init(ctxFor(4, seed: seed));
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 80) {
+        g.update(1 / 60);
+      }
+      expect(frames, greaterThan(90),
+          reason: 'seed $seed ended too fast (${frames / 60}s)');
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      expect(frames, lessThan(60 * 60),
+          reason: 'seed $seed overran (${frames / 60}s)');
+    }
+  });
+
+  test('frenzy banner renders without throwing in the final stretch', () {
+    // Advance into the frenzy window (final ~30% of the 30s limit), then render.
+    final g = ArcherPop()..init(ctxFor(3, seed: 4));
+    for (var i = 0; i < 60 * 24 && g.status != MiniGameStatus.finished; i++) {
+      g.update(1 / 60);
+    }
+    final rec = ui.PictureRecorder();
+    const size = Size(900, 1400);
+    final canvas = ui.Canvas(rec, Offset.zero & size);
+    expect(() => g.render(canvas, size), returnsNormally);
   });
 }

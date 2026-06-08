@@ -16,36 +16,21 @@ import 'tug_render.dart';
 /// runs vertically (north/south) down the tall portrait screen.
 enum _Side { top, bottom }
 
-/// Tug of War — two teams MASH to drag a VERTICAL rope marker across their goal
-/// line (north or south) and yank the losers into a central mud/lava pit.
+/// Tug of War — a TOP team and a BOTTOM team MASH to drag a VERTICAL rope marker
+/// past their goal line (top/bottom edge of the tall screen); the first side to
+/// do so wins and the losers ragdoll-fly into a central mud/lava pit. At the
+/// time limit the side nearer its goal wins, so the round ALWAYS resolves. Sides
+/// split by [Team] (Team.a = top, Team.b = bottom) or, with no teams, even/odd
+/// player id (even = top).
 ///
-/// The board is rotated to use the tall screen: a TOP team and a BOTTOM team
-/// haul a vertical rope, the marker rides up/down, and the first side to drag it
-/// past its goal line (top edge or bottom edge) wins — the losing team is then
-/// yanked off their feet and ragdoll-flung off the top/bottom into the pit.
-///
-/// Sides split by [Team] when set (duel / 2v2): Team.a = top, Team.b = bottom;
-/// otherwise by even/odd player id (even = top, odd = bottom).
-///
-/// Skill layer (still one-touch) — rhythm beats blind spam:
-///  * Each side has a decaying [TapMashMeter]: a tap adds effort, idle bleeds it
-///    away — so you must keep mashing to hold a lead. Effort scales both the
-///    pull strength and how far back the team leans (premium body language).
-///  * **Visible HEAVE beat**: a shared metronome marker sweeps back and forth
-///    across a rhythm track with a highlighted SWEET-SPOT window. Tapping while
-///    the marker is inside the window lands a HEAVE — a big bonus pull with a
-///    "HEAVE!" popup + shockwave; mistimed taps give a weak pull. So timing the
-///    beat (not mashing fastest) wins the rope.
-///  * The net of both sides' effort drives the marker; first side past
-///    ±threshold wins, and at the time limit the side nearer its goal wins, so
-///    the round ALWAYS resolves.
-///  * **Loser comedy**: the losing team is yanked off its feet and RAGDOLL-flies
-///    toward the winner's edge with a big SPLASH (mud + lava particles),
-///    "SPLASH!" / "WIN!" popups, slow-mo and a heavy shake.
-///
-/// Bots warm up (~1s grace) then tap on a [BotProfile] cadence; their timing
-/// scatters around the beat by accuracy, so easy bots hit the sweet spot rarely
-/// (beatable) while hard bots land it often.
+/// Skill layer (one-touch) — rhythm beats blind spam: the rope moves ONLY on a
+/// HEAVE, the first in-window tap of a shared metronome's sweep through a
+/// centered SWEET-SPOT; pull scales with timing precision, and a decaying
+/// per-side effort meter (mash to hold it) gives a small bonus. Off-beat taps
+/// just feed effort. CLIMAX: late-round HEAVEs pull harder ("FINAL HEAVE!").
+/// COMEBACK: the trailing side gets a small HEAVE bonus so it stays in the
+/// fight. Bots tap on a [BotProfile] cadence and scatter around the beat by
+/// accuracy, so easy bots mistime it (beatable) and hard bots land it often.
 class TugOfWar extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -86,6 +71,18 @@ class TugOfWar extends MiniGameBase {
   static const double _heaveSurgeSec = 0.34; // pull-surge window (body twitch)
   static const double _heaveCueSec = 0.45; // shockwave cue life
 
+  // ── Final-HEAVE climax ───────────────────────────────────────────────────────
+  // In the last stretch every landed HEAVE pulls harder (a frantic finale) and a
+  // one-shot "FINAL HEAVE!" banner + shake fire so the ending is unmistakable.
+  static const double _climaxFrac = 0.72; // fraction of timeLimit → climax begins
+  static const double _climaxHeaveMul = 1.6; // HEAVE pull × this during climax
+
+  // ── Comeback (kid-assist) ────────────────────────────────────────────────────
+  // The side currently LOSING the marker battle gets a small bonus on its HEAVE
+  // pull, scaled by how far behind it is — keeps a trailing team in the fight
+  // without ever out-pulling a steady on-beat lead on its own.
+  static const double _comebackMaxBonus = 0.4; // up to +40% HEAVE pull when far behind
+
   // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
   static const double _botWarmupSec = 1.0; // grace before bots engage
   static const double _botBaseInterval = 0.22;
@@ -124,6 +121,7 @@ class TugOfWar extends MiniGameBase {
   double _beatClock = 0; // phase accumulator for the ping-pong sweep
   bool _beatWasInWindow = true; // edge-detect to re-arm HEAVE once per pass
   bool _resolved = false;
+  bool _finalHeaveFired = false; // one-shot "FINAL HEAVE!" climax cue latch
 
   late double _midX;
   late double _topHandY;
@@ -256,6 +254,7 @@ class TugOfWar extends MiniGameBase {
     _juice.update(dt);
 
     _tickBeat(dt); // real-time so the sweet-spot reads the same regardless of hitstop
+    _maybeFireFinalHeave();
     _driveBots(sdt);
     _tickHeave(sdt);
     _tickEffort(sdt);
@@ -323,11 +322,41 @@ class TugOfWar extends MiniGameBase {
         (pl.heaveCharge + _heaveGainInWindow).clamp(0.0, _heaveFireThreshold);
     _fireHeave(pl, prec);
 
-    // Stronger side-effort gives a small bonus, so holding a fast rhythm helps.
-    final pull =
-        lerpD(_heavePullMin, _heavePullMax, prec) * (1.0 + 0.25 * effort);
+    // Base pull scaled by timing precision, with a small fast-rhythm bonus.
+    var pull = lerpD(_heavePullMin, _heavePullMax, prec) * (1.0 + 0.25 * effort);
+    // CLIMAX: the finale pulls harder so the last stretch swings dramatically.
+    if (_inClimax) pull *= _climaxHeaveMul;
+    // COMEBACK: a trailing side gets a small bonus scaled by how far behind.
+    pull *= 1.0 + _comebackBonusFor(pl.side);
     _marker += pl.side == _Side.top ? -pull : pull;
     _marker = clampD(_marker, -_winThreshold, _winThreshold);
+  }
+
+  /// True once the round passes the climax fraction of its life — HEAVEs surge.
+  bool get _inClimax => _elapsed >= _timeLimit * _climaxFrac;
+
+  /// 0.._comebackMaxBonus extra HEAVE-pull fraction for [side], scaled by how
+  /// far it is losing the marker battle. Zero for the side currently ahead, so
+  /// only the trailing team is ever helped and a steady lead still wins.
+  double _comebackBonusFor(_Side side) {
+    // Marker < 0 favors top, > 0 favors bottom; a side is "behind" when the
+    // marker sits on the opponent's half.
+    final behind = side == _Side.top ? math.max(0.0, _marker) : math.max(0.0, -_marker);
+    final t = (behind / _winThreshold).clamp(0.0, 1.0);
+    return _comebackMaxBonus * t;
+  }
+
+  /// Fire the one-shot "FINAL HEAVE!" climax cue when the finale begins.
+  void _maybeFireFinalHeave() {
+    if (_finalHeaveFired || !_inClimax) return;
+    _finalHeaveFired = true;
+    _juice.popup(
+      Offset(_midX, _centerY - _pitRy * 2.4),
+      'FINAL HEAVE!',
+      _accent,
+      size: 34,
+    );
+    _juice.shake.medium();
   }
 
   void _fireHeave(_Puller pl, double precision) {

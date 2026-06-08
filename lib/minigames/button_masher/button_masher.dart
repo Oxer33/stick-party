@@ -74,6 +74,21 @@ class ButtonMasher extends MiniGameBase {
   static const double _flashLifeSec = 0.22; // tap flash ring life
   static const int _maxFlashes = 6; // flashes kept per striker
 
+  // ── FRENZY climax ─────────────────────────────────────────────────────────
+  // In the final stretch every tap counts DOUBLE (a finale scoring surge) with a
+  // one-shot "FRENZY!" banner + shake + a hotter puck kick, so the last seconds
+  // are a frantic, swingy scramble where a late rally can still steal the win.
+  static const double _frenzyFrac = 0.75; // fraction of timeLimit → frenzy begins
+  static const int _frenzyTapBonus = 1; // extra score per tap during frenzy
+  static const double _frenzyKickBoost = 0.6; // +60% puck kick during frenzy
+
+  // ── Comeback (kid-assist) ────────────────────────────────────────────────────
+  // A player behind the leader earns a small fractional score bonus per tap,
+  // scaled by the gap — keeps a trailing kid's tower climbing without ever
+  // out-scoring a steadier masher on raw count alone.
+  static const double _catchUpMaxBonusPerTap = 0.5; // extra score / tap at full gap
+  static const double _catchUpGapFull = 40; // tap-count gap for the full bonus
+
   // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
   static const double _botBaseInterval = 0.155;
   static const double _botAccuracyBonus = 0.075; // faster at high accuracy
@@ -86,6 +101,7 @@ class ButtonMasher extends MiniGameBase {
   late Size _size;
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for bg shimmer
+  bool _frenzyFired = false; // one-shot "FRENZY!" climax cue latch
 
   final Map<int, _Striker> _strikers = <int, _Striker>{};
   // Lane layout depends only on the (fixed) arena + roster, so build it once at
@@ -171,16 +187,35 @@ class ButtonMasher extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
+    _maybeFireFrenzy();
     _driveBots(sdt);
 
     for (final s in _strikers.values) {
       _tickStriker(s, sdt);
-      setScore(s.slot.id, s.meter.tapCount);
+      // Score = raw taps + frenzy/comeback bonus (rounded so it stays integral).
+      setScore(s.slot.id, s.meter.tapCount + s.bonusScore.round());
     }
 
     if (_elapsed >= _timeLimit) {
       finishByScore(); // most taps (≡ most height) wins
     }
+  }
+
+  /// True once the round enters the final stretch — taps count double + the puck
+  /// kick runs hotter so the finale is a frantic, swingy scramble.
+  bool get _inFrenzy => _elapsed >= _timeLimit * _frenzyFrac;
+
+  /// Fire the one-shot "FRENZY!" climax cue over the towers when frenzy begins.
+  void _maybeFireFrenzy() {
+    if (_frenzyFired || !_inFrenzy) return;
+    _frenzyFired = true;
+    _juice.popup(
+      Offset(_size.width / 2, _size.height * 0.16),
+      'FRENZY!',
+      MasherRenderer.bellGold,
+      size: 40,
+    );
+    _juice.shake.medium();
   }
 
   void _tickStriker(_Striker s, double dt) {
@@ -225,11 +260,20 @@ class ButtonMasher extends MiniGameBase {
     s.meter.tap();
     s.sinceTap = 0;
 
+    // FRENZY: late-round taps count double. COMEBACK: a trailing striker earns a
+    // small fractional bonus scaled by its gap to the leader. Both feed the
+    // separate bonus accumulator so the raw tap count stays clean.
+    if (_inFrenzy) s.bonusScore += _frenzyTapBonus;
+    s.bonusScore += _catchUpBonus(s);
+
     // Build power (capped), then kick the puck target scaled by current power
-    // AND the combo multiplier, so a clean rhythm run climbs far faster.
+    // AND the combo multiplier, so a clean rhythm run climbs far faster. The
+    // frenzy gives the kick an extra shove so the towers visibly surge.
     s.power = math.min(1.0, s.power + _powerPerTap);
     final comboMult = 1.0 + _comboMultPerStep * s.combo;
-    final kick = _baseKickPerTap * (1.0 + _powerKickBoost * s.power) * comboMult;
+    final frenzyMult = _inFrenzy ? (1.0 + _frenzyKickBoost) : 1.0;
+    final kick =
+        _baseKickPerTap * (1.0 + _powerKickBoost * s.power) * comboMult * frenzyMult;
     s.targetHeight = math.min(1.0, s.targetHeight + kick);
 
     // Swing the hammer down-stroke + a chop drives the lever.
@@ -238,6 +282,25 @@ class ButtonMasher extends MiniGameBase {
 
     _spawnTapFeedback(s);
     _maybeRingBell(s);
+  }
+
+  /// Extra per-tap score for a trailing striker, scaled 0..1 by how far behind
+  /// the leader it sits (capped at [_catchUpGapFull]). Gap is on the raw tap
+  /// count (stable) so the assist never feeds back on itself. Zero for the lead.
+  double _catchUpBonus(_Striker s) {
+    final gap = _leadCount() - s.meter.tapCount;
+    if (gap <= 0) return 0;
+    final t = (gap / _catchUpGapFull).clamp(0.0, 1.0);
+    return _catchUpMaxBonusPerTap * t;
+  }
+
+  /// The highest raw tap count across all strikers (the current leader).
+  int _leadCount() {
+    var best = 0;
+    for (final s in _strikers.values) {
+      if (s.meter.tapCount > best) best = s.meter.tapCount;
+    }
+    return best;
   }
 
   /// Each tap = a flash ring + a small spark spray off the lever plate.
@@ -517,6 +580,9 @@ class _Striker {
   final double botJitter;
 
   double power = 0; // 0..1 cadence-built power
+  // Extra score on top of the raw tap count: frenzy double-count + comeback
+  // assist. Kept separate so the meter stays a pure tap counter.
+  double bonusScore = 0;
   int combo = 0; // current rhythm streak (drives the puck-kick multiplier)
   double puckHeight = 0; // 0..1 current rendered puck height
   double targetHeight = 0; // 0..1 height the puck eases toward

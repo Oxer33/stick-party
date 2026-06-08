@@ -5,6 +5,7 @@ import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/minigames/one_touch_soccer/one_touch_soccer.dart';
+import 'package:stick_party/minigames/one_touch_soccer/soccer_fx.dart';
 
 /// Builds an all-bot 4-player soccer round and advances it at a fixed 60 fps
 /// step until it finishes (or a hard cap is hit), returning the elapsed seconds.
@@ -114,5 +115,85 @@ void main() {
 
     expect(g.status, MiniGameStatus.running);
     expect(g.scores.of(0), greaterThanOrEqualTo(0));
+  });
+
+  group('SpeedPadController (chaos pickup)', () {
+    final field = const Rect.fromLTRB(40, 60, 760, 1140);
+    SpeedPadController make() => SpeedPadController(
+          radius: 24,
+          firstSpawnSec: 3.0,
+          respawnSec: 5.0,
+          lifeSec: 6.0,
+          appearPerSec: 4.0,
+          phasePerSec: 3.0,
+        );
+
+    test('spawns inside the field central band after its delay', () {
+      final c = make();
+      final rng = SeededRng(7);
+      for (var i = 0; i < 60 * 4; i++) {
+        c.tick(1 / 60, rng, field);
+      }
+      final pad = c.pad;
+      expect(pad, isNotNull);
+      expect(pad!.ready, isTrue);
+      // Inside the field, and within the central band (never in a goal third).
+      expect(field.contains(pad.pos), isTrue);
+      expect(pad.pos.dy, greaterThan(field.top + field.height * 0.33));
+      expect(pad.pos.dy, lessThan(field.bottom - field.height * 0.33));
+    });
+
+    test('tryTrigger fires only when the ball overlaps, returns a unit dir', () {
+      final c = make();
+      final rng = SeededRng(8);
+      for (var i = 0; i < 60 * 4; i++) {
+        c.tick(1 / 60, rng, field);
+      }
+      final pad = c.pad!;
+      // Ball far away: no trigger.
+      final miss = c.tryTrigger(
+        ballPos: pad.pos + const Offset(400, 0),
+        ballVel: const Offset(0, -100),
+        ballRadius: 10,
+        minBallSpeed: 30,
+        topLine: field.top,
+        bottomLine: field.bottom,
+      );
+      expect(miss, isNull);
+      expect(c.pad, isNotNull, reason: 'a miss must not consume the pad');
+      // Ball on the pad while moving: returns its travel direction (unit).
+      final dir = c.tryTrigger(
+        ballPos: pad.pos,
+        ballVel: const Offset(0, -200),
+        ballRadius: 10,
+        minBallSpeed: 30,
+        topLine: field.top,
+        bottomLine: field.bottom,
+      );
+      expect(dir, isNotNull);
+      expect(dir!.distance, closeTo(1.0, 1e-6));
+      expect(dir.dy, lessThan(0), reason: 'kept the upward travel heading');
+      expect(c.pad, isNull, reason: 'a hit consumes the pad');
+    });
+
+    test('a nearly-still ball is kicked toward the nearer goal', () {
+      final c = make();
+      final rng = SeededRng(9);
+      for (var i = 0; i < 60 * 4; i++) {
+        c.tick(1 / 60, rng, field);
+      }
+      final pad = c.pad!;
+      final dir = c.tryTrigger(
+        ballPos: pad.pos,
+        ballVel: Offset.zero, // dead ball
+        ballRadius: 10,
+        minBallSpeed: 30,
+        topLine: field.top,
+        bottomLine: field.bottom,
+      );
+      expect(dir, isNotNull);
+      expect(dir!.dx, 0); // straight up or down a goal line
+      expect(dir.dy.abs(), 1);
+    });
   });
 }

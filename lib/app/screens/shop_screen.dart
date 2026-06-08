@@ -13,10 +13,10 @@ import '../../services/analytics_service.dart';
 import '../../services/iap_service.dart';
 import '../../services/purchase_applier.dart';
 import '../providers.dart';
-import '../widgets/glass_kit.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
+import 'premium_card.dart';
 
 class ShopScreen extends ConsumerWidget {
   const ShopScreen({super.key});
@@ -71,37 +71,23 @@ class _CosmeticTile extends ConsumerWidget {
     final int iconArgb = cosmetic.paletteArgb.isNotEmpty
         ? cosmetic.paletteArgb.first
         : GlassColors.violet.toARGB32();
+    final Color accent = Color(iconArgb);
+    final String status = owned
+        ? (cosmetic.isFree
+            ? 'Free • always yours'
+            : (selected ? 'Equipped' : 'Owned'))
+        : '${cosmetic.priceCoins} coins';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
-      child: GlassPanel(
-        tint: selected ? GlassColors.violet : null,
-        tintOpacity: 0.14,
-        borderColor:
-            selected ? GlassColors.violet.withValues(alpha: 0.8) : null,
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: <Widget>[
-            ProceduralIcon(label: cosmetic.name, colorArgb: iconArgb),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(cosmetic.name, style: GlassText.heading),
-                  const SizedBox(height: 2),
-                  Text(
-                    owned
-                        ? (cosmetic.isFree ? 'Free' : 'Owned')
-                        : '${cosmetic.priceCoins} coins',
-                    style: GlassText.body.copyWith(fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            _action(context, ref, owned, selected, isSkin),
-          ],
-        ),
+      child: PremiumMediaTile(
+        accent: accent,
+        highlight: selected,
+        leading: ProceduralIcon(label: cosmetic.name, colorArgb: iconArgb),
+        title: cosmetic.name,
+        eyebrow: isSkin ? 'STICK SKIN' : 'MAP THEME',
+        supporting: status,
+        trailing: _action(context, ref, owned, selected, isSkin),
       ),
     );
   }
@@ -170,32 +156,26 @@ class _IapTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final IconData glyph =
+        product.consumable ? Icons.monetization_on : Icons.lock_open;
     return Padding(
       padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
-      child: GlassPanel(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: <Widget>[
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(product.title, style: GlassText.heading),
-                  const SizedBox(height: 2),
-                  Text(
-                    product.consumable ? 'Coin pack' : 'One-time unlock',
-                    style: GlassText.body.copyWith(fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            FilledButton(
-              onPressed: () => _buy(context, ref),
-              style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
-              // Real, honest price label from the store catalog.
-              child: Text(product.priceLabel),
-            ),
-          ],
+      child: PremiumMediaTile(
+        accent: GlassColors.amber,
+        leading: _IapBadge(icon: glyph),
+        title: product.title,
+        eyebrow: product.consumable ? 'COIN PACK' : 'UNLOCK',
+        supporting:
+            product.consumable ? 'Top up your coins' : 'One-time unlock',
+        trailing: FilledButton(
+          onPressed: () => _buy(context, ref),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(96, 44),
+            backgroundColor: GlassColors.amber,
+            foregroundColor: GlassColors.base,
+          ),
+          // Real, honest price label from the store catalog.
+          child: Text(product.priceLabel),
         ),
       ),
     );
@@ -231,6 +211,43 @@ class _IapTile extends ConsumerWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// A small amber rounded badge holding an IAP product's glyph, sized to match
+/// the media-tile illustration footprint.
+class _IapBadge extends StatelessWidget {
+  const _IapBadge({required this.icon});
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: kPremiumTileArtSize,
+      height: kPremiumTileArtSize,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            GlassColors.amber,
+            GlassColors.amber.withValues(alpha: 0.55),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: GlassColors.amber.withValues(alpha: 0.4),
+            blurRadius: 14,
+            spreadRadius: -2,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, color: GlassColors.base, size: 28),
     );
   }
 }

@@ -41,6 +41,21 @@ void main() {
     });
   }
 
+  test('all-bot round outlasts the warmup and resolves before the time cap '
+      '(climax surge converges it)', () {
+    final g = ChickenJump()..init(ctxFor(4, seed: 5));
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished);
+    final simSeconds = n / 60.0;
+    // Floor: never an instant finish (warmup ~1.9s is held). Ceiling: the climax
+    // lava surge in the final phase guarantees it resolves under the 30s cap.
+    expect(simSeconds, greaterThan(1.5));
+    expect(simSeconds, lessThan(30.0));
+  });
+
   test('tapping to jump keeps a player alive longer without throwing', () {
     final players = [
       PlayerSlot.defaults(0),

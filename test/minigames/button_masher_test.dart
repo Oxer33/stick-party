@@ -36,6 +36,49 @@ void main() {
     expect(simSeconds, lessThanOrEqualTo(11.0));
   });
 
+  test('FRENZY climax: late taps count double for a solo player', () {
+    // Solo player → no leader gap, so the comeback assist is zero and we isolate
+    // the frenzy double-count cleanly.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(5),
+      zones: ZoneLayout.forPlayers(1),
+    );
+    final g = ButtonMasher()..init(ctx);
+
+    // Batch A: 10 taps ~1s in (well before the 75% frenzy gate of the 10s round).
+    for (var i = 0; i < 60; i++) {
+      g.update(1 / 60);
+    }
+    final beforeA = g.scores.of(0);
+    for (var i = 0; i < 10; i++) {
+      g.onInput(PlayerInput.down(0));
+    }
+    g.update(1 / 60);
+    final normalGain = g.scores.of(0) - beforeA;
+
+    // Step to ~8s (inside the frenzy window) without tapping.
+    for (var i = 0; i < 60 * 7 && g.status != MiniGameStatus.finished; i++) {
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.running,
+        reason: 'must still be running inside the frenzy window (~8s of 10s)');
+
+    // Batch B: 10 taps during frenzy.
+    final beforeB = g.scores.of(0);
+    for (var i = 0; i < 10; i++) {
+      g.onInput(PlayerInput.down(0));
+    }
+    g.update(1 / 60);
+    final frenzyGain = g.scores.of(0) - beforeB;
+
+    // 10 taps in frenzy must out-score 10 normal taps (double-count).
+    expect(frenzyGain, greaterThan(normalGain),
+        reason: 'frenzy taps must out-score normal taps');
+    expect(frenzyGain, greaterThanOrEqualTo(18), reason: '~2x of 10 taps');
+  });
+
   test('button masher scores reflect tap counts and a human tap registers', () {
     final players = [
       PlayerSlot.defaults(0), // human

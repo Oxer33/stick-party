@@ -545,6 +545,34 @@ class ReactionRenderer {
         Offset.zero & size, Paint()..color = _white.withValues(alpha: v));
   }
 
+  /// A persistent golden edge-wash that marks the LIGHTNING (double-points)
+  /// final round, so the climax reads at a glance for the whole round. [cuePeak]
+  /// (1 → 0) adds a brief brighter bloom right at the round start; [pulse] (0..1)
+  /// gently breathes the resting tint. A radial gradient (no blur) keeps the
+  /// centre clear so the action stays legible.
+  static void drawLightningAmbience(
+    Canvas canvas,
+    Size size,
+    double cuePeak,
+    double pulse, {
+    Color gold = const Color(0xFFFFE45C),
+  }) {
+    final peak = cuePeak.clamp(0.0, 1.0);
+    final breathe = 0.5 + 0.5 * pulse.clamp(0.0, 1.0);
+    final edgeAlpha = (0.10 + 0.06 * breathe + 0.30 * peak).clamp(0.0, 1.0);
+    final diag = math.sqrt(size.width * size.width + size.height * size.height);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = Gradient.radial(
+          Offset(size.width / 2, size.height * 0.45),
+          diag * 0.62,
+          [const Color(0x00000000), gold.withValues(alpha: edgeAlpha)],
+          const [0.45, 1.0],
+        ),
+    );
+  }
+
   /// Render the stick duelist itself. Kept here so the painter call lives with
   /// the rest of the visuals; [figure] owns its own pose/ragdoll state.
   static void drawDuelist(Canvas canvas, StickFigure figure, Offset root) {

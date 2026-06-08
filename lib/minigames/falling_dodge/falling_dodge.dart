@@ -10,6 +10,7 @@ import '../../engine/bots.dart';
 import '../../engine/helpers/lane_hopper.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'falling_fx.dart';
 import 'falling_render.dart';
 
 /// Numeric tuning — no magic numbers inline. All times in seconds, speeds px/s.
@@ -96,79 +97,7 @@ class _Tuning {
   // dodge a hazard the player has not even seen yet (keeps them beatable).
   static const double botWarmupSec = 1.5;
 
-  // Hop hint chevrons flanking the runner (the control affordance).
-  static const double hintPulseHz = 3.2; // hint breathing rate
-
-  static const double spinPerSec = 2.4; // hazard tumble rate (visual)
   static const double scrollPerSec = 220; // band texture scroll rate (visual)
-}
-
-/// One falling hazard in a player's band. Mutable, round-scoped value.
-class _Hazard {
-  final int lane;
-  final HazardKind kind;
-  final double size;
-  final double speedMul;
-  final double spinPhase; // deterministic per-hazard spin offset
-  double y;
-  bool counted = false; // near-miss/strike resolved once as it crosses
-
-  _Hazard({
-    required this.lane,
-    required this.kind,
-    required this.size,
-    required this.speedMul,
-    required this.spinPhase,
-    required this.y,
-  });
-}
-
-/// A short-lived per-lane near-miss flash anchor (visual only).
-class _Flash {
-  final int lane;
-  double life;
-  final double maxLife;
-  _Flash({required this.lane, required this.life}) : maxLife = life;
-  double get strength => maxLife <= 0 ? 0 : (life / maxLife).clamp(0.0, 1.0);
-}
-
-/// One player's dodge track: a horizontal band with [laneCount] lanes, a runner
-/// hopping between them, and its own stream of falling hazards.
-class _Track {
-  final int playerId;
-  final Color color;
-  final Rect band;
-  final LaneSet lanes;
-  final double runnerY; // fixed y where the runner stands
-  final double figureLift; // pelvis lift so feet plant on the runner line
-  final double figureScale;
-  final Hopper hopper;
-  final StickFigure figure;
-  final List<_Hazard> hazards = <_Hazard>[];
-  final List<_Flash> flashes = <_Flash>[];
-
-  bool alive = true;
-  int hopDir = 1; // last hop direction (bounces at the ends)
-  double spawnTimer = 0;
-  double hopHold = 0; // brief jump-pose timer after a hop
-  ReactionClock? clock;
-
-  _Track({
-    required this.playerId,
-    required this.color,
-    required this.band,
-    required this.lanes,
-    required this.runnerY,
-    required this.figureLift,
-    required this.figureScale,
-    required this.hopper,
-    required this.figure,
-    this.clock,
-  });
-
-  /// Lane x-coordinates for the renderer.
-  List<double> laneXs() =>
-      [for (var i = 0; i < lanes.count; i++) lanes.coordOf(i)];
 }
 
 /// Falling Dodge: telegraphed hazards (boulders, anvils, spike-crates) rain
@@ -204,11 +133,12 @@ class FallingDodge extends MiniGameBase {
       );
 
   late Juice _juice;
-  final List<_Track> _tracks = <_Track>[];
+  final List<TrackFx> _tracks = <TrackFx>[];
   final List<int> _eliminationOrder = <int>[]; // worst→best as they fall
   double _elapsed = 0;
   double _animClock = 0; // real-time clock for spin/scroll (never scaled)
   double _fallSpeed = _Tuning.fallSpeedStart;
+  bool _dangerFired = false; // one-shot sudden-death "DANGER!" climax cue latch
 
   @override
   void init(MiniGameContext ctx) {
@@ -231,7 +161,7 @@ class FallingDodge extends MiniGameBase {
       final runnerY = band.bottom - bandH * _Tuning.runnerInsetFactor;
       final scale = _figureScaleFor(bandH);
       final lift = _footReach(scale);
-      final track = _Track(
+      final track = TrackFx(
         playerId: p.id,
         color: Color(p.colorArgb),
         band: band,
@@ -312,7 +242,7 @@ class FallingDodge extends MiniGameBase {
   /// Resolve a touch to a hop direction. A tap to the left of the runner's
   /// current screen-x hops left (-1), to the right hops right (+1). A tap dead-on
   /// the runner keeps the last direction so it still does something sensible.
-  int _dirFromTouch(_Track t, Offset normPos) {
+  int _dirFromTouch(TrackFx t, Offset normPos) {
     final touchX = normPos.dx * ctx.arena.width;
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final delta = touchX - runnerX;
@@ -321,7 +251,7 @@ class FallingDodge extends MiniGameBase {
     return delta < 0 ? -1 : 1;
   }
 
-  void _commitHop(_Track t, int dir) {
+  void _commitHop(TrackFx t, int dir) {
     final before = t.hopper.lane;
     t.hopper.hop(dir);
     t.hopDir = dir;
@@ -347,7 +277,7 @@ class FallingDodge extends MiniGameBase {
   /// lane (away from the most imminent threat), kept inside the lane range. This
   /// is what the bot "decides" — [_driveBots] may then flip it on a mistake so a
   /// fallible bot can dive the wrong way.
-  int _botDodgeDir(_Track t) {
+  int _botDodgeDir(TrackFx t) {
     final lane = t.hopper.lane;
     final threatLane = _nearestThreatLane(t);
     var dir = t.hopDir;
@@ -364,8 +294,8 @@ class FallingDodge extends MiniGameBase {
   }
 
   /// The lane of the closest hazard still above the runner line.
-  int? _nearestThreatLane(_Track t) {
-    _Hazard? nearest;
+  int? _nearestThreatLane(TrackFx t) {
+    HazardFx? nearest;
     for (final h in t.hazards) {
       if (h.y > t.runnerY) continue; // already passed the line
       if (nearest == null || h.y > nearest.y) nearest = h;
@@ -386,11 +316,13 @@ class FallingDodge extends MiniGameBase {
     _juice.update(dt);
 
     _fallSpeed = _Tuning.fallSpeedStart + _Tuning.fallAccel * _elapsed;
+    _maybeFireDanger();
 
     for (final t in _tracks) {
       if (t.alive) {
         _spawnTick(t, sdt);
         _stepHazards(t, sdt);
+        _tickTokens(t, sdt);
       }
       _tickFigure(t, dt, sdt);
       _tickFlashes(t, dt);
@@ -399,7 +331,53 @@ class FallingDodge extends MiniGameBase {
     _checkEnd();
   }
 
-  void _spawnTick(_Track t, double dt) {
+  /// True once the round enters sudden death (two lanes threatened at once) —
+  /// the finale visibly ramps. Mirrors the spawner's sudden-death gate.
+  bool get _inSuddenDeath =>
+      _elapsed >= _Tuning.timeLimit * _Tuning.suddenDeathFrac;
+
+  /// Fire the one-shot "DANGER!" climax cue when sudden death begins, over every
+  /// live runner, with a shake — an unmistakable "it just got harder" beat.
+  void _maybeFireDanger() {
+    if (_dangerFired || !_inSuddenDeath) return;
+    _dangerFired = true;
+    for (final t in _tracks) {
+      if (!t.alive) continue;
+      final x = t.lanes.coordOfVisual(t.hopper.visualLane);
+      FallingFx.dangerPopup(_juice, Offset(x, t.runnerY - t.figureLift - 16));
+    }
+    _juice.shake.medium();
+  }
+
+  /// Advance this track's golden token: spawn on cadence, fall, and resolve a
+  /// catch/miss at the runner line. A scoop banks bonus points + a golden burst.
+  void _tickTokens(TrackFx t, double dt) {
+    final caught = t.tokens.tick(
+      dt: dt,
+      elapsed: _elapsed,
+      spawnLane: ctx.rng.intRange(0, _Tuning.laneCount),
+      laneSpacing: t.lanes.spacing.abs(),
+      bandTop: t.band.top,
+      bandBottom: t.band.bottom,
+      runnerY: t.runnerY,
+      runnerLane: t.hopper.lane,
+      rng: ctx.rng,
+    );
+    if (caught != null) _collectToken(t, caught);
+  }
+
+  void _collectToken(TrackFx t, TokenFx tok) {
+    addScore(t.playerId, TokenTuning.bonusScore);
+    FallingFx.collectToken(
+      _juice,
+      at: Offset(t.lanes.coordOf(tok.lane), t.runnerY),
+      popupAt:
+          Offset(t.lanes.coordOfVisual(t.hopper.visualLane), t.runnerY - 30),
+      figureScale: t.figureScale,
+    );
+  }
+
+  void _spawnTick(TrackFx t, double dt) {
     // Warmup: nothing falls until the player has had a beat to read the board,
     // so the round can never resolve in the first ~2s.
     if (_elapsed < _Tuning.spawnWarmupSec) return;
@@ -411,7 +389,7 @@ class FallingDodge extends MiniGameBase {
     _spawnHazard(t);
   }
 
-  void _spawnHazard(_Track t) {
+  void _spawnHazard(TrackFx t) {
     final lane = _spawnLaneFor(t);
     _dropHazard(t, lane);
     // Sudden death: add a second hazard in a different lane so two lanes are
@@ -422,14 +400,14 @@ class FallingDodge extends MiniGameBase {
     }
   }
 
-  void _dropHazard(_Track t, int lane) {
+  void _dropHazard(TrackFx t, int lane) {
     final kind = _pickKind();
     final spacing = t.lanes.spacing.abs();
     final sizeFrac = (_Tuning.hazardSizeBase +
             ctx.rng.jitter(_Tuning.hazardSizeJitter))
         .clamp(0.4, 0.95);
     final size = spacing * sizeFrac;
-    t.hazards.add(_Hazard(
+    t.hazards.add(HazardFx(
       lane: lane,
       kind: kind,
       size: size,
@@ -449,7 +427,7 @@ class FallingDodge extends MiniGameBase {
   /// runner's CURRENT lane is never targeted, so an idle player cannot be crushed
   /// in the first [idleGraceSec]; once grace ends every lane is fair game and the
   /// escalation forces a decision. After grace it's a flat random lane.
-  int _spawnLaneFor(_Track t) {
+  int _spawnLaneFor(TrackFx t) {
     if (_elapsed >= _Tuning.idleGraceSec) {
       return ctx.rng.intRange(0, _Tuning.laneCount);
     }
@@ -472,8 +450,8 @@ class FallingDodge extends MiniGameBase {
         HazardKind.crate => _Tuning.crateSpeedMul,
       };
 
-  void _stepHazards(_Track t, double dt) {
-    final survivors = <_Hazard>[];
+  void _stepHazards(TrackFx t, double dt) {
+    final survivors = <HazardFx>[];
     for (final h in t.hazards) {
       final prevY = h.y;
       h.y += _fallSpeed * h.speedMul * dt;
@@ -498,7 +476,7 @@ class FallingDodge extends MiniGameBase {
 
   /// A hit requires the same lane AND the runner's visual position close enough
   /// horizontally that it has not cleared the falling body yet.
-  bool _isHit(_Track t, _Hazard h) {
+  bool _isHit(TrackFx t, HazardFx h) {
     if (h.lane != t.hopper.lane) return false;
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final hazardX = t.lanes.coordOf(h.lane);
@@ -508,7 +486,7 @@ class FallingDodge extends MiniGameBase {
 
   /// Reward a stylish dodge: a hazard that crossed the runner line in a lane
   /// directly adjacent to the runner → slow-mo + spark + "NICE!" popup.
-  void _registerNearMiss(_Track t, _Hazard h) {
+  void _registerNearMiss(TrackFx t, HazardFx h) {
     if ((h.lane - t.hopper.lane).abs() != 1) return;
     final laneDist = (h.lane - t.hopper.visualLane).abs();
     if (laneDist > _Tuning.nearMissBand) return;
@@ -530,10 +508,10 @@ class FallingDodge extends MiniGameBase {
       const Color(0xFF8DEBFF),
       size: 22 + 8 * t.figureScale,
     );
-    t.flashes.add(_Flash(lane: h.lane, life: _Tuning.nearMissFlashSec));
+    t.flashes.add(FlashFx(lane: h.lane, life: _Tuning.nearMissFlashSec));
   }
 
-  void _tickFigure(_Track t, double dt, double sdt) {
+  void _tickFigure(TrackFx t, double dt, double sdt) {
     t.hopper.update(sdt, speed: _Tuning.hopAnimSpeed);
     if (t.hopHold > 0) {
       t.hopHold -= dt;
@@ -544,7 +522,7 @@ class FallingDodge extends MiniGameBase {
     t.figure.update(dt);
   }
 
-  void _tickFlashes(_Track t, double dt) {
+  void _tickFlashes(TrackFx t, double dt) {
     if (t.flashes.isEmpty) return;
     for (final f in t.flashes) {
       f.life -= dt;
@@ -577,7 +555,7 @@ class FallingDodge extends MiniGameBase {
 
   /// True when a hazard is bearing down on the bot's current lane within its
   /// (accuracy-scaled) lead window — i.e. the moment a real player would react.
-  bool _botThreatImminent(_Track t) {
+  bool _botThreatImminent(TrackFx t) {
     final lane = t.hopper.lane;
     final lead = _Tuning.botLeadBase +
         _Tuning.botLeadPerAccuracy * ctx.botProfile.accuracy.clamp(0.0, 1.0);
@@ -593,7 +571,7 @@ class FallingDodge extends MiniGameBase {
 
   // ── Elimination / outcome ────────────────────────────────────────────────────
 
-  void _eliminate(_Track t, _Hazard h) {
+  void _eliminate(TrackFx t, HazardFx h) {
     t.alive = false;
     t.hazards.clear();
     _eliminationOrder.add(t.playerId);
@@ -623,7 +601,7 @@ class FallingDodge extends MiniGameBase {
     _finish(_tracks.where((t) => t.alive).toList());
   }
 
-  void _finish(List<_Track> alive) {
+  void _finish(List<TrackFx> alive) {
     // Survival bonus first, so a survivor always outranks the eliminated on
     // score as well as on placement.
     for (final t in alive) {
@@ -666,133 +644,31 @@ class FallingDodge extends MiniGameBase {
 
     final scroll = _animClock * _Tuning.scrollPerSec;
     for (final t in _tracks) {
-      _drawTrack(canvas, t, scroll);
+      FallingTrackPainter.draw(
+        canvas,
+        t,
+        scroll: scroll,
+        animClock: _animClock,
+        laneCount: _Tuning.laneCount,
+      );
     }
 
     _juice.render(canvas);
     canvas.restore();
   }
 
-  /// 0..1 escalation, used for ambient heat — ramps with fall speed.
+  /// 0..1 escalation, used for ambient heat — ramps with fall speed and pins to
+  /// full once sudden death begins so the finale background glows hottest.
   double _escalation() {
+    if (_inSuddenDeath) return 1;
     final span = _Tuning.fallAccel * _Tuning.timeLimit;
     if (span <= 0) return 0;
     return ((_fallSpeed - _Tuning.fallSpeedStart) / span).clamp(0.0, 1.0);
   }
 
-  void _drawTrack(Canvas canvas, _Track t, double scroll) {
-    FallingRenderer.drawBand(
-      canvas,
-      t.band,
-      t.color,
-      scroll: scroll,
-      danger: _dangerLevel(t),
-      alive: t.alive,
-    );
-    FallingRenderer.drawLanes(
-      canvas,
-      t.band,
-      t.laneXs(),
-      t.hopper.visualLane,
-      t.alive,
-    );
-
-    // Near-miss lane flashes (under hazards).
-    for (final f in t.flashes) {
-      FallingRenderer.drawNearMissFlash(
-        canvas,
-        t.band,
-        t.lanes.coordOf(f.lane),
-        f.strength,
-      );
-    }
-
-    // Ground telegraphs for every approaching hazard.
-    if (t.alive) {
-      for (final h in t.hazards) {
-        if (h.y > t.runnerY) continue;
-        FallingRenderer.drawTelegraph(
-          canvas,
-          t.lanes.coordOf(h.lane),
-          t.runnerY,
-          h.size,
-          _telegraphProgress(t, h),
-        );
-      }
-    }
-
-    // Runner contact shadow + figure.
-    final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
-    if (!t.figure.isRagdoll) {
-      FallingRenderer.drawContactShadow(
-        canvas,
-        Offset(runnerX, t.runnerY),
-        t.lanes.spacing.abs() * 0.5,
-        t.alive,
-      );
-    }
-
-    // Directional control affordance: small left/right hop hints flanking the
-    // live runner so the player sees that tapping a side hops that way. A side
-    // dims when it's blocked by a wall (already at the end lane).
-    if (t.alive && !t.figure.isRagdoll) {
-      final pulse = 0.5 + 0.5 * math.sin(_animClock * _Tuning.hintPulseHz);
-      FallingRenderer.drawHopHints(
-        canvas,
-        Offset(runnerX, t.runnerY),
-        t.lanes.spacing.abs(),
-        t.color,
-        pulse,
-        canLeft: t.hopper.lane > 0,
-        canRight: t.hopper.lane < _Tuning.laneCount - 1,
-      );
-    }
-
-    FallingRenderer.drawRunner(
-      canvas,
-      t.figure,
-      Offset(runnerX, t.runnerY - t.figureLift),
-    );
-
-    // Falling hazards (on top of the runner so a near-hit reads as overlap).
-    for (final h in t.hazards) {
-      final spin = h.spinPhase + _animClock * _Tuning.spinPerSec * h.speedMul;
-      FallingRenderer.drawHazard(
-        canvas,
-        Offset(t.lanes.coordOf(h.lane), h.y),
-        h.size,
-        h.kind,
-        t.runnerY,
-        spin,
-      );
-    }
-
-    FallingRenderer.drawBandLabel(canvas, t.band, t.color, t.alive);
-  }
-
-  /// 0..1 how close the nearest in-lane hazard is to the runner line; drives
-  /// the band frame danger glow.
-  double _dangerLevel(_Track t) {
-    if (!t.alive) return 0;
-    var best = 0.0;
-    for (final h in t.hazards) {
-      if (h.lane != t.hopper.lane || h.y > t.runnerY) continue;
-      best = math.max(best, _telegraphProgress(t, h));
-    }
-    return best;
-  }
-
-  /// 0..1 telegraph intensity for a hazard: grows as it nears the runner line.
-  double _telegraphProgress(_Track t, _Hazard h) {
-    final fall = t.runnerY - t.band.top;
-    if (fall <= 0) return 1;
-    final remaining = (t.runnerY - h.y).clamp(0.0, fall);
-    return (1.0 - remaining / fall).clamp(0.0, 1.0);
-  }
-
   // ── Small helpers ────────────────────────────────────────────────────────────
 
-  _Track? _trackOf(int id) {
+  TrackFx? _trackOf(int id) {
     for (final t in _tracks) {
       if (t.playerId == id) return t;
     }

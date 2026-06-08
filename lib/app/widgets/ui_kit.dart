@@ -44,8 +44,9 @@ class StreakBadge extends StatelessWidget {
   }
 }
 
-/// A small procedural icon: a colored rounded box with a centered glyph (e.g. a
-/// game's initial). No image assets.
+/// A small procedural icon: an accent-tinted rounded badge with a top sheen,
+/// two faint decorative rings and a centered initial — reads as a crafted emblem
+/// rather than a flat letter box. No image assets, no blur (cheap to paint).
 class ProceduralIcon extends StatelessWidget {
   const ProceduralIcon({
     super.key,
@@ -61,6 +62,8 @@ class ProceduralIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = Color(colorArgb);
+    final double radius = GlassTokens.radiusSmall * (size / 48).clamp(0.7, 1.4);
+    final BorderRadius shape = BorderRadius.circular(radius);
     return Container(
       width: size,
       height: size,
@@ -68,9 +71,10 @@ class ProceduralIcon extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[color, color.withValues(alpha: 0.55)],
+          colors: <Color>[color, color.withValues(alpha: 0.5)],
         ),
-        borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+        borderRadius: shape,
+        border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
         boxShadow: <BoxShadow>[
           BoxShadow(
             color: color.withValues(alpha: 0.4),
@@ -80,13 +84,60 @@ class ProceduralIcon extends StatelessWidget {
           ),
         ],
       ),
-      alignment: Alignment.center,
-      child: Text(
-        label.isEmpty ? '?' : label.characters.first.toUpperCase(),
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w900,
-          fontSize: size * 0.42,
+      child: ClipRRect(
+        borderRadius: shape,
+        child: Stack(
+          alignment: Alignment.center,
+          children: <Widget>[
+            // Top-light sheen.
+            Align(
+              alignment: Alignment.topCenter,
+              child: Container(
+                height: size * 0.46,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: <Color>[
+                      Colors.white.withValues(alpha: 0.22),
+                      Colors.white.withValues(alpha: 0.0),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            // Faint decorative ring, offset to the lower-right.
+            Positioned(
+              right: -size * 0.18,
+              bottom: -size * 0.18,
+              child: Container(
+                width: size * 0.7,
+                height: size * 0.7,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.16),
+                    width: size * 0.06,
+                  ),
+                ),
+              ),
+            ),
+            Text(
+              label.isEmpty ? '?' : label.characters.first.toUpperCase(),
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w900,
+                fontSize: size * 0.44,
+                shadows: <Shadow>[
+                  Shadow(
+                    color: color.withValues(alpha: 0.6),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

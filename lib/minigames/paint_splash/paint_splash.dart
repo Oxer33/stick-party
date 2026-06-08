@@ -40,6 +40,16 @@ class _Tuning {
   static const double dwellRampSec = 0.45; // hold-in-place time to full dwell
   static const double splatRadiusMax = 0.12; // hard cap so it stays readable
 
+  // ── Climax: the DOUBLE INK final burst (the unmistakable peak) ──────────────
+  // For the last [doubleInkSec] every splat is fattened by [doubleInkRadiusMult]
+  // (capped above the normal max so the change is obvious) and throws extra
+  // droplets — coverage swings wildly, so a trailing kid can still flip the
+  // board in a shouting finish. A one-shot banner + shake announces it.
+  static const double doubleInkSec = 6.0; // length of the double-ink finale
+  static const double doubleInkRadiusMult = 1.7; // splat radius multiplier
+  static const double doubleInkRadiusMax = 0.20; // raised cap during the burst
+  static const int doubleInkExtraDroplets = 8; // bonus droplets per splat
+
   // Bot accuracy: an off-target splat is jittered by up to this (norm units),
   // scaled down by accuracy so better bots place paint where they aim.
   static const double botAimJitter = 0.05;
@@ -198,6 +208,7 @@ class PaintSplash extends MiniGameBase {
   final List<_Stamp> _stamps = <_Stamp>[];
   double _elapsed = 0;
   int _splatSeq = 0; // monotonically increasing seed source for stamps
+  bool _doubleInkAnnounced = false; // the DOUBLE INK cue fired once
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -285,9 +296,18 @@ class PaintSplash extends MiniGameBase {
     _burstDroplets(at, radius, c.color, c.dwell);
   }
 
-  /// Splat radius from the base size plus the dwell bonus, capped.
+  /// True once the round enters its final DOUBLE INK burst window.
+  bool get _inDoubleInk => _elapsed >= _Tuning.timeLimit - _Tuning.doubleInkSec;
+
+  /// Splat radius from the base size plus the dwell bonus, capped. During the
+  /// DOUBLE INK finale the radius is multiplied and allowed past the normal cap
+  /// (up to the raised burst cap) so the bigger paint is unmistakable.
   double _splatRadius(_Cursor c) {
     final radius = _Tuning.splatRadiusBase + _Tuning.dwellBonus * c.dwell;
+    if (_inDoubleInk) {
+      return (radius * _Tuning.doubleInkRadiusMult)
+          .clamp(_Tuning.splatRadiusBase, _Tuning.doubleInkRadiusMax);
+    }
     return radius.clamp(_Tuning.splatRadiusBase, _Tuning.splatRadiusMax);
   }
 
@@ -309,8 +329,9 @@ class PaintSplash extends MiniGameBase {
   /// more droplets and a touch more shake.
   void _burstDroplets(Offset at, double radius, Color color, double dwell) {
     final px = _toPixels(at);
-    final count =
-        _Tuning.dropletCountBase + (dwell * _Tuning.dropletPerDwell).round();
+    final count = _Tuning.dropletCountBase +
+        (dwell * _Tuning.dropletPerDwell).round() +
+        (_inDoubleInk ? _Tuning.doubleInkExtraDroplets : 0);
     _juice.particles.burst(
       at: px,
       count: count,
@@ -325,6 +346,25 @@ class PaintSplash extends MiniGameBase {
     if (dwell > 0.6) _juice.shake.light();
   }
 
+  /// Fire the one-shot DOUBLE INK cue the instant the finale window opens: a big
+  /// banner popup, a shake and a bright burst so every kid knows the paint just
+  /// got huge and it's time to scribble for the win.
+  void _maybeAnnounceDoubleInk() {
+    if (_doubleInkAnnounced || !_inDoubleInk) return;
+    _doubleInkAnnounced = true;
+    final center = Offset(_lastSize.width / 2, _lastSize.height * 0.5);
+    _juice.popup(center, 'DOUBLE INK!', const Color(0xFFFFFFFF), size: 46);
+    _juice.shake.medium();
+    _juice.particles.burst(
+      at: center,
+      count: 20,
+      color: const Color(0xFFFFFFFF),
+      speed: 340,
+      size: 7,
+      life: 0.7,
+    );
+  }
+
   // ── Update ──────────────────────────────────────────────────────────────────
 
   @override
@@ -335,6 +375,7 @@ class PaintSplash extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
+    _maybeAnnounceDoubleInk();
     _driveBots(sdt);
 
     for (final c in _cursors) {

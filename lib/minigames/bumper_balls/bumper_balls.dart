@@ -6,6 +6,7 @@ import '../../engine/bots.dart';
 import '../../engine/helpers/push_arena.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'bumper_fx.dart';
 import 'bumper_render.dart';
 
 /// Bumper Balls — neon knockout. Every player is a glowing bumper ball on a
@@ -88,6 +89,25 @@ class BumperBalls extends MiniGameBase {
   static const double _minRingFactor = 0.44; // floor as fraction of initial R
   static const double _shrinkPerSec = 0.044; // fraction of initial R per second
 
+  // ── Climax (sudden death) tuning ────────────────────────────────────────────
+  // The final ~28% of the match collapses the platform far faster with a SUDDEN
+  // DEATH banner, so the round visibly ramps to a finish.
+  static const double _suddenDeathFrac = 0.72; // enters at this share of time
+  static const double _suddenDeathShrinkMul = 2.4; // shrink speed multiplier
+  static const double _suddenDeathFloorMul = 0.82; // tighter floor in sudden death
+
+  // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
+  static const double _starRadiusFactor = 0.6; // star R / body R
+  static const double _starFirstSpawnSec = 4.0;
+  static const double _starRespawnSec = 7.5;
+  static const double _starLifeSec = 6.0;
+  static const double _starAppearPerSec = 3.0;
+  static const double _starSpinPerSec = 3.2;
+  static const double _starSpawnSpreadFactor = 0.42;
+  static const double _buffSec = 4.0; // buff duration
+  static const double _buffDashMul = 1.8; // bump magnitude × this while buffed
+  static const Color _starColor = Color(0xFFFFE45C);
+
   // ── Ring-out tuning ─────────────────────────────────────────────────────────
   static const double _koPopLift = 0.06; // extra popup lift / body R
   static const double _ringOutGraceFactor = 1.02; // detect just past current R
@@ -120,10 +140,13 @@ class BumperBalls extends MiniGameBase {
   late double _bodyRadius;
 
   final Map<int, ReactionClock> _botClocks = <int, ReactionClock>{};
-  final Map<int, _BallState> _ball = <int, _BallState>{};
+  final Map<int, BallState> _ball = <int, BallState>{};
   final List<int> _eliminationOrder = <int>[];
   final Set<int> _eliminated = <int>{};
-  final List<_ImpactRing> _impacts = <_ImpactRing>[];
+  final List<ImpactRing> _impacts = <ImpactRing>[];
+
+  late StarController _stars;
+  bool _suddenDeathAnnounced = false;
 
   /// Ambient energy mote positions (deterministic; drift handled at render).
   final List<Offset> _motes = <Offset>[];
@@ -142,6 +165,15 @@ class BumperBalls extends MiniGameBase {
     _ringRadius = minSide * _ringRadiusFactor;
     _currentRingRadius = _ringRadius;
     _bodyRadius = minSide * _bodyRadiusFactor;
+    _stars = StarController(
+      radius: _bodyRadius * _starRadiusFactor,
+      firstSpawnSec: _starFirstSpawnSec,
+      respawnSec: _starRespawnSec,
+      lifeSec: _starLifeSec,
+      appearPerSec: _starAppearPerSec,
+      spinPerSec: _starSpinPerSec,
+      spawnSpreadFactor: _starSpawnSpreadFactor,
+    );
 
     // The arena's own ring-falloff must NOT cull balls: this game owns
     // elimination via [_detectRingOuts] against the *shrinking* radius so the KO
@@ -176,7 +208,7 @@ class BumperBalls extends MiniGameBase {
       _arena.add(Body(id: p.id, pos: pos, radius: _bodyRadius));
 
       final towardCenter = math.atan2(_center.dy - pos.dy, _center.dx - pos.dx);
-      _ball[p.id] = _BallState(aim: towardCenter);
+      _ball[p.id] = BallState(aim: towardCenter);
       if (p.isBot) {
         _botClocks[p.id] = ReactionClock(ctx.botProfile, ctx.rng);
       }
@@ -229,13 +261,19 @@ class BumperBalls extends MiniGameBase {
     _tickImpacts(dt);
     _driveBots(dt);
     _shrinkRing(dt);
+    _stars.tick(dt, _arena.aliveBodies.length, ctx.rng, _center,
+        _currentRingRadius);
 
     _arena.update(sdt);
 
+    _collectStars();
     _resolveContacts();
     _detectRingOuts();
     _resolveOutcome();
   }
+
+  /// True once the match has entered its climax (sudden death) window.
+  bool get _isSuddenDeath => _elapsed >= _timeLimit * _suddenDeathFrac;
 
   // ── Per-frame ball state ─────────────────────────────────────────────────────
 
@@ -334,12 +372,15 @@ class BumperBalls extends MiniGameBase {
     if (s == null || !s.ready) return;
 
     final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
-    final magnitude = _ringRadius * (_dashBase + _dashCharge * charge);
+    // A collected star briefly amplifies every bump — the buffed ball hits
+    // noticeably harder, the core of the chaos swing.
+    final buffMul = s.buffed ? _buffDashMul : 1.0;
+    final magnitude = _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
     _arena.impulse(playerId, dir * magnitude);
     _arena.impulse(playerId, -dir * magnitude * _selfPushback);
 
     s.fire(_cooldownSec);
-    s.trail = _DashTrail(dir: dir, life: _trailLifeSec);
+    s.trail = DashTrail(dir: dir, life: _trailLifeSec);
     s.stretchDir = dir;
 
     final intensity = 0.5 + 0.5 * charge;
@@ -454,17 +495,51 @@ class BumperBalls extends MiniGameBase {
   }
 
   void _spawnImpact(Offset at, Color color) {
-    _impacts.add(_ImpactRing(at: at, color: color, life: _impactRingLifeSec));
+    _impacts.add(ImpactRing(at: at, color: color, life: _impactRingLifeSec));
   }
 
   // ── Shrinking platform ──────────────────────────────────────────────────────
 
   void _shrinkRing(double dt) {
     if (_elapsed < _shrinkDelaySec) return;
-    final floor = _ringRadius * _minRingFactor;
+    // Sudden death tightens the floor and speeds the collapse so the round ramps
+    // unmistakably toward a finish in its final stretch.
+    final sudden = _isSuddenDeath;
+    final floor =
+        _ringRadius * _minRingFactor * (sudden ? _suddenDeathFloorMul : 1.0);
     if (_currentRingRadius <= floor) return;
-    _currentRingRadius = (_currentRingRadius - _ringRadius * _shrinkPerSec * dt)
+    final rate = _shrinkPerSec * (sudden ? _suddenDeathShrinkMul : 1.0);
+    _currentRingRadius = (_currentRingRadius - _ringRadius * rate * dt)
         .clamp(floor, _ringRadius);
+  }
+
+  // ── Star pickup (chaos) ─────────────────────────────────────────────────────
+
+  /// Any ball overlapping a ready star collects it: a brief bump buff + a burst
+  /// + popup. The grabber gets a swingy edge — pure chaos for the table.
+  void _collectStars() {
+    final star = _stars.star;
+    if (star == null || !star.ready) return;
+    for (final b in _arena.aliveBodies) {
+      if ((b.pos - star.pos).distance > b.radius + star.radius) continue;
+      _ball[b.id]?.buff = _buffSec;
+      _stars.consume();
+      _spawnImpact(star.pos, _starColor);
+      _juice.particles.burst(
+        at: star.pos,
+        count: 18,
+        color: _starColor,
+        speed: 280,
+        size: 6,
+        gravity: 120,
+        life: 0.6,
+      );
+      _juice.hit(b.pos, _colorOf(b.id), sparks: 8);
+      _juice.popup(
+          b.pos.translate(0, -_bodyRadius * 1.8), 'POWER!', _starColor,
+          size: 30);
+      return;
+    }
   }
 
   // ── Ring-out detection (uses the shrinking radius) ──────────────────────────
@@ -485,11 +560,25 @@ class BumperBalls extends MiniGameBase {
 
       _juice.ko(b.pos, _colorOf(b.id));
       _spawnImpact(b.pos, _colorOf(b.id));
+      // A fatter eject flourish: an extra outward spark fan + a punchier popup
+      // so the knockout reads as a big moment kids cheer for.
+      final outDir = _normalize(b.pos - _center);
+      _juice.particles.burst(
+        at: b.pos,
+        count: 16,
+        color: _colorOf(b.id),
+        speed: 360,
+        baseAngle: math.atan2(outDir.dy, outDir.dx),
+        spread: math.pi * 0.9,
+        size: 7,
+        gravity: 220,
+        life: 0.7,
+      );
       _juice.popup(
         b.pos.translate(0, -_bodyRadius * (1.6 + _koPopLift)),
         'RING OUT!',
         _popupColor,
-        size: 34,
+        size: 40,
       );
     }
   }
@@ -498,6 +587,15 @@ class BumperBalls extends MiniGameBase {
 
   void _resolveOutcome() {
     final alive = _arena.aliveBodies;
+    // Announce the climax exactly once with a shake + center popup; the
+    // fast-shrink platform + banner then carry the moment.
+    if (!_suddenDeathAnnounced && _isSuddenDeath && alive.length > 1) {
+      _suddenDeathAnnounced = true;
+      _juice.shake.medium();
+      _juice.popup(_center.translate(0, -_currentRingRadius * 0.2),
+          'SUDDEN DEATH', _popupColor,
+          size: 38);
+    }
     if (alive.length <= 1) {
       _finishRanked(alive);
       return;
@@ -536,8 +634,16 @@ class BumperBalls extends MiniGameBase {
       t: _animClock,
     );
 
+    final star = _stars.star;
+    if (star != null) BumperFx.drawStar(canvas, star);
+
     _drawBalls(canvas);
     _drawImpacts(canvas);
+
+    if (_isSuddenDeath) {
+      BumperFx.drawSuddenDeathBanner(
+          canvas, size, _arena.aliveBodies.length > 1 ? 1.0 : 0.0, _animClock);
+    }
 
     _juice.render(canvas);
     canvas.restore();
@@ -565,6 +671,21 @@ class BumperBalls extends MiniGameBase {
 
       // Player-colour ground id ring so each ball is always identifiable.
       BumperRenderer.drawIdRing(canvas, ground, b.radius, color, b.id + 1);
+
+      // A pulsing gold aura while the star buff is active so the table sees who
+      // is dangerous right now.
+      if (state != null && state.buffed) {
+        final pulse = 0.5 + 0.5 * math.sin(_animClock * 6.0);
+        canvas.drawCircle(
+          b.pos,
+          b.radius * (1.5 + 0.18 * pulse),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = b.radius * 0.16
+            ..color = _starColor
+                .withValues(alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0)),
+        );
+      }
 
       // Motion trail behind a recent dash / fast drift.
       final trail = state?.trail;
@@ -660,70 +781,4 @@ class BumperBalls extends MiniGameBase {
     if (d < 1e-6) return Offset.zero;
     return v / d;
   }
-}
-
-/// Per-player ball control + bookkeeping: sweeping aim, charge while held,
-/// cooldown, impact squash, stretch heading and the active trail. Mutable
-/// round-scoped state (allowed for one round).
-class _BallState {
-  double aim; // current aim angle (radians)
-  bool charging = false;
-  double charge = 0; // 0..1 while held
-  double _cooldown = 0; // seconds remaining until ready
-  double squash = 0; // current squash amount (relaxes toward 0)
-  Offset stretchDir = const Offset(1, 0); // axis the squash/stretch acts along
-  _DashTrail? trail;
-
-  _BallState({required this.aim});
-
-  bool get ready => _cooldown <= 0;
-
-  void tick(double dt, double squashDecayPerSec) {
-    if (_cooldown > 0) _cooldown = math.max(0, _cooldown - dt);
-    if (squash != 0) {
-      final relax = squashDecayPerSec * dt;
-      squash = squash > 0
-          ? math.max(0, squash - relax)
-          : math.min(0, squash + relax);
-    }
-    if (trail != null) {
-      trail!.life -= dt;
-      if (trail!.life <= 0) trail = null;
-    }
-  }
-
-  void fire(double cooldownSec) => _cooldown = cooldownSec;
-
-  /// Stamp an impact squash flattening along [dir] (kept as the larger of the
-  /// current and new magnitude so rapid double-hits still read).
-  void bump(double amount, Offset dir) {
-    if (amount.abs() > squash.abs()) {
-      squash = -amount.abs(); // negative = flatten on impact
-      if (dir != Offset.zero) stretchDir = dir;
-    }
-  }
-}
-
-/// A short-lived directional trail anchor for a dash / fast drift.
-class _DashTrail {
-  final Offset dir;
-  double life;
-  final double maxLife;
-  _DashTrail({required this.dir, required this.life}) : maxLife = life;
-
-  /// 0..1 trail strength (fades over its life).
-  double get strength => maxLife <= 0 ? 0 : (life / maxLife).clamp(0.0, 1.0);
-}
-
-/// A short-lived expanding impact spark ring stamped at a collision/KO point.
-class _ImpactRing {
-  final Offset at;
-  final Color color;
-  double life;
-  final double maxLife;
-  _ImpactRing({required this.at, required this.color, required this.life})
-      : maxLife = life;
-
-  /// 0..1 animation progress (0 = just spawned, 1 = done).
-  double get progress => maxLife <= 0 ? 1 : (1 - life / maxLife).clamp(0.0, 1.0);
 }

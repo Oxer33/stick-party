@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import '../../art/stick/stick_figure.dart';
+import 'striker.dart';
 
 /// One side's accent + score, packaged so the renderer never reaches into game
 /// state. Immutable value type.
@@ -66,6 +67,29 @@ class SoccerActor {
     this.trailDir = Offset.zero,
     this.trailStrength = 0,
   });
+
+  /// Build an actor for the player at [feet] (figure planted on its disc), 1-based
+  /// [number], with the optional kick [trail] supplying the streak + flash.
+  factory SoccerActor.fromParts({
+    required int playerId,
+    required Offset feet,
+    required double radius,
+    required StickFigure figure,
+    required Color color,
+    DashTrail? trail,
+  }) =>
+      SoccerActor(
+        figure: figure,
+        root: feet, // pelvis anchors at feet so the stick stands on its disc
+        feet: feet,
+        radius: radius,
+        color: color,
+        number: playerId + 1,
+        kickFlash: trail?.strength ?? 0,
+        trailFrom: trail?.from,
+        trailDir: trail?.dir ?? Offset.zero,
+        trailStrength: trail?.strength ?? 0,
+      );
 }
 
 /// Pure-Canvas rendering for One-Touch Soccer. Holds NO game state and never

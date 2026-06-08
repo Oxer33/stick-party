@@ -1,7 +1,11 @@
 /// The home-menu centerpiece: a row of four animated procedural stickmen in the
-/// player palette colors (red / blue / green / yellow). Each idles with a gentle
-/// breathing bob and periodically throws a celebratory flourish, so the menu
-/// reads as a living party lineup rather than a static logo.
+/// player palette colors (red / blue / green / yellow). Rather than idling with
+/// a single canned flourish, each mascot runs a little personality loop — it
+/// breathes, then at random intervals picks a fresh stunt from a playlist
+/// (springy JUMP with a real arc, a RUN-in-place burst, a DASH, a CAST, a
+/// SPECIAL cheer, or an attack COMBO). Phases are staggered per figure, so the
+/// lineup reads as a lively, rowdy party crew rather than four clones doing the
+/// same wave.
 ///
 /// No image assets — everything is the procedural [StickFigure] art.
 ///
@@ -32,8 +36,20 @@ const double _kBandHeight = 132;
 /// Figure scale relative to the base hero proportions.
 const double _kFigureScale = 1.18;
 
-/// Seconds between a figure's celebratory flourishes.
-const double _kCheerPeriod = 3.2;
+/// Gentle breathing bob amplitude (px).
+const double _kBobAmplitude = 3.0;
+
+/// Peak height of a mascot's springy jump (px).
+const double _kJumpHeight = 26.0;
+
+/// Min / max seconds a mascot rests (idle breathing) between stunts.
+const double _kRestMin = 0.7;
+const double _kRestMax = 2.4;
+
+/// Duration of a JUMP arc and a RUN-in-place burst (seconds).
+const double _kJumpDur = 0.62;
+const double _kRunBurstMin = 0.7;
+const double _kRunBurstMax = 1.4;
 
 /// An animated lineup of player-colored stickmen. Drop into the hero section.
 class HomeMascots extends StatefulWidget {
@@ -77,9 +93,13 @@ class _HomeMascotsState extends State<HomeMascots>
       _mascots.add(
         _Mascot(
           figure: figure,
-          // Stagger phases so the lineup breathes and cheers out of sync.
+          // A per-figure RNG seeded by index keeps each mascot's stunt order
+          // varied yet stable for the widget's lifetime.
+          rng: math.Random(0x5715 + i * 97),
+          // Stagger phases + first-stunt delays so the lineup never moves in
+          // lockstep — one's mid-jump while another is just winding up.
           bobPhase: i * 0.7,
-          cheerOffset: i * (_kCheerPeriod / _kMascotCount),
+          restTimer: 0.35 + i * 0.5,
         ),
       );
     }
@@ -109,14 +129,7 @@ class _HomeMascotsState extends State<HomeMascots>
     final double now = elapsed.inMicroseconds / 1e6;
 
     for (final _Mascot m in _mascots) {
-      m.figure.update(clampedDt);
-      m.bob = math.sin((now + m.bobPhase) * 1.6) * 3.0;
-      // Fire a flourish on each period boundary (only once per crossing).
-      final double cyclePos = (now + m.cheerOffset) % _kCheerPeriod;
-      if (cyclePos < m.lastCyclePos && !m.figure.actionPlaying) {
-        m.celebrate();
-      }
-      m.lastCyclePos = cyclePos;
+      m.tick(clampedDt, now);
     }
     _frame.value++;
   }
@@ -143,34 +156,132 @@ class _HomeMascotsState extends State<HomeMascots>
   }
 }
 
+/// The stunts a mascot can perform between rests.
+enum _Stunt { jump, run, dash, special, cast, combo }
+
 /// Per-figure animation bookkeeping (mutable; lives for the widget's lifetime).
 class _Mascot {
   _Mascot({
     required this.figure,
+    required this.rng,
     required this.bobPhase,
-    required this.cheerOffset,
+    required this.restTimer,
   });
 
   final StickFigure figure;
+  final math.Random rng;
   final double bobPhase;
-  final double cheerOffset;
 
-  /// Current vertical bob offset (px).
-  double bob = 0;
+  /// Gentle vertical breathing (px), recomputed each tick.
+  double _bob = 0;
 
-  /// Tracks the cheer cycle to detect period wrap-around.
-  double lastCyclePos = 0;
+  /// Vertical lift from an active jump arc (px, <= 0 = up).
+  double _jumpY = 0;
 
-  /// Alternates between two celebratory flourishes for variety.
-  bool _flip = false;
+  /// Total vertical offset the painter applies to the render root.
+  double get yOffset => _bob + _jumpY;
 
-  void celebrate() {
-    if (_flip) {
-      figure.special();
-    } else {
-      figure.dash();
+  /// Seconds left before the next stunt is chosen (>0 ⇒ resting/idle).
+  double restTimer;
+
+  /// The stunt currently playing, if any.
+  _Stunt? _active;
+
+  /// Progress timer + duration for timed stunts (jump / run).
+  double _t = 0;
+  double _dur = 0;
+
+  /// Cycles attack combos for variety.
+  int _comboIndex = 0;
+
+  /// Weighted playlist: springy jumps + run bursts are the eye-catchers, with
+  /// upper-body flourishes mixed in. Repeated entries bias the random pick.
+  static const List<_Stunt> _playlist = <_Stunt>[
+    _Stunt.jump,
+    _Stunt.jump,
+    _Stunt.run,
+    _Stunt.dash,
+    _Stunt.special,
+    _Stunt.cast,
+    _Stunt.combo,
+  ];
+
+  void tick(double dt, double now) {
+    figure.update(dt);
+    _bob = math.sin((now + bobPhase) * 1.6) * _kBobAmplitude;
+
+    if (_active == _Stunt.jump) {
+      _t += dt;
+      final double p = (_t / _dur).clamp(0.0, 1.0);
+      // Parabolic arc: 0 → up → 0.
+      _jumpY = -_kJumpHeight * math.sin(math.pi * p);
+      // Swap to a falling pose past the apex for a believable landing.
+      if (p >= 0.55 && figure.loco == LocoState.jump) {
+        figure.setLoco(LocoState.fall);
+      }
+      if (p >= 1.0) {
+        _jumpY = 0;
+        figure.setLoco(LocoState.idle);
+        figure.land();
+        _endStunt();
+      }
+      return;
     }
-    _flip = !_flip;
+
+    if (_active == _Stunt.run) {
+      _t += dt;
+      if (_t >= _dur) {
+        figure.setLoco(LocoState.idle);
+        _endStunt();
+      }
+      return;
+    }
+
+    // One-shot upper-body stunts (dash/special/cast/combo) just play out on the
+    // animator; we wait for them to finish before resting.
+    if (_active != null) {
+      if (!figure.actionPlaying) _endStunt();
+      return;
+    }
+
+    // Resting: count down, then launch a fresh stunt.
+    restTimer -= dt;
+    if (restTimer <= 0 && !figure.actionPlaying) _startStunt();
+  }
+
+  void _endStunt() {
+    _active = null;
+    _t = 0;
+    restTimer = _kRestMin + rng.nextDouble() * (_kRestMax - _kRestMin);
+  }
+
+  void _startStunt() {
+    final _Stunt s = _playlist[rng.nextInt(_playlist.length)];
+    _active = s;
+    _t = 0;
+    switch (s) {
+      case _Stunt.jump:
+        _dur = _kJumpDur;
+        figure.setLoco(LocoState.jump);
+        break;
+      case _Stunt.run:
+        _dur =
+            _kRunBurstMin + rng.nextDouble() * (_kRunBurstMax - _kRunBurstMin);
+        figure.setLoco(LocoState.run);
+        break;
+      case _Stunt.dash:
+        figure.dash();
+        break;
+      case _Stunt.special:
+        figure.special();
+        break;
+      case _Stunt.cast:
+        figure.cast();
+        break;
+      case _Stunt.combo:
+        figure.attack(_comboIndex++);
+        break;
+    }
   }
 }
 
@@ -199,25 +310,28 @@ class _MascotPainter extends CustomPainter {
     for (int i = 0; i < n; i++) {
       final _Mascot m = mascots[i];
       final double cx = slot * (i + 0.5);
-      final Offset root = Offset(cx, baseline + m.bob);
-      // Soft ground glow under each mascot for grounding.
-      _drawGroundGlow(canvas, m, root, slot);
+      final Offset root = Offset(cx, baseline + m.yOffset);
+      // Soft ground glow under each mascot for grounding. Anchored to the ground
+      // (not the jump), and it shrinks a touch as the mascot leaps for "lift".
+      _drawGroundGlow(canvas, m, baseline, cx, slot);
       m.figure.render(canvas, root);
     }
   }
 
-  void _drawGroundGlow(Canvas canvas, _Mascot m, Offset root, double slot) {
+  void _drawGroundGlow(
+      Canvas canvas, _Mascot m, double baseline, double cx, double slot) {
     final Color tint = m.figure.style.outline;
-    final double gy = root.dy + 56;
+    final double gy = baseline + 56;
+    // Higher leaps cast a smaller, fainter pool — a subtle airborne cue.
+    final double lift = (-m.yOffset / _kJumpHeight).clamp(0.0, 1.0);
+    final double r = slot * (0.42 - 0.10 * lift);
+    final double a = 0.20 * (1.0 - 0.45 * lift);
     _glowPaint.shader = ui.Gradient.radial(
-      Offset(root.dx, gy),
-      slot * 0.42,
-      <Color>[
-        tint.withValues(alpha: 0.20),
-        tint.withValues(alpha: 0.0),
-      ],
+      Offset(cx, gy),
+      r,
+      <Color>[tint.withValues(alpha: a), tint.withValues(alpha: 0.0)],
     );
-    canvas.drawCircle(Offset(root.dx, gy), slot * 0.42, _glowPaint);
+    canvas.drawCircle(Offset(cx, gy), r, _glowPaint);
   }
 
   @override

@@ -91,11 +91,23 @@ class ColorMemory extends MiniGameBase {
   static const int _palette = 4;
   static const double _timeLimit = 45;
   static const double _showStepSec = 0.6; // per-color flash during showing (slow, clear)
+  static const double _showStepMinSec = 0.34; // floor as the show speeds up
   static const double _showLeadSec = 0.5; // calm beat before the light show
   static const double _roundDeadlineSec = 8.0; // generous cap on one input phase
   static const int _maxSeqLen = 20; // absolute cap so it always terminates
   static const int _startSeqLen = 1;
   static const int _round1Retries = 1; // forgiving extra tries on round 1
+
+  // ── Climax: the DRUMROLL on a long pattern (the unmistakable peak) ──────────
+  // Once the sequence reaches [_climaxSeqLen] the light show speeds up toward
+  // [_showStepMinSec] (a longer pattern flashed faster = the hardest recall) and
+  // a one-shot "DRUMROLL!" banner + a tightening tick of shakes during the
+  // lead-in announces that this is the big one. Pure tension; the forgiving
+  // round-1 retry is untouched.
+  static const int _climaxSeqLen = 5; // sequence length that triggers the drumroll
+  static const int _speedUpRefLen = 9; // pattern length that reaches the floor
+  static const double _drumrollTickSec = 0.12; // gap between lead-in drum ticks
+  static const Color _white = Color(0xFFFFFFFF); // climax banner ink
 
   // ── Bot memory model (fairness) ─────────────────────────────────────────────
   // A bot rolls ONE planned slip per round (not per entry). The chance it slips
@@ -131,6 +143,8 @@ class ColorMemory extends MiniGameBase {
   double _phaseTimer = 0; // time spent in the current phase
   int _showIndex = -1; // which sequence color is flashing (-1 = lead-in)
   int _round = 1; // 1-based round counter (== sequence length)
+  bool _drumrollAnnounced = false; // the climax banner fired for this round
+  double _drumrollAcc = 0; // banks lead-in time toward each drum tick
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -157,6 +171,23 @@ class ColorMemory extends MiniGameBase {
     _phase = _Phase.showing;
     _phaseTimer = 0;
     _showIndex = -1; // lead-in beat before the first color lights
+    _drumrollAnnounced = false;
+    _drumrollAcc = 0;
+  }
+
+  /// True when the current pattern is long enough to be a climax round (the
+  /// faster, drumrolled "big one").
+  bool get _isClimaxRound => _sequence.length >= _climaxSeqLen;
+
+  /// Per-color flash duration for the CURRENT pattern: a long pattern is flashed
+  /// faster (toward [_showStepMinSec]) so recall gets genuinely harder near the
+  /// end, while short early patterns stay slow and clear for little kids.
+  double _currentShowStepSec() {
+    final len = _sequence.length;
+    if (len <= _climaxSeqLen) return _showStepSec;
+    final span = (_speedUpRefLen - _climaxSeqLen).clamp(1, _maxSeqLen);
+    final t = ((len - _climaxSeqLen) / span).clamp(0.0, 1.0);
+    return _showStepSec + (_showStepMinSec - _showStepSec) * t;
   }
 
   void _enterInput() {
@@ -300,7 +331,7 @@ class ColorMemory extends MiniGameBase {
     }
 
     if (_phase == _Phase.showing) {
-      _updateShowing();
+      _updateShowing(sdt);
     } else {
       _updateInput(sdt);
     }
@@ -311,18 +342,40 @@ class ColorMemory extends MiniGameBase {
   /// Flash through the sequence (the light show): each step blooms every alive
   /// player's matching pad in lockstep + pops a spark at the central orb;
   /// advance to input once all colors have shown.
-  void _updateShowing() {
-    final total = _showLeadSec + _sequence.length * _showStepSec;
+  void _updateShowing(double dt) {
+    final step = _currentShowStepSec();
+    final total = _showLeadSec + _sequence.length * step;
+
+    // On a climax round, the lead-in is a building drumroll: a one-shot banner
+    // plus a tightening tick of soft shakes so the kids feel the big one coming.
+    if (_isClimaxRound && _showIndex < 0) _runDrumroll(dt);
+
     // Index of the color currently flashing, or -1 during the lead-in beat.
     final next = _phaseTimer < _showLeadSec
         ? -1
-        : ((_phaseTimer - _showLeadSec) ~/ _showStepSec)
+        : ((_phaseTimer - _showLeadSec) ~/ step)
             .clamp(0, _sequence.length - 1);
     if (next != _showIndex) {
       _showIndex = next;
       if (next >= 0) _flashSequenceColor(_sequence[next]);
     }
     if (_phaseTimer >= total) _enterInput();
+  }
+
+  /// The lead-in drumroll for a climax round: announce it once, then bank time
+  /// toward evenly spaced soft shake "drum" ticks until the first color lights.
+  void _runDrumroll(double dt) {
+    if (!_drumrollAnnounced) {
+      _drumrollAnnounced = true;
+      final center = Offset(_lastSize.width / 2, _lastSize.height * 0.30);
+      _juice.popup(center, 'DRUMROLL!', _white, size: 34);
+    }
+    _drumrollAcc += dt;
+    var guard = 0;
+    while (_drumrollAcc >= _drumrollTickSec && guard++ < 8) {
+      _drumrollAcc -= _drumrollTickSec;
+      _juice.shake.light();
+    }
   }
 
   /// One light-show beat: bloom the color on every alive cluster + a central
@@ -490,8 +543,9 @@ class ColorMemory extends MiniGameBase {
   /// across [_flashHoldFrac] of the step so each color reads as a distinct beat.
   double _activeFlashStrength() {
     if (_phase != _Phase.showing || _showIndex < 0) return 0;
-    final intoStep = (_phaseTimer - _showLeadSec) - _showIndex * _showStepSec;
-    final hold = _showStepSec * _flashHoldFrac;
+    final step = _currentShowStepSec();
+    final intoStep = (_phaseTimer - _showLeadSec) - _showIndex * step;
+    final hold = step * _flashHoldFrac;
     if (intoStep < 0 || intoStep > hold) return 0;
     return (1.0 - intoStep / hold).clamp(0.0, 1.0);
   }

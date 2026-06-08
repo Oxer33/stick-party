@@ -125,6 +125,44 @@ void main() {
             '(short=$shortHold long=$longHold)');
   });
 
+  test('DOUBLE INK: a single splat covers more in the finale than early', () {
+    // CLIMAX mechanic. One quick tap (a single splat) at the same spot covers
+    // strictly MORE cells during the DOUBLE INK finale than the same tap early
+    // in the round, because the finale fattens the splat radius. Solo human so
+    // the score is exactly that one player's coverage.
+    int coverageForSingleTapAt(double warmupSeconds) {
+      final ctx = MiniGameContext(
+        players: [PlayerSlot.defaults(0)], // lone human
+        arena: const Size(800, 1200),
+        rng: SeededRng(9),
+        zones: ZoneLayout.forPlayers(1),
+      );
+      final g = PaintSplash()..init(ctx);
+      var n = 0;
+      var tapped = false;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+        g.update(1 / 60);
+        if (!tapped && n / 60.0 >= warmupSeconds) {
+          // A single down splat at the zone center; do not hold (no follow-up
+          // ticks) so exactly one splat lands and we measure its footprint.
+          g.onInput(const PlayerInput(
+              playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5)));
+          tapped = true;
+        }
+      }
+      expect(g.status, MiniGameStatus.finished);
+      return g.scores.of(0).toInt();
+    }
+
+    // Early single tap (~1s in, normal radius) vs a tap inside the last ~6s
+    // DOUBLE INK window of the 30s round (~27s in, fattened radius).
+    final early = coverageForSingleTapAt(1.0);
+    final finale = coverageForSingleTapAt(27.0);
+    expect(finale, greaterThan(early),
+        reason: 'a DOUBLE INK splat must paint a bigger footprint '
+            '(early=$early finale=$finale)');
+  });
+
   test('render does not throw', () {
     final g = PaintSplash()..init(ctxFor(4, 3));
     final canvas = Canvas(PictureRecorder());

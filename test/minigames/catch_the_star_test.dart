@@ -72,4 +72,48 @@ void main() {
     g.onInput(PlayerInput.down(0, const Offset(0.25, 0.75)));
     expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
   });
+
+  test('GOLD RUSH flurry: the final window still scores hard (climax)', () {
+    // CLIMAX mechanic. A solo human parked on the 1p catcher anchor (the zone
+    // center) taps every frame, so it snatches whatever spawns. We snapshot the
+    // score the moment the flurry begins (the last 7s of the 30s round) and
+    // require a meaningful score gain across that flurry — i.e. the finish is a
+    // live gold storm rather than a dead tail.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0)], // lone human; catcher at (0.5, 0.5)
+      arena: const Size(800, 1200),
+      rng: SeededRng(7),
+      zones: ZoneLayout.forPlayers(1),
+    );
+    final g = CatchTheStar()..init(ctx);
+    const tapAt = Offset(0.5, 0.5);
+
+    var frames = 0;
+    num scoreAtFlurryStart = -1;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 45) {
+      g.update(1 / 60);
+      g.onInput(PlayerInput.down(0, tapAt));
+      // The flurry is the last 7s of the 30s round → starts at ~23s.
+      if (scoreAtFlurryStart < 0 && frames / 60.0 >= 23.0) {
+        scoreAtFlurryStart = g.scores.of(0);
+      }
+    }
+    expect(g.status, MiniGameStatus.finished);
+    expect(scoreAtFlurryStart, greaterThanOrEqualTo(0));
+    expect(g.scores.of(0) - scoreAtFlurryStart, greaterThan(0),
+        reason: 'the GOLD RUSH flurry must keep scoring to the very end');
+  });
+
+  test('finishes within the limit with constant tapping (flurry on)', () {
+    // The end flurry must not break termination: still a fixed ~30s sprint.
+    final g = CatchTheStar()..init(ctxFor(4, 21));
+    var frames = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 45) {
+      g.update(1 / 60);
+      g.onInput(PlayerInput.down(0, const Offset(0.25, 0.75)));
+    }
+    expect(g.status, MiniGameStatus.finished);
+    expect(frames / 60.0, greaterThan(1.5));
+    expect(frames / 60.0, lessThanOrEqualTo(31.0));
+  });
 }

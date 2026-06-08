@@ -621,6 +621,49 @@ class FallingRenderer {
     );
   }
 
+  // ── Golden token (chaos pickup) ────────────────────────────────────────────
+
+  static const Color _tokenGold = Color(0xFFFFB31E);
+  static const Color _tokenGoldHi = Color(0xFFFFE99A);
+
+  /// A glowing golden coin to scoop for bonus points. Stacked translucent halos
+  /// (no blur), a filled disc with a rim, and a twinkle that pulses with [t].
+  static void drawToken(Canvas canvas, Offset center, double size, double t) {
+    final r = size * 0.5;
+    final pulse = 0.5 + 0.5 * math.sin(t * 6.0);
+    // Soft halos.
+    canvas.drawCircle(center, r * (2.4 + 0.5 * pulse),
+        Paint()..color = _tokenGold.withValues(alpha: 0.14));
+    canvas.drawCircle(center, r * (1.7 + 0.3 * pulse),
+        Paint()..color = _tokenGold.withValues(alpha: 0.26));
+    // Coin body with a soft top→bottom gradient.
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..shader = Gradient.linear(
+          center.translate(0, -r),
+          center.translate(0, r),
+          [_tokenGoldHi, _tokenGold],
+        ),
+    );
+    // Rim.
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, r * 0.16)
+        ..color = _tokenGoldHi.withValues(alpha: 0.9),
+    );
+    // Twinkle.
+    canvas.drawCircle(
+      center.translate(-r * 0.28, -r * 0.28),
+      r * 0.26,
+      Paint()..color = _white.withValues(alpha: 0.5 + 0.4 * pulse),
+    );
+  }
+
   // ── Runner figure passthrough ─────────────────────────────────────────────
 
   /// Render the stick runner. Kept here so the painter call lives with the rest

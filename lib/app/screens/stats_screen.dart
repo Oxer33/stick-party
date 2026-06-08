@@ -10,10 +10,11 @@ import '../../engine/registry.dart';
 import '../../meta/achievements.dart';
 import '../../meta/progress_store.dart';
 import '../providers.dart';
-import '../widgets/glass_kit.dart';
+import '../widgets/game_glyphs.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/glass_tokens.dart';
 import '../widgets/ui_kit.dart';
+import 'premium_card.dart';
 
 class StatsScreen extends ConsumerWidget {
   const StatsScreen({super.key});
@@ -85,27 +86,24 @@ class StatsScreen extends ConsumerWidget {
     progress.recordsByGame.forEach((String gameId, int value) {
       rows.add(
         Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: GlassPanel(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  child: Text(
-                    _gameName(gameId),
-                    style:
-                        GlassText.heading.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                ),
-                Text(
-                  '$value',
-                  style: const TextStyle(
-                    color: GlassColors.cyan,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 16,
-                  ),
-                ),
-              ],
+          padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
+          child: PremiumMediaTile(
+            accent: GlassColors.cyan,
+            leading: GameGlyph(
+              id: gameId,
+              label: _gameName(gameId),
+              colorArgb: GlassColors.cyan.toARGB32(),
+              size: 44,
+            ),
+            title: _gameName(gameId),
+            supporting: 'Best score',
+            trailing: Text(
+              '$value',
+              style: const TextStyle(
+                color: GlassColors.cyan,
+                fontWeight: FontWeight.w900,
+                fontSize: 18,
+              ),
             ),
           ),
         ),
@@ -134,12 +132,13 @@ class _AchievementTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final bool unlocked = achievement.isUnlocked(snapshot);
     final int current = achievement.currentProgress(snapshot);
+    final Color accent = unlocked ? GlassColors.amber : GlassColors.textMuted;
     return Padding(
       padding: const EdgeInsets.only(bottom: GlassTokens.gap),
-      child: GlassPanel(
-        tint: unlocked ? GlassColors.amber : null,
-        tintOpacity: 0.12,
-        borderColor: unlocked ? GlassColors.amber.withValues(alpha: 0.7) : null,
+      child: PremiumPanel(
+        accent: accent,
+        highlight: unlocked,
+        glow: unlocked,
         padding: const EdgeInsets.all(14),
         child: Row(
           children: <Widget>[

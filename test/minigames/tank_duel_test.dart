@@ -5,6 +5,7 @@ import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/minigames/tank_duel/tank_duel.dart';
+import 'package:stick_party/minigames/tank_duel/tank_fx.dart';
 
 void main() {
   MiniGameContext ctxFor(int n, {int seed = 7}) {
@@ -132,5 +133,50 @@ void main() {
       g.update(1 / 60);
     }
     expect(g.status, MiniGameStatus.finished);
+  });
+
+  group('AirdropController (chaos pickup)', () {
+    final field = const Rect.fromLTRB(60, 60, 740, 1140);
+    AirdropController make() => AirdropController(
+          half: 18,
+          firstDropSec: 3.0,
+          respawnSec: 5.0,
+          lifeSec: 6.0,
+          appearPerSec: 3.0,
+          bobPerSec: 2.0,
+        );
+
+    test('drops inside the central band after its delay and eases in', () {
+      final c = make();
+      final rng = SeededRng(4);
+      // Before the delay: nothing.
+      for (var i = 0; i < 60; i++) {
+        c.tick(1 / 60, rng, field);
+      }
+      expect(c.crate, isNull);
+      // Past the delay + ease-in: a ready crate in the central band.
+      for (var i = 0; i < 60 * 3; i++) {
+        c.tick(1 / 60, rng, field);
+      }
+      final crate = c.crate;
+      expect(crate, isNotNull);
+      expect(crate!.ready, isTrue);
+      expect(crate.pos.dy, greaterThan(field.top + field.height * 0.31));
+      expect(crate.pos.dy, lessThan(field.bottom - field.height * 0.31));
+    });
+
+    test('contains() is true only at a ready crate; consume clears it', () {
+      final c = make();
+      final rng = SeededRng(5);
+      for (var i = 0; i < 60 * 4; i++) {
+        c.tick(1 / 60, rng, field);
+      }
+      final crate = c.crate!;
+      expect(c.contains(crate.pos), isTrue);
+      expect(c.contains(crate.pos + const Offset(500, 0)), isFalse);
+      c.consume();
+      expect(c.crate, isNull);
+      expect(c.contains(crate.pos), isFalse);
+    });
   });
 }

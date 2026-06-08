@@ -44,6 +44,22 @@ class CatchTheStar extends MiniGameBase {
   static const double _timeLimit = 30;
   static const double _snatchRadius = 0.17; // normalized snatch distance
 
+  // ── Climax: the GOLD RUSH flurry (the unmistakable peak near the end) ───────
+  // In the last [_flurrySec] every fresh star is (almost) always golden, bigger
+  // and worth its bonus — a frantic shouting finish where a trailing player can
+  // still swing the round. A one-shot cue (banner + shake + burst) announces it.
+  static const double _flurrySec = 7.0; // length of the end flurry
+  static const double _flurryGoldenChance = 0.92; // golden odds during flurry
+  static const double _flurryStarScale = 1.5; // mega-star radius multiplier
+  static const double _flurrySpawnPopScale = 0.55; // faster respawns in flurry
+
+  // ── Comeback: a subtle catch-up for trailing players ───────────────────────
+  // A player below the leader gets a slightly wider effective snatch radius,
+  // scaled by how far behind they are (capped). Kept gentle so a strong player
+  // still usually wins, but a struggling kid stays in the shouting.
+  static const double _comebackMaxBonus = 0.06; // max extra snatch radius (norm)
+  static const int _comebackRefGap = 6; // score gap that earns the full bonus
+
   // ── Star motion tuning (normalized units / sec) ────────────────────────────
   // The star is a touch slower than a pure chase so the catchable window over a
   // catcher feels generous (you can still miss it), and its waypoints are biased
@@ -104,6 +120,7 @@ class CatchTheStar extends MiniGameBase {
   double _retargetAcc = 0;
   double _trailAcc = 0;
   double _spawnPop = 0; // 1 right after a teleport, decays to 0
+  bool _flurryAnnounced = false; // the GOLD RUSH cue fired once
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -192,7 +209,7 @@ class CatchTheStar extends MiniGameBase {
   bool _trySnatch(int id) {
     final c = _catcherOf(id);
     if (c == null) return false;
-    if ((_star - c.pos).distance > _snatchRadius) return false;
+    if ((_star - c.pos).distance > _snatchRadiusFor(c)) return false;
 
     final wasGolden = _golden;
     final combo = c.registerCatch(_comboWindowSec, _comboMax);
@@ -242,8 +259,9 @@ class CatchTheStar extends MiniGameBase {
     // Aim straight back toward a catcher so the star re-enters the action fast
     // after popping in far away, instead of drifting through empty sky first.
     _target = _nextWaypoint();
-    _golden = ctx.rng.chance(_goldenChance);
-    _spawnPop = 1;
+    _golden = ctx.rng.chance(_goldenChanceNow());
+    // Snappier pop-in during the flurry so goldens keep flooding the field.
+    _spawnPop = _inFlurry ? _flurrySpawnPopScale : 1;
     final toTarget = _target - _star;
     _vel = toTarget.distance < 1e-6
         ? Offset.zero
@@ -264,6 +282,7 @@ class CatchTheStar extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
+    _maybeAnnounceFlurry();
     _moveStar(sdt);
     _sampleTrail(sdt);
     _driveBots(sdt);
@@ -273,6 +292,44 @@ class CatchTheStar extends MiniGameBase {
   }
 
   double _currentMaxSpeed() => _maxSpeed * (_golden ? _goldenSpeedBoost : 1.0);
+
+  /// True once the round enters its final GOLD RUSH flurry window.
+  bool get _inFlurry => _elapsed >= _timeLimit - _flurrySec;
+
+  /// Golden odds for a freshly spawned star: the usual chance early, ramping to
+  /// [_flurryGoldenChance] in the end flurry so the finish is a gold storm.
+  double _goldenChanceNow() => _inFlurry ? _flurryGoldenChance : _goldenChance;
+
+  /// Fire the one-shot GOLD RUSH cue the moment the flurry begins: a banner
+  /// popup, a shake and a bright burst so every kid knows the big finish is on.
+  void _maybeAnnounceFlurry() {
+    if (_flurryAnnounced || !_inFlurry) return;
+    _flurryAnnounced = true;
+    final center = Offset(_lastSize.width / 2, _lastSize.height * 0.42);
+    _juice.popup(center, 'GOLD RUSH!', _goldenBody, size: 46);
+    _juice.shake.medium();
+    _juice.particles.burst(
+      at: center,
+      count: 22,
+      color: _goldenGlow,
+      speed: 360,
+      size: 7,
+      life: 0.8,
+    );
+  }
+
+  /// Effective snatch radius for [c]: the base reach plus a subtle comeback bonus
+  /// for a player trailing the current leader (scaled by the gap, capped). The
+  /// leader (and a fresh round at 0–0) gets exactly the base radius, so better
+  /// players still win — laggards just get a slightly more forgiving window.
+  double _snatchRadiusFor(_Catcher c) {
+    final lead = _leaderScore();
+    if (lead <= 0) return _snatchRadius;
+    final behind = lead - scoreOf(c.playerId).toInt();
+    if (behind <= 0) return _snatchRadius;
+    final t = (behind / _comebackRefGap).clamp(0.0, 1.0);
+    return _snatchRadius + _comebackMaxBonus * t;
+  }
 
   /// Steer the star toward its waypoint with smooth acceleration + a speed cap,
   /// re-picking a waypoint on arrival or timeout, and softly bouncing off the
@@ -345,7 +402,7 @@ class CatchTheStar extends MiniGameBase {
     for (final c in _catchers) {
       final clock = c.clock;
       if (clock == null) continue;
-      final inRange = (_star - c.pos).distance <= _snatchRadius;
+      final inRange = (_star - c.pos).distance <= _snatchRadiusFor(c);
       if (!inRange) continue;
       if (!clock.tick(dt)) continue;
       clock.arm(ctx.botProfile, ctx.rng);
@@ -421,11 +478,14 @@ class CatchTheStar extends MiniGameBase {
   }
 
   void _drawCatchers(Canvas canvas) {
-    final reach = _snatchRadius * _minSide;
     final starPx = _toPixels(_star);
     for (final c in _catchers) {
       final center = _toPixels(c.pos);
-      final inRange = (_star - c.pos).distance <= _snatchRadius;
+      // Draw the catcher at its effective reach so a trailing player's wider
+      // comeback window is visible (and the in-range telegraph stays honest).
+      final radius = _snatchRadiusFor(c);
+      final reach = radius * _minSide;
+      final inRange = (_star - c.pos).distance <= radius;
       // Hint line to a near-catch (drawn under the catcher art).
       if (inRange) {
         CatchRenderer.drawSnatchHint(canvas, center, starPx, c.color, 1.0);
@@ -452,7 +512,8 @@ class CatchTheStar extends MiniGameBase {
   }
 
   void _drawStar(Canvas canvas) {
-    final r = _starRadiusFrac * _minSide;
+    // During the GOLD RUSH the star swells into a readable mega-star.
+    final r = _starRadiusFrac * _minSide * (_inFlurry ? _flurryStarScale : 1.0);
     final pulse = 0.5 + 0.5 * math.sin(_animClock * 5.0);
     final rot = _animClock * 0.7;
     CatchRenderer.drawCometTrail(

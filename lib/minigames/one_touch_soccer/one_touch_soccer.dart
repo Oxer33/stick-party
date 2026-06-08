@@ -9,6 +9,7 @@ import '../../engine/bots.dart';
 import '../../engine/helpers/push_arena.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'soccer_fx.dart';
 import 'soccer_render.dart';
 import 'striker.dart';
 
@@ -89,6 +90,24 @@ class OneTouchSoccer extends MiniGameBase {
   static const double _goalHitStopSec = 0.5; // slow-mo on a goal
   static const double _goalHitStopScale = 0.18;
 
+  // ── Climax (double goals) tuning ────────────────────────────────────────────
+  // The final ~30% of the clock: every goal is worth 2 and a DOUBLE GOALS banner
+  // pulses, so a late comeback is always on the table and the finish ramps.
+  static const double _doubleGoalsFrac = 0.7; // enters at this share of time
+  static const int _doubleGoalsValue = 2; // points per goal in the window
+
+  // ── Speed pad (chaos) tuning ────────────────────────────────────────────────
+  // A midfield pad the ball can roll over for a one-shot speed kick toward
+  // whatever way it is already travelling — a sudden swing the table reacts to.
+  static const double _padRadiusFactor = 1.7; // pad R / ball R
+  static const double _padFirstSpawnSec = 5.0;
+  static const double _padRespawnSec = 6.0;
+  static const double _padLifeSec = 7.0;
+  static const double _padAppearPerSec = 3.5;
+  static const double _padPhasePerSec = 3.0;
+  static const double _padBoostPerSecond = 2.6; // boost speed = pitch.h * this
+  static const double _padMinBallSpeed = 30.0; // below this, kick toward a goal
+
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botWarmupSec = 1.5; // grace before bots engage
   static const double _botGuardDepthFactor = 0.20; // keeper y offset from wall
@@ -101,8 +120,6 @@ class OneTouchSoccer extends MiniGameBase {
   static const Color _bottomAccent = Color(0xFF4D9BFF); // bottom goal / side B
   static const Color _confettiA = Color(0xFFFFC93C);
   static const Color _confettiB = Color(0xFF54E08A);
-  static const Color _dust = Color(0xFFDFF3E4);
-  static const Color _spark = Color(0xFFFFFFFF);
   static const double _runSpeed = 55.0;
 
   late Juice _juice;
@@ -137,6 +154,7 @@ class OneTouchSoccer extends MiniGameBase {
   late Body _ball;
   late double _ballRadius;
   late double _playerRadius;
+  late SpeedPadController _pads;
   Rect _goalMouth = Rect.zero; // horizontal span both goals share
   double _topLine = 0;
   double _bottomLine = 0;
@@ -170,8 +188,19 @@ class OneTouchSoccer extends MiniGameBase {
     _computeGoals();
     _buildBall();
     _buildPlayers();
+    _pads = SpeedPadController(
+      radius: _ballRadius * _padRadiusFactor,
+      firstSpawnSec: _padFirstSpawnSec,
+      respawnSec: _padRespawnSec,
+      lifeSec: _padLifeSec,
+      appearPerSec: _padAppearPerSec,
+      phasePerSec: _padPhasePerSec,
+    );
     begin();
   }
+
+  /// True once the match has entered its climax (double-goals) window.
+  bool get _isDoubleGoals => _elapsed >= _timeLimit * _doubleGoalsFrac;
 
   void _computeGoals() {
     final mouthWidth = _pitch.width * _goalMouthFraction;
@@ -291,6 +320,7 @@ class OneTouchSoccer extends MiniGameBase {
 
     // During the kickoff pause the world is frozen (only juice + timers run).
     if (_kickoffPause > 0) {
+      _pads.tick(sdt, ctx.rng, _pitch); // pad keeps drifting/aging visually
       _syncFigures(0);
       _resolveOutcome();
       return;
@@ -301,10 +331,30 @@ class OneTouchSoccer extends MiniGameBase {
     _arena.update(sdt);
     _autoKick();
 
+    _pads.tick(sdt, ctx.rng, _pitch);
+    _triggerSpeedPad();
     _updateBall(sdt);
     _syncFigures(sdt);
     _checkGoals();
     _resolveOutcome();
+  }
+
+  /// When the ball rolls over a ready speed pad, kick it (direction from the
+  /// controller) and fire the SPEED! burst — a sudden swing the table reacts to.
+  void _triggerSpeedPad() {
+    final pad = _pads.pad;
+    final dir = _pads.tryTrigger(
+      ballPos: _ball.pos,
+      ballVel: _ball.vel,
+      ballRadius: _ballRadius,
+      minBallSpeed: _padMinBallSpeed,
+      topLine: _topLine,
+      bottomLine: _bottomLine,
+    );
+    if (dir == null || pad == null) return;
+    _arena.impulse(_ballId, dir * (_pitch.height * _padBoostPerSecond));
+    _ballSquash = 1.0;
+    SoccerFx.fireSpeedBurst(_juice, pad, dir, _ballRadius);
   }
 
   void _tickTimers(double dt) {
@@ -401,7 +451,14 @@ class OneTouchSoccer extends MiniGameBase {
         fig.facing = dir.dx >= 0 ? 1.0 : -1.0;
         fig.dash();
       }
-      _onBallKicked(self.pos);
+      _ballSquash = SoccerFx.fireKickFeedback(
+        _juice,
+        ballPos: _ball.pos,
+        ballSpeed: _ball.vel.distance,
+        ballRadius: _ballRadius,
+        feet: self.pos.translate(0, _playerRadius),
+        hardKickSpeed: _hardKickSpeed,
+      );
     }
   }
 
@@ -414,38 +471,6 @@ class OneTouchSoccer extends MiniGameBase {
     final toGoal = _normalize(_opponentGoalTarget(id) - self.pos);
     final blended = run * _kickMoveBlend + toGoal * (1 - _kickMoveBlend);
     return _normalize(blended);
-  }
-
-  /// React to a ball strike: squash + spark + hit-stop + a "THWACK!" pop on the
-  /// hardest strikes.
-  void _onBallKicked(Offset at) {
-    final speed = _ball.vel.distance;
-    _ballSquash = (0.6 + (speed / _hardKickSpeed) * 0.4).clamp(0.0, 1.0);
-    if (speed >= _hardKickSpeed) {
-      _juice.hit(_ball.pos, _spark, sparks: 10);
-      _juice.shake.light();
-      _juice.popup(_ball.pos.translate(0, -_ballRadius * 2.4), 'THWACK!',
-          const Color(0xFFFFE08A), size: _ballRadius * 1.8);
-    } else {
-      _juice.particles.burst(
-        at: _ball.pos,
-        count: 5,
-        color: _spark,
-        speed: 180,
-        size: 4,
-        life: 0.28,
-      );
-    }
-    // Light dust at the striker's feet on contact.
-    _juice.particles.burst(
-      at: at.translate(0, _playerRadius),
-      count: 5,
-      color: _dust,
-      speed: 120,
-      size: 4,
-      gravity: 220,
-      life: 0.3,
-    );
   }
 
   // ── Bots: steer via the SAME joystick movement model ─────────────────────────
@@ -476,7 +501,15 @@ class OneTouchSoccer extends MiniGameBase {
     }
 
     if (_isKeeper(playerId)) {
-      _botHeading[playerId] = _botGuardHeading(playerId, self);
+      _botHeading[playerId] = SoccerFx.guardHeading(
+        attacksTop: _attacksTop[playerId] ?? true,
+        selfPos: self.pos,
+        ballPos: _ball.pos,
+        pitch: _pitch,
+        playerRadius: _playerRadius,
+        depthFactor: _botGuardDepthFactor,
+        laneGain: _botGuardLaneGain,
+      );
       return;
     }
 
@@ -499,55 +532,23 @@ class OneTouchSoccer extends MiniGameBase {
     _botHeading[playerId] = _rotate(aim, ctx.rng.jitter(err)) * throttle;
   }
 
-  /// Keeper heading: ease toward a guard slot in front of its own goal,
-  /// tracking the ball's horizontal position so it covers shots on goal.
-  Offset _botGuardHeading(int playerId, Body self) {
-    final attacksTop = _attacksTop[playerId] ?? true;
-    // Own goal is the BOTTOM when attacking top.
-    final guardY = attacksTop
-        ? _pitch.bottom - _pitch.height * _botGuardDepthFactor
-        : _pitch.top + _pitch.height * _botGuardDepthFactor;
-    final targetX = _pitch.center.dx +
-        (_ball.pos.dx - _pitch.center.dx) * _botGuardLaneGain;
-    final target = Offset(targetX, guardY);
-    if ((target - self.pos).distance < _playerRadius * 0.8) {
-      return Offset.zero; // in position: hold (avoids jitter)
-    }
-    return _normalize(target - self.pos) * 0.85;
-  }
-
-  /// The rear-most player on a side (closest to its own goal) keeps net. A lone
-  /// player on a side never keeps net (they must attack to ever score).
+  /// Whether [playerId] keeps net (rear-most on a 2-player side).
   bool _isKeeper(int playerId) {
     final attacksTop = _attacksTop[playerId] ?? true;
     final mates = _attacksTop.entries
         .where((e) => e.value == attacksTop)
-        .map((e) => e.key)
-        .toList();
-    if (mates.length < 2) return false;
-    // "Rear" = deepest in own half. Own goal is BOTTOM when attacking top.
-    var rear = mates.first;
-    var rearDepth = double.negativeInfinity;
-    for (final id in mates) {
+        .map((e) => e.key);
+    return SoccerFx.isKeeper(playerId, mates, (id) {
       final b = _bodyOf(id);
-      if (b == null) continue;
-      // Depth from the opponent goal (bigger = deeper toward own goal).
-      final depth =
-          attacksTop ? (b.pos.dy - _pitch.top) : (_pitch.bottom - b.pos.dy);
-      if (depth > rearDepth) {
-        rearDepth = depth;
-        rear = id;
-      }
-    }
-    return rear == playerId;
+      if (b == null) return double.negativeInfinity;
+      // Depth toward own goal (own goal is BOTTOM when attacking top).
+      return attacksTop ? (b.pos.dy - _pitch.top) : (_pitch.bottom - b.pos.dy);
+    });
   }
 
   /// Center of the goal this player is attacking (where contact should drive).
-  Offset _opponentGoalTarget(int playerId) {
-    final attacksTop = _attacksTop[playerId] ?? true;
-    final y = attacksTop ? _topLine : _bottomLine;
-    return Offset(_goalMouth.center.dx, y);
-  }
+  Offset _opponentGoalTarget(int playerId) => SoccerFx.opponentGoalTarget(
+      _attacksTop[playerId] ?? true, _goalMouth.center, _topLine, _bottomLine);
 
   void _syncFigures(double dt) {
     for (final entry in _figures.entries) {
@@ -581,8 +582,10 @@ class OneTouchSoccer extends MiniGameBase {
   }
 
   void _scoreFor({required bool attacksTop}) {
+    // In the double-goals climax each goal is worth 2 — late comebacks stay live.
+    final value = _isDoubleGoals ? _doubleGoalsValue : 1;
     for (final p in ctx.players) {
-      if (_attacksTop[p.id] == attacksTop) addScore(p.id, 1);
+      if (_attacksTop[p.id] == attacksTop) addScore(p.id, value);
     }
     final color = _sideColor(attacksTop);
 
@@ -644,6 +647,9 @@ class OneTouchSoccer extends MiniGameBase {
     SoccerRenderer.drawGoal(canvas, _pitch, _goalMouth,
         onBottom: true, color: _bottomAccent, bulge: _bulgeFill(_bottomBulge));
 
+    final pad = _pads.pad;
+    if (pad != null) SoccerFx.drawSpeedPad(canvas, pad);
+
     _drawPlayers(canvas);
 
     SoccerRenderer.drawBall(
@@ -661,6 +667,11 @@ class OneTouchSoccer extends MiniGameBase {
     _drawScoreboard(canvas);
     SoccerRenderer.drawKickoffBanner(
         canvas, _pitch, 'KICK OFF', _kickoffBannerAlpha());
+    // DOUBLE GOALS climax banner — hidden during the kickoff pause so it never
+    // overlaps the centered KICK OFF banner.
+    if (_isDoubleGoals && _kickoffPause <= 0) {
+      SoccerFx.drawDoubleGoalsBanner(canvas, size, 1.0, _elapsed);
+    }
 
     _juice.render(canvas);
     canvas.restore();
@@ -672,8 +683,14 @@ class OneTouchSoccer extends MiniGameBase {
       final body = _bodyOf(id);
       if (body == null) continue;
       final joy = _joysticks[id];
-      final color = Color(_colorOf(id));
-      final actor = _actorFor(id, body, entry.value, color, joy);
+      final actor = SoccerActor.fromParts(
+        playerId: id,
+        feet: Offset(body.pos.dx, body.pos.dy + body.radius),
+        radius: body.radius,
+        figure: entry.value,
+        color: Color(_colorOf(id)),
+        trail: joy?.trail,
+      );
       SoccerRenderer.drawDashTrail(canvas, actor);
       SoccerRenderer.drawActorGround(canvas, actor);
       SoccerRenderer.drawActor(canvas, actor);
@@ -697,25 +714,6 @@ class OneTouchSoccer extends MiniGameBase {
         color: Color(_colorOf(id)),
       );
     }
-  }
-
-  SoccerActor _actorFor(
-      int id, Body body, StickFigure fig, Color color, Joystick? joy) {
-    final feet = Offset(body.pos.dx, body.pos.dy + body.radius);
-    final trail = joy?.trail;
-    return SoccerActor(
-      figure: fig,
-      // Figure pelvis anchors at feet so the stick stands on its disc.
-      root: feet,
-      feet: feet,
-      radius: body.radius,
-      color: color,
-      number: id + 1,
-      kickFlash: (trail?.strength ?? 0),
-      trailFrom: trail?.from,
-      trailDir: trail?.dir ?? Offset.zero,
-      trailStrength: trail?.strength ?? 0,
-    );
   }
 
   void _drawScoreboard(Canvas canvas) {

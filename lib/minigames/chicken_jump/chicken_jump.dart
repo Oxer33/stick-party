@@ -35,6 +35,17 @@ class _Tuning {
   static const double lavaAccel = 8.0; // px/s^2 ramp
   static const double lavaStartGap = 10; // px the lava starts below the lowest
 
+  // CLIMAX: once the round passes [climaxFrac] of its life the lava gets an
+  // extra surge multiplier so the finale visibly ramps ("HURRY!"). A one-shot
+  // popup over every live climber sells the moment.
+  static const double climaxFrac = 0.72; // fraction of timeLimit → climax begins
+  static const double climaxSurgeMul = 1.45; // lava speed × this during climax
+
+  // COMEBACK (kid-assist): the single climber sitting on the lowest rung among
+  // the living gets its lava held back a touch, so a younger / behind player is
+  // never the obvious first-out. Subtle and only ever helps ONE trailing player.
+  static const double comebackLavaMul = 0.82; // trailing column lava × this
+
   static const double hopAnimSpeed = 16; // lane ease rate (snappy take-off)
   static const double jumpHoldSec = 0.22; // how long the jump pose shows
   static const double landHoldSec = 0.12; // brief squash on landing
@@ -142,6 +153,7 @@ class ChickenJump extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock for ambient FX (never scaled)
   double _lavaSpeed = _Tuning.lavaRiseStart;
+  bool _climaxFired = false; // one-shot "HURRY!" finale cue latch
 
   @override
   void init(MiniGameContext ctx) {
@@ -274,20 +286,63 @@ class ChickenJump extends MiniGameBase {
     // the ramp from the post-warmup clock keeps the early reaction window fair.
     final runT = math.max(0.0, _elapsed - _Tuning.warmupSec);
     _lavaSpeed = _Tuning.lavaRiseStart + _Tuning.lavaAccel * runT;
+    // CLIMAX: a late surge so the finale visibly ramps.
+    if (_inClimax) _lavaSpeed *= _Tuning.climaxSurgeMul;
+    _maybeFireClimax();
+
+    // COMEBACK: the single living climber on the lowest rung gets held lava.
+    final trailingId = _trailingClimberId();
 
     _driveBots(dt);
     for (final c in _climbers) {
-      _stepClimber(c, dt, sdt);
+      _stepClimber(c, dt, sdt, comeback: c.playerId == trailingId);
     }
     _checkEnd();
   }
 
+  /// True once the round passes the climax fraction of its life — the lava
+  /// surges and the renderer reads max escalation.
+  bool get _inClimax => _elapsed >= _Tuning.timeLimit * _Tuning.climaxFrac;
+
+  /// Fire the one-shot "HURRY!" finale cue over every live climber.
+  void _maybeFireClimax() {
+    if (_climaxFired || !_inClimax) return;
+    _climaxFired = true;
+    for (final c in _climbers) {
+      if (!c.alive) continue;
+      _juice.popup(
+        Offset(c.columnX, c.visualRungY() - c.figureLift - 18),
+        'HURRY!',
+        ChickenRenderer.hurryColor,
+        size: 26,
+      );
+    }
+    _juice.shake.medium();
+  }
+
+  /// The id of the single living climber sitting lowest (fewest rungs climbed),
+  /// or null if the field is empty / tied at the bottom is broken by first found.
+  /// Only ONE player is ever helped, so a runaway leader gets no handicap and a
+  /// trailing kid gets a gentle hand — never enough to overtake on its own.
+  int? _trailingClimberId() {
+    _Climber? worst;
+    for (final c in _climbers) {
+      if (!c.alive) continue;
+      if (worst == null || c.hopper.lane < worst.hopper.lane) worst = c;
+    }
+    return worst?.playerId;
+  }
+
   bool get _inWarmup => _elapsed < _Tuning.warmupSec;
 
-  void _stepClimber(_Climber c, double dt, double sdt) {
+  void _stepClimber(_Climber c, double dt, double sdt, {bool comeback = false}) {
     // Lava holds during the warmup, then rises (even for the dead, so the scene
-    // keeps escalating).
-    if (!_inWarmup) c.lavaY -= _lavaSpeed * sdt;
+    // keeps escalating). The lone trailing climber gets its lava eased a touch
+    // (kid-assist) so a behind player stays in the race a little longer.
+    if (!_inWarmup) {
+      final mul = comeback ? _Tuning.comebackLavaMul : 1.0;
+      c.lavaY -= _lavaSpeed * mul * sdt;
+    }
     c.sinceShake += dt;
 
     if (!c.alive) {
@@ -463,8 +518,10 @@ class ChickenJump extends MiniGameBase {
     canvas.restore();
   }
 
-  /// 0..1 escalation, used for ambient heat — ramps with the lava speed.
+  /// 0..1 escalation, used for ambient heat — ramps with the lava speed and
+  /// pins to full during the climax so the finale background glows hottest.
   double _escalation() {
+    if (_inClimax) return 1;
     final span = _Tuning.lavaAccel * _Tuning.timeLimit;
     if (span <= 0) return 0;
     return ((_lavaSpeed - _Tuning.lavaRiseStart) / span).clamp(0.0, 1.0);

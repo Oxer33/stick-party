@@ -29,6 +29,7 @@ import '../widgets/home_confetti.dart';
 import '../widgets/home_mascots.dart';
 import '../widgets/mesh_background.dart';
 import '../widgets/ui_kit.dart';
+import 'premium_card.dart';
 
 /// Big logo type size.
 const double _kTitleSize = 60;
@@ -36,8 +37,8 @@ const double _kTitleSize = 60;
 /// Height of the prominent primary action button.
 const double _kPrimaryHeight = 84;
 
-/// Height of each secondary action card in the grid.
-const double _kCardHeight = 96;
+/// Leading glyph-badge size inside a secondary action card.
+const double _kActionGlyphSize = 50;
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -247,6 +248,7 @@ class _PrimaryPlayButton extends StatelessWidget {
 class _Action {
   const _Action({
     required this.label,
+    required this.hint,
     required this.icon,
     required this.accent,
     required this.onTap,
@@ -254,6 +256,9 @@ class _Action {
   });
 
   final String label;
+
+  /// Short supporting line under the label (gives each button real hierarchy).
+  final String hint;
   final IconData icon;
   final Color accent;
   final VoidCallback onTap;
@@ -272,6 +277,7 @@ class _ActionGrid extends StatelessWidget {
     final List<_Action> actions = <_Action>[
       _Action(
         label: 'CUP',
+        hint: 'Tournament',
         icon: Icons.emoji_events,
         accent: GlassColors.amber,
         onTap: () => context.push(
@@ -281,12 +287,14 @@ class _ActionGrid extends StatelessWidget {
       ),
       _Action(
         label: 'SHOP',
+        hint: 'Skins & themes',
         icon: Icons.storefront,
         accent: GlassColors.magenta,
         onTap: () => context.push(AppRoutes.shop),
       ),
       _Action(
         label: 'DAILY',
+        hint: dailyAvailable ? 'Reward ready' : 'Missions',
         icon: Icons.calendar_today,
         accent: GlassColors.cyan,
         showDot: dailyAvailable,
@@ -294,6 +302,7 @@ class _ActionGrid extends StatelessWidget {
       ),
       _Action(
         label: 'STATS',
+        hint: 'Your records',
         icon: Icons.bar_chart,
         accent: GlassColors.flame,
         onTap: () => context.push(AppRoutes.stats),
@@ -304,7 +313,7 @@ class _ActionGrid extends StatelessWidget {
       crossAxisCount: 2,
       mainAxisSpacing: GlassTokens.gapSmall,
       crossAxisSpacing: GlassTokens.gapSmall,
-      childAspectRatio: 1.85,
+      childAspectRatio: 1.55,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       children: <Widget>[
@@ -322,63 +331,55 @@ class _ActionGrid extends StatelessWidget {
   }
 }
 
-/// One illustrated action card: a procedural glyph badge + label, accent-tinted,
-/// with an optional notification dot.
-class _ActionCard extends StatefulWidget {
+/// One illustrated action card: a premium accent-edged panel (edge + glow) with
+/// a procedural glyph badge, a bold label and a small supporting hint, plus an
+/// optional notification dot. Tapping press-scales the whole card.
+class _ActionCard extends StatelessWidget {
   const _ActionCard({required this.action});
 
   final _Action action;
 
   @override
-  State<_ActionCard> createState() => _ActionCardState();
-}
-
-class _ActionCardState extends State<_ActionCard> {
-  bool _pressed = false;
-
-  void _setPressed(bool value) {
-    if (_pressed == value) return;
-    setState(() => _pressed = value);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final _Action a = widget.action;
-    return GestureDetector(
-      onTapDown: (_) => _setPressed(true),
-      onTapUp: (_) => _setPressed(false),
-      onTapCancel: () => _setPressed(false),
+    final _Action a = action;
+    return PressableCard(
       onTap: a.onTap,
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedScale(
-        scale: _pressed ? GlassTokens.pressScale : 1,
-        duration: GlassTokens.pressDuration,
-        curve: Curves.easeOut,
-        child: GlassPanel(
-          tint: a.accent,
-          tintOpacity: 0.14,
-          borderColor: a.accent.withValues(alpha: 0.45),
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: SizedBox(
-            height: _kCardHeight,
-            child: Row(
-              children: <Widget>[
-                _GlyphBadge(icon: a.icon, accent: a.accent),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    a.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GlassText.label,
-                  ),
-                ),
-                if (a.showDot) const _NotifyDot(),
-              ],
-            ),
-          ),
+      child: PremiumPanel(
+        accent: a.accent,
+        highlight: a.showDot,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        child: Row(
+          children: <Widget>[
+            _GlyphBadge(icon: a.icon, accent: a.accent),
+            const SizedBox(width: 12),
+            Expanded(child: _labels(a)),
+            if (a.showDot) const _NotifyDot(),
+          ],
         ),
       ),
+    );
+  }
+
+  Widget _labels(_Action a) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          a.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: GlassText.label,
+        ),
+        const SizedBox(height: 3),
+        Text(
+          a.hint,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: GlassText.body.copyWith(fontSize: 11),
+        ),
+      ],
     );
   }
 }
@@ -393,8 +394,8 @@ class _GlyphBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 46,
-      height: 46,
+      width: _kActionGlyphSize,
+      height: _kActionGlyphSize,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -402,6 +403,7 @@ class _GlyphBadge extends StatelessWidget {
           colors: <Color>[accent, accent.withValues(alpha: 0.55)],
         ),
         borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
         boxShadow: <BoxShadow>[
           BoxShadow(
             color: accent.withValues(alpha: 0.4),
@@ -412,7 +414,7 @@ class _GlyphBadge extends StatelessWidget {
         ],
       ),
       alignment: Alignment.center,
-      child: Icon(icon, color: Colors.white, size: 24),
+      child: Icon(icon, color: Colors.white, size: 26),
     );
   }
 }
@@ -489,46 +491,14 @@ class _HouseAdTeaserState extends ConsumerState<_HouseAdTeaser> {
     final HouseAd? ad = _ad;
     if (ad == null) return const SizedBox.shrink();
     final Color accent = Color(ad.iconArgb);
-    return GestureDetector(
+    return PremiumMediaTile(
+      accent: accent,
+      leading: ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
+      eyebrow: 'MORE GAMES',
+      title: ad.title,
+      supporting: ad.blurb.isNotEmpty ? ad.blurb : null,
+      trailing: const Icon(Icons.chevron_right, color: GlassColors.textMuted),
       onTap: () => _onTap(ad),
-      behavior: HitTestBehavior.opaque,
-      child: GlassPanel(
-        tint: accent,
-        tintOpacity: 0.10,
-        borderColor: accent.withValues(alpha: 0.5),
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: <Widget>[
-            ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text('MORE GAMES', style: GlassText.overline),
-                  const SizedBox(height: 2),
-                  Text(
-                    ad.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GlassText.heading,
-                  ),
-                  if (ad.blurb.isNotEmpty) ...<Widget>[
-                    const SizedBox(height: 2),
-                    Text(
-                      ad.blurb,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: GlassText.body.copyWith(fontSize: 12),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right, color: GlassColors.textMuted),
-          ],
-        ),
-      ),
     );
   }
 

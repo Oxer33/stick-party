@@ -15,6 +15,7 @@ import '../router.dart';
 import '../widgets/glass_kit.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/glass_tokens.dart';
+import 'premium_card.dart';
 
 class PlayersSetupScreen extends ConsumerWidget {
   const PlayersSetupScreen({super.key, required this.isCup});
@@ -39,12 +40,24 @@ class PlayersSetupScreen extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           // Seat count stepper.
-          GlassPanel(
+          PremiumPanel(
+            accent: GlassColors.violet,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                Text('PLAYERS', style: GlassText.label),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text('PLAYERS', style: GlassText.label),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Add up to $_maxPlayers',
+                      style: GlassText.body.copyWith(fontSize: 11),
+                    ),
+                  ],
+                ),
                 Row(
                   children: <Widget>[
                     _RoundIconButton(
@@ -137,22 +150,86 @@ class _SeatTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = Color(slot.colorArgb);
-    return GlassPanel(
-      tint: color,
-      tintOpacity: 0.10,
-      borderColor: color.withValues(alpha: 0.6),
+    return PremiumPanel(
+      accent: color,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
         children: <Widget>[
-          // Tappable color swatch.
-          GestureDetector(
-            onTap: onCycleColor,
-            child: Container(
-              width: 44,
-              height: 44,
+          _ColorSwatch(color: color, isBot: slot.isBot, onTap: onCycleColor),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  slot.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GlassText.heading,
+                ),
+                const SizedBox(height: 5),
+                AccentTag(
+                  label: slot.isBot ? 'CPU' : 'HUMAN',
+                  accent: color,
+                  icon: slot.isBot ? Icons.smart_toy : Icons.person,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: GlassTokens.gapSmall),
+          // Human / CPU toggle (logic unchanged).
+          _Segmented(
+            options: const <String>['HUMAN', 'CPU'],
+            selectedIndex: slot.isBot ? 1 : 0,
+            onSelected: (_) => onToggleBot(),
+            accent: color,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A tappable, characterful seat avatar: a rounded swatch in the player's color
+/// with a top sheen and a human/robot face, plus a small recolor hint badge so
+/// it reads as "tap to change color".
+class _ColorSwatch extends StatelessWidget {
+  const _ColorSwatch({
+    required this.color,
+    required this.isBot,
+    required this.onTap,
+  });
+
+  final Color color;
+  final bool isBot;
+  final VoidCallback onTap;
+
+  /// Edge length of the swatch.
+  static const double _size = 52;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: _size,
+        height: _size,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: <Widget>[
+            Container(
+              width: _size,
+              height: _size,
               decoration: BoxDecoration(
-                color: color,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: <Color>[color, color.withValues(alpha: 0.55)],
+                ),
                 borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
                 boxShadow: <BoxShadow>[
                   BoxShadow(
                     color: color.withValues(alpha: 0.5),
@@ -161,19 +238,34 @@ class _SeatTile extends StatelessWidget {
                   ),
                 ],
               ),
-              child: const Icon(Icons.palette, color: Colors.white, size: 20),
+              alignment: Alignment.center,
+              child: Icon(
+                isBot ? Icons.smart_toy : Icons.face,
+                color: Colors.white,
+                size: 26,
+              ),
             ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(child: Text(slot.name, style: GlassText.heading)),
-          // Human / CPU toggle.
-          _Segmented(
-            options: const <String>['HUMAN', 'CPU'],
-            selectedIndex: slot.isBot ? 1 : 0,
-            onSelected: (_) => onToggleBot(),
-            accent: color,
-          ),
-        ],
+            // Small recolor affordance tucked into the corner.
+            Positioned(
+              right: -4,
+              bottom: -4,
+              child: Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: GlassColors.base,
+                  shape: BoxShape.circle,
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.35)),
+                ),
+                child: const Icon(
+                  Icons.palette,
+                  color: GlassColors.frost,
+                  size: 13,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -214,11 +306,14 @@ class _ModeSelector extends StatelessWidget {
     );
   }
 
-  /// Modes that make sense for [count] seats.
+  /// Modes that make sense for [count] seats. With exactly 2 seats the match is
+  /// inherently a 1-v-1, so we offer no choice (the selector hides itself when
+  /// there is a single option) — picking "free for all" vs "1 v 1" would be a
+  /// distinction without a difference.
   static List<GameMode> _modesFor(int count) {
     switch (count) {
       case 2:
-        return <GameMode>[GameMode.ffa, GameMode.duel1v1];
+        return <GameMode>[GameMode.duel1v1];
       case 4:
         return <GameMode>[GameMode.ffa, GameMode.team2v2];
       default:

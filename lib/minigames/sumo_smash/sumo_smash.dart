@@ -9,6 +9,7 @@ import '../../engine/bots.dart';
 import '../../engine/helpers/push_arena.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'sumo_fx.dart';
 import 'sumo_render.dart';
 
 /// Sumo Smash — every player is a sumo wrestler in a circular dohyo.
@@ -69,6 +70,34 @@ class SumoSmash extends MiniGameBase {
   static const double _minRingFactor = 0.5;
   static const double _shrinkPerSec = 0.024;
 
+  // ── Climax (sudden death) tuning ────────────────────────────────────────────
+  // The final ~28% of the match: the ring collapses far faster and a SUDDEN
+  // DEATH banner throbs, so the round visibly ramps to a finish.
+  static const double _suddenDeathFrac = 0.72; // enters at this share of time
+  static const double _suddenDeathShrinkMul = 2.6; // shrink speed multiplier
+  static const double _suddenDeathFloorMul = 0.78; // tighter floor in sudden death
+
+  // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
+  // One star at a time floats near the center; grabbing it grants a brief shove
+  // buff. Any wrestler can take it, so it creates a scramble + swings.
+  static const double _starRadiusFactor = 0.55; // star R / body R
+  static const double _starFirstSpawnSec = 4.0; // first star appears after this
+  static const double _starRespawnSec = 7.5; // gap after a star is taken/lost
+  static const double _starSpawnSpreadFactor = 0.42; // spawn radius / ring R
+  static const double _starAppearPerSec = 3.0; // pop-in ease rate
+  static const double _starSpinPerSec = 3.2;
+  static const double _starLifeSec = 6.0; // despawns if untouched
+  static const double _buffSec = 4.0; // how long the shove buff lasts
+  static const double _buffDashMul = 1.8; // shove magnitude × this while buffed
+
+  // ── Kid-assist (comeback) tuning ────────────────────────────────────────────
+  // A wrestler teetering in the last sliver before the edge while moving SLOWLY
+  // gets a gentle inward brake, so a young player who is merely drifting out is
+  // nudged back — but a genuine charged launch (fast) still ejects them.
+  static const double _rescueBandFactor = 0.93; // dist/ring above → in the band
+  static const double _rescueMaxSpeed = 150.0; // only brake below this speed
+  static const double _rescueBrakePerSec = 2.6; // inward pull strength /s
+
   // ── Ring-out fling tuning ───────────────────────────────────────────────────
   static const double _flingBaseFactor = 0.5;
   static const double _flingSpeedFactor = 0.55;
@@ -88,6 +117,7 @@ class SumoSmash extends MiniGameBase {
 
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _accent = Color(0xFFFFC062);
+  static const Color _starColor = Color(0xFFFFE45C); // pickup gold
   static const int _dustMotes = 22;
 
   late Juice _juice;
@@ -111,6 +141,9 @@ class SumoSmash extends MiniGameBase {
   final Set<int> _contactPairs = <int>{};
   final List<Offset> _dust = <Offset>[];
 
+  late StarController _stars;
+  bool _suddenDeathAnnounced = false;
+
   @override
   void init(MiniGameContext ctx) {
     prepare(ctx);
@@ -121,6 +154,15 @@ class SumoSmash extends MiniGameBase {
     _ringRadius = minSide * _ringRadiusFactor;
     _currentRingRadius = _ringRadius;
     _bodyRadius = minSide * _bodyRadiusFactor;
+    _stars = StarController(
+      radius: _bodyRadius * _starRadiusFactor,
+      firstSpawnSec: _starFirstSpawnSec,
+      respawnSec: _starRespawnSec,
+      lifeSec: _starLifeSec,
+      appearPerSec: _starAppearPerSec,
+      spinPerSec: _starSpinPerSec,
+      spawnSpreadFactor: _starSpawnSpreadFactor,
+    );
     _proportions = _sumoProportions();
     _footReach = _proportions.thigh + _proportions.shin;
 
@@ -240,14 +282,29 @@ class SumoSmash extends MiniGameBase {
     _tickFighters(dt);
     _driveBots(dt);
     _shrinkRing(dt);
+    _stars.tick(dt, _arena.aliveBodies.length, ctx.rng, _center,
+        _currentRingRadius);
 
     _arena.update(sdt);
 
+    SumoFx.applyRescueAssist(
+      _arena.aliveBodies,
+      _center,
+      _currentRingRadius,
+      bandFactor: _rescueBandFactor,
+      maxSpeed: _rescueMaxSpeed,
+      brakePerSec: _rescueBrakePerSec,
+      dt: sdt,
+    );
+    _collectStars();
     _resolveContacts();
     _syncFigures(sdt);
     _detectRingOuts();
     _resolveOutcome();
   }
+
+  /// True once the match has entered its climax (sudden death) window.
+  bool get _isSuddenDeath => _elapsed >= _timeLimit * _suddenDeathFrac;
 
   /// Aim always tracks the nearest opponent (so a tap/charge strikes straight
   /// at it — no rotating arrow to time), fill charge while held, recover cooldown.
@@ -323,7 +380,10 @@ class SumoSmash extends MiniGameBase {
     if (f == null || !f.ready) return;
 
     final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
-    final magnitude = _ringRadius * (_dashBase + _dashCharge * charge);
+    // A collected star briefly amplifies every shove — the buffed wrestler hits
+    // noticeably harder, the core of the chaos swing.
+    final buffMul = f.buffed ? _buffDashMul : 1.0;
+    final magnitude = _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
     _arena.impulse(playerId, dir * magnitude);
     _arena.impulse(playerId, -dir * magnitude * _selfPushback);
 
@@ -433,11 +493,44 @@ class SumoSmash extends MiniGameBase {
 
   void _shrinkRing(double dt) {
     if (_elapsed < _shrinkDelaySec) return;
-    final floor = _ringRadius * _minRingFactor;
+    // Sudden death tightens the floor and accelerates the collapse so the round
+    // ramps unmistakably toward a finish in its final stretch.
+    final sudden = _isSuddenDeath;
+    final floor =
+        _ringRadius * _minRingFactor * (sudden ? _suddenDeathFloorMul : 1.0);
     if (_currentRingRadius <= floor) return;
-    _currentRingRadius =
-        (_currentRingRadius - _ringRadius * _shrinkPerSec * dt)
-            .clamp(floor, _ringRadius);
+    final rate = _shrinkPerSec * (sudden ? _suddenDeathShrinkMul : 1.0);
+    _currentRingRadius = (_currentRingRadius - _ringRadius * rate * dt)
+        .clamp(floor, _ringRadius);
+  }
+
+  // ── Star pickup (chaos) ─────────────────────────────────────────────────────
+
+  /// Any wrestler overlapping a ready star collects it: brief shove buff + a
+  /// burst + popup. The grabber gets a swingy edge — pure chaos for the table.
+  void _collectStars() {
+    final star = _stars.star;
+    if (star == null || !star.ready) return;
+    for (final b in _arena.aliveBodies) {
+      if ((b.pos - star.pos).distance > b.radius + star.radius) continue;
+      final f = _fighters[b.id];
+      if (f != null) f.buff = _buffSec;
+      _stars.consume();
+      _juice.particles.burst(
+        at: star.pos,
+        count: 18,
+        color: _starColor,
+        speed: 280,
+        size: 6,
+        gravity: 120,
+        life: 0.6,
+      );
+      _juice.hit(b.pos, _colorOf(b.id), sparks: 8);
+      _juice.popup(
+          b.pos.translate(0, -_bodyRadius * 1.8), 'POWER!', _starColor,
+          size: 30);
+      return;
+    }
   }
 
   // ── Figures ─────────────────────────────────────────────────────────────────
@@ -468,8 +561,22 @@ class SumoSmash extends MiniGameBase {
       _eliminationOrder.add(b.id);
 
       _juice.ko(b.pos, _colorOf(b.id));
-      _juice.popup(b.pos.translate(0, -_bodyRadius * 1.6), 'RING OUT!', _accent,
-          size: 34);
+      // A fatter ring-out flourish: an extra outward spark fan + a punchier
+      // popup so the eject reads as a big moment kids cheer for.
+      final outDir = _normalize(b.pos - _center);
+      _juice.particles.burst(
+        at: b.pos,
+        count: 16,
+        color: _colorOf(b.id),
+        speed: 360,
+        baseAngle: math.atan2(outDir.dy, outDir.dx),
+        spread: math.pi * 0.9,
+        size: 7,
+        gravity: 260,
+        life: 0.7,
+      );
+      _juice.popup(b.pos.translate(0, -_bodyRadius * 1.7), 'RING OUT!', _accent,
+          size: 40);
 
       final fig = _figures[b.id];
       if (fig != null) {
@@ -485,6 +592,15 @@ class SumoSmash extends MiniGameBase {
   // ── Outcome ─────────────────────────────────────────────────────────────────
 
   void _resolveOutcome() {
+    // Announce the climax exactly once with a screen shake + center popup, then
+    // the fast-shrink ring + banner carry the moment.
+    if (!_suddenDeathAnnounced && _isSuddenDeath && _arena.aliveBodies.length > 1) {
+      _suddenDeathAnnounced = true;
+      _juice.shake.medium();
+      _juice.popup(_center.translate(0, -_currentRingRadius * 0.2),
+          'SUDDEN DEATH', _accent,
+          size: 38);
+    }
     final alive = _arena.aliveBodies;
     if (alive.length <= 1 || _elapsed >= _timeLimit) _finishRanked(alive);
   }
@@ -508,11 +624,23 @@ class SumoSmash extends MiniGameBase {
     SumoRenderer.drawDohyo(canvas, _center, _currentRingRadius,
         accent: _accent, dangerPulse: _dangerPulse());
 
+    final star = _stars.star;
+    if (star != null) SumoFx.drawStar(canvas, star);
+
     _drawWrestlers(canvas);
+
+    if (_isSuddenDeath) {
+      SumoFx.drawSuddenDeathBanner(canvas, size, _suddenDeathBannerPulse(),
+          _animClock);
+    }
 
     _juice.render(canvas);
     canvas.restore();
   }
+
+  /// Banner intensity: full once in sudden death (held up while ≥2 alive).
+  double _suddenDeathBannerPulse() =>
+      _arena.aliveBodies.length > 1 ? 1.0 : 0.0;
 
   double _dangerPulse() {
     final shrink =
@@ -546,6 +674,21 @@ class SumoSmash extends MiniGameBase {
             tr.strength);
       }
 
+      // A pulsing gold aura while the star buff is active so the table can see
+      // who is dangerous right now.
+      if (f != null && f.buffed) {
+        final pulse = 0.5 + 0.5 * math.sin(_animClock * 6.0);
+        canvas.drawCircle(
+          b.pos,
+          _bodyRadius * (1.45 + 0.15 * pulse),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = _bodyRadius * 0.18
+            ..color = _starColor
+                .withValues(alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0)),
+        );
+      }
+
       SumoRenderer.drawContactShadow(canvas, feet, _bodyRadius);
       SumoRenderer.drawIdMarker(canvas, feet, _bodyRadius, color, b.id + 1);
 
@@ -555,65 +698,11 @@ class SumoSmash extends MiniGameBase {
           canvas, _pelvisOf(b), _bodyRadius, fig.facing, color);
 
       // The aim arrow + charge — the player's control, drawn on top.
-      if (f != null) _drawAim(canvas, b.pos, color, f);
+      if (f != null && f.charging) {
+        SumoRenderer.drawAim(canvas, b.pos, _bodyRadius, color,
+            aim: f.aim, charge: f.charge);
+      }
     }
-  }
-
-  /// No idle arrow. While charging, a telegraph points straight at the nearest
-  /// opponent (where the shove will fire) and a ring shows the charge level.
-  void _drawAim(Canvas canvas, Offset center, Color color, _Fighter f) {
-    if (!f.charging || f.charge <= 0.01) return;
-    final charge = f.charge;
-    final dir = Offset(math.cos(f.aim), math.sin(f.aim));
-    final base = _bodyRadius * 0.95;
-    final len = _bodyRadius * (1.8 + 2.4 * charge);
-    final start = center + dir * base;
-    final end = center + dir * (base + len);
-    final w = _bodyRadius * (0.22 + 0.26 * charge);
-
-    // Solid layered shaft (no blur — cheap to draw every frame).
-    canvas.drawLine(
-        start,
-        end,
-        Paint()
-          ..color = color.withValues(alpha: 0.95)
-          ..strokeWidth = w
-          ..strokeCap = StrokeCap.round);
-    canvas.drawLine(
-        start,
-        end,
-        Paint()
-          ..color = const Color(0xFFFFFFFF).withValues(alpha: 0.6)
-          ..strokeWidth = w * 0.4
-          ..strokeCap = StrokeCap.round);
-
-    final perp = Offset(-dir.dy, dir.dx);
-    final head = _bodyRadius * (0.55 + 0.34 * charge);
-    final tip = end + dir * head;
-    final l = end + perp * head * 0.66;
-    final r = end - perp * head * 0.66;
-    canvas.drawPath(
-      Path()
-        ..moveTo(tip.dx, tip.dy)
-        ..lineTo(l.dx, l.dy)
-        ..lineTo(r.dx, r.dy)
-        ..close(),
-      Paint()..color = color.withValues(alpha: 0.95),
-    );
-
-    final groundCenter = center.translate(0, _bodyRadius);
-    canvas.drawArc(
-      Rect.fromCircle(center: groundCenter, radius: _bodyRadius * 1.25),
-      -math.pi / 2,
-      math.pi * 2 * charge,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = _bodyRadius * 0.18
-        ..strokeCap = StrokeCap.round
-        ..color = Color.lerp(color, const Color(0xFFFFFFFF), charge)!
-            .withValues(alpha: 0.9),
-    );
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -675,14 +764,17 @@ class _Fighter {
   bool charging = false;
   double charge = 0; // 0..1 while held
   double _cooldown = 0;
+  double buff = 0; // seconds of star shove-buff remaining
   _DashTrail? trail;
 
   _Fighter({required this.aim});
 
   bool get ready => _cooldown <= 0;
+  bool get buffed => buff > 0;
 
   void tick(double dt) {
     if (_cooldown > 0) _cooldown = math.max(0, _cooldown - dt);
+    if (buff > 0) buff = math.max(0, buff - dt);
     if (trail != null) {
       trail!.life -= dt;
       if (trail!.life <= 0) trail = null;

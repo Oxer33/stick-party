@@ -1,6 +1,8 @@
 /// Game select: a grid of mini-games supported by the current player count.
-/// Tapping a card launches that game for a single quick-play round. Restyled as
-/// glass cards; logic/nav unchanged.
+/// Tapping a card launches that game for a single quick-play round. The grid is
+/// a polished game picker: each card has a distinct procedural [GameGlyph], the
+/// game name, the supported player-count range and the input-hint chip, an
+/// accent edge + glow and a tap press-scale. Logic/nav unchanged.
 library;
 
 import 'package:flutter/material.dart';
@@ -14,10 +16,13 @@ import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
 import '../providers.dart';
 import '../router.dart';
-import '../widgets/glass_kit.dart';
+import '../widgets/game_glyphs.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/glass_tokens.dart';
-import '../widgets/ui_kit.dart';
+import 'premium_card.dart';
+
+/// Glyph size inside a game card.
+const double _kGlyphSize = 60;
 
 class GameSelectScreen extends ConsumerWidget {
   const GameSelectScreen({super.key});
@@ -44,9 +49,9 @@ class GameSelectScreen extends ConsumerWidget {
               padding: const EdgeInsets.all(GlassTokens.pagePadding),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 2,
-                mainAxisSpacing: GlassTokens.gapSmall,
-                crossAxisSpacing: GlassTokens.gapSmall,
-                childAspectRatio: 0.95,
+                mainAxisSpacing: GlassTokens.gap,
+                crossAxisSpacing: GlassTokens.gap,
+                childAspectRatio: 0.82,
               ),
               itemCount: metas.length,
               itemBuilder: (BuildContext context, int i) {
@@ -75,6 +80,8 @@ class GameSelectScreen extends ConsumerWidget {
   }
 }
 
+/// One game tile: glyph illustration, name, player-range + input-hint chips,
+/// accent edge + glow, press-scale on tap.
 class _GameCard extends StatelessWidget {
   const _GameCard({
     required this.meta,
@@ -86,21 +93,38 @@ class _GameCard extends StatelessWidget {
   final int colorArgb;
   final VoidCallback onTap;
 
+  /// "1-4" / "2-4" / "3" depending on the meta's supported range.
+  String get _playerRange => meta.minPlayers == meta.maxPlayers
+      ? '${meta.minPlayers}'
+      : '${meta.minPlayers}-${meta.maxPlayers}';
+
   @override
   Widget build(BuildContext context) {
     final Color accent = Color(colorArgb);
-    return GestureDetector(
+    return PressableCard(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: GlassPanel(
-        tint: accent,
-        tintOpacity: 0.08,
-        borderColor: accent.withValues(alpha: 0.4),
+      child: PremiumPanel(
+        accent: accent,
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            ProceduralIcon(label: meta.name, colorArgb: colorArgb, size: 56),
+            Row(
+              children: <Widget>[
+                GameGlyph(
+                  id: meta.id,
+                  label: meta.name,
+                  colorArgb: colorArgb,
+                  size: _kGlyphSize,
+                ),
+                const Spacer(),
+                AccentTag(
+                  label: _playerRange,
+                  accent: accent,
+                  icon: Icons.person,
+                ),
+              ],
+            ),
             const Spacer(),
             Text(
               meta.name,
@@ -109,37 +133,11 @@ class _GameCard extends StatelessWidget {
               style: GlassText.heading,
             ),
             const SizedBox(height: 8),
-            _HintChip(label: meta.inputHint, accent: accent),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: AccentTag(label: meta.inputHint, accent: accent),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-/// A small accent-tinted pill for a game's input hint (TAP / HOLD / MASH).
-class _HintChip extends StatelessWidget {
-  const _HintChip({required this.label, required this.accent});
-
-  final String label;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: accent.withValues(alpha: 0.5)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: accent,
-          fontWeight: FontWeight.w800,
-          fontSize: 11,
-          letterSpacing: 1.2,
         ),
       ),
     );

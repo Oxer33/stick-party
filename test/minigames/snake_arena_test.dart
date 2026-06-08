@@ -106,6 +106,40 @@ void main() {
     expect(g.status, MiniGameStatus.finished);
   });
 
+  test('SUDDEN DEATH: the closing arena forces a finish within the limit', () {
+    // CLIMAX mechanic. The arena starts closing in the final window, so even a
+    // cagey field is squeezed to a finish — it must always resolve by the 35s
+    // cap (+a small resolution buffer), never idle out forever, across seeds.
+    const maxTicks = 60 * 36; // 35s limit + buffer
+    for (final seed in const [1, 7, 13, 21, 34, 42]) {
+      final g = SnakeArena()..init(ctxFor(2, seed));
+      var ticks = 0;
+      while (g.status != MiniGameStatus.finished && ticks < 60 * 120) {
+        g.update(1 / 60);
+        ticks++;
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      expect(ticks, lessThanOrEqualTo(maxTicks),
+          reason: 'seed=$seed should resolve within the cap');
+    }
+  });
+
+  test('render does not throw deep into SUDDEN DEATH (arena closing)', () {
+    // The closing-wall + golden-pellet draw paths must be exercised without
+    // throwing once the arena is closing (the last ~9s of the 35s round).
+    final g = SnakeArena()..init(ctxFor(4, 5));
+    final canvas = Canvas(PictureRecorder());
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 36) {
+      g.update(1 / 60);
+      if (n / 60.0 >= 27.0) {
+        // Inside the closing window each frame: render must stay safe.
+        expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
+      }
+    }
+    expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
+  });
+
   test('render does not throw before or after finish', () {
     final g = SnakeArena()..init(ctxFor(4, 11));
     final recorder = PictureRecorder();

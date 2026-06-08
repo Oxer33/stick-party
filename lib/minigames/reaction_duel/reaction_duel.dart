@@ -11,27 +11,21 @@ import '../../engine/helpers/reaction_gate.dart';
 import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'reaction_duel_rounds.dart';
 import 'reaction_render.dart';
 
-/// Reaction Duel — a samurai quick-draw standoff at dusk. Every player is a
-/// stickman swordsman in a tense stance, hand on the hilt, facing the center.
-/// The field shows "WAIT…" through a random delay, then a sudden blinding
-/// "STRIKE!" flash + signal (driven by [ReactionGate]). The first valid tap
-/// after the signal lands an instant slash; the loser(s) ragdoll-fly outward in
-/// a hit-stop slow-mo with a KO popup. Tapping BEFORE the signal is a false
-/// start: that duelist is locked out (a "TOO SOON!" stamp) and ranked last.
+/// Reaction Duel — a samurai quick-draw standoff at dusk, played as a best-of:
+/// a normal round, then a CLIMAX **LIGHTNING round worth double** (snappier
+/// wait, a persistent gold ambience). Each round the field shows "WAIT…" through
+/// a random delay (via [ReactionGate]), then a blinding "STRIKE!" signal; the
+/// first valid tap lands an instant slash and ragdoll-KOs the loser(s) under a
+/// slow-mo beat. Tapping BEFORE the signal is a false start (locked out for that
+/// round). A late tap still records a reaction time, so the round ranks the
+/// whole field, and the match ranks by cumulative points (see [buildDuelRanking]).
 ///
-/// Depth (still one-touch):
-///  * One clean read — react to the signal, draw first. A late tap still scores
-///    so the whole field is ranked by reaction time, not just first place.
-///  * The winner's blade sweeps a slash arc to each loser; the loser flies as a
-///    real ragdoll, scaled by how decisive the win was, under a slow-mo beat.
-///  * Tension builds visually: the vignette pulses harder the longer the WAIT,
-///    so the calm-before-the-strike is felt, then released in one flash.
-///
-/// Bots draw after the signal on a [BotProfile]-driven reaction delay (+jitter);
-/// per round, a bot may jump the gun (false start) with probability
-/// [BotProfile.errorRate]. A timeout fallback guarantees the round resolves.
+/// Bots draw after the signal on a [BotProfile]-driven reaction delay (+jitter)
+/// and may jump the gun with probability [BotProfile.errorRate]; per-round and
+/// overall timeouts guarantee the match always resolves within its limit.
 class ReactionDuel extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -44,12 +38,25 @@ class ReactionDuel extends MiniGameBase {
       );
 
   // ── Round tuning (no magic numbers inline) ──────────────────────────────────
-  static const double _timeLimit = 12;
+  // The duel is now a short best-of: a normal round, then a LIGHTNING FINAL
+  // round worth double. The cap is sized to comfortably fit both rounds (each
+  // round: up to _maxGoDelay wait + a reaction window + the post-win linger).
+  static const int _roundCount = 2; // total rounds (last one is the lightning)
+  static const double _timeLimit = 20;
   static const double _minGoDelay = 1.2;
   static const double _maxGoDelay = 3.6;
-  static const double _lingerAfterWin = 1.1; // hold the KO beat before finishing
+  static const double _lightningMinGoDelay = 0.7; // snappier wait in the finale
+  static const double _lightningMaxGoDelay = 2.0;
+  static const double _lingerAfterWin = 1.0; // hold the KO beat before next round
+  static const double _interRoundSec = 1.3; // beat between rounds (cue + reset)
   static const double _goWindow = 3.0; // max seconds in GO before force-ending
   static const double _penaltyScore = -1; // HUD score for false-starters
+
+  // ── Climax: the LIGHTNING FINAL round (double points) ───────────────────────
+  static const int _normalRoundPoints = 1; // winner's points in a normal round
+  static const int _lightningPoints = 2; // winner's points in the finale
+  static const double _lightningCueSec = 1.6; // "LIGHTNING ROUND!" banner life
+  static const Color _lightningGold = Color(0xFFFFE45C);
 
   // ── Strike / feel tuning ────────────────────────────────────────────────────
   static const double _strikeFlashSec = 0.45; // blinding flash + screen-flash
@@ -116,8 +123,18 @@ class ReactionDuel extends MiniGameBase {
   bool _signalSeen = false; // the GO signal has fired at least once
   bool _confettiFired = false;
 
+  // ── Best-of round state (the climax is the final LIGHTNING round) ───────────
+  int _round = 1; // 1-based; _round == _roundCount is the lightning final
+  bool _between = false; // in the short inter-round beat (cue + reset)
+  double _betweenTimer = 0; // time spent in the inter-round beat
+  bool _roundScored = false; // this round's points have been tallied
+  double _lightningCue = 0; // 1 → 0 life of the "LIGHTNING ROUND!" banner
+  final Map<int, int> _points = <int, int>{}; // cumulative points across rounds
+
   final Map<int, _Reactor> _reactors = <int, _Reactor>{};
-  final List<_Slash> _slashes = <_Slash>[]; // active slash arcs (winner→loser)
+  final List<Slash> _slashes = <Slash>[]; // active slash arcs (winner→loser)
+
+  bool get _isLightning => _round >= _roundCount;
 
   @override
   void init(MiniGameContext ctx) {
@@ -132,6 +149,9 @@ class ReactionDuel extends MiniGameBase {
     // Legs are near-vertical at rest, so pelvis→foot ≈ thigh + shin.
     _footReach = _proportions.thigh + _proportions.shin;
 
+    for (final p in ctx.players) {
+      _points[p.id] = 0;
+    }
     _buildDuelists();
     begin();
   }
@@ -142,26 +162,30 @@ class ReactionDuel extends MiniGameBase {
   void _buildDuelists() {
     final positions = _layoutPositions(ctx.players.length);
     for (var i = 0; i < ctx.players.length; i++) {
-      final p = ctx.players[i];
-      final foot = positions[i];
-      // Face inward toward the center signal.
-      final facing = foot.dx <= _center.dx ? 1.0 : -1.0;
-      final color = Color(p.colorArgb);
-      _reactors[p.id] = _Reactor(
-        slot: p,
-        foot: foot,
-        figure: StickFigure(
-          proportions: _proportions,
-          style: _styleFor(color),
-          weapon: _swordFor(color),
-          facing: facing,
-        )
-          ..aimAngle = _sheathedAim(facing)
-          ..setLoco(LocoState.idle),
-        clock: ReactionClock(ctx.botProfile, ctx.rng),
-        jumpsTheGun: p.isBot && ctx.rng.chance(ctx.botProfile.errorRate),
-      );
+      _reactors[ctx.players[i].id] = _makeReactor(ctx.players[i], positions[i]);
     }
+  }
+
+  /// Build a ready-stance duelist for [p] at [foot] (fresh figure facing the
+  /// centre, fresh clock, per-round gun-jump roll). Shared by the first build
+  /// and each round reset so the two never drift.
+  _Reactor _makeReactor(PlayerSlot p, Offset foot) {
+    final facing = foot.dx <= _center.dx ? 1.0 : -1.0; // face the signal
+    final color = Color(p.colorArgb);
+    return _Reactor(
+      slot: p,
+      foot: foot,
+      figure: StickFigure(
+        proportions: _proportions,
+        style: _styleFor(color),
+        weapon: _swordFor(color),
+        facing: facing,
+      )
+        ..aimAngle = _sheathedAim(facing)
+        ..setLoco(LocoState.idle),
+      clock: ReactionClock(ctx.botProfile, ctx.rng),
+      jumpsTheGun: p.isBot && ctx.rng.chance(ctx.botProfile.errorRate),
+    );
   }
 
   /// Foot-line anchors per player: a row of duelists across the dueling ground,
@@ -228,12 +252,21 @@ class ReactionDuel extends MiniGameBase {
 
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
-    _gate.update(dt);
-
-    _onSignalEdge();
     _decayEffects(dt);
-    _driveBots(dt);
     _advanceFigures(sdt);
+
+    // The short beat between rounds: hold a cue, then arm the next round.
+    if (_between) {
+      _betweenTimer += dt;
+      if (_betweenTimer >= _interRoundSec) _beginNextRound();
+      // Absolute safety net even mid-transition.
+      if (_elapsed >= _timeLimit) _finishFromPoints();
+      return;
+    }
+
+    _gate.update(dt);
+    _onSignalEdge();
+    _driveBots(dt);
     _publishLiveScores();
     _resolveOutcome(dt);
   }
@@ -259,6 +292,9 @@ class ReactionDuel extends MiniGameBase {
     }
     if (_strikeWord > 0) {
       _strikeWord = (_strikeWord - dt / _strikeWordSec).clamp(0.0, 1.0);
+    }
+    if (_lightningCue > 0) {
+      _lightningCue = (_lightningCue - dt / _lightningCueSec).clamp(0.0, 1.0);
     }
     for (final r in _reactors.values) {
       if (r.tooSoon > 0) {
@@ -365,7 +401,7 @@ class ReactionDuel extends MiniGameBase {
   void _fellLoser(_Reactor loser, Offset from, double decisive) {
     final color = _colorOf(loser.slot.id);
     final chest = _chestOf(loser);
-    _slashes.add(_Slash(from: from, to: chest, color: color, life: 1.0));
+    _slashes.add(Slash(from: from, to: chest, color: color, life: 1.0));
 
     _juice.ko(chest, color);
 
@@ -399,21 +435,25 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
-  /// Live HUD score: fastest valid reaction = highest; false-start = penalty.
+  /// Live HUD score: cumulative round points plus a tiny (<1) in-round nudge so
+  /// a faster reaction edges ahead and a false-starter dips, while the round
+  /// points always dominate — kids watch the tally climb, the finale swings it.
   void _publishLiveScores() {
     final times = _gate.reactionTimes;
     final penalized = _gate.penalized;
     for (final p in ctx.players) {
+      final base = (_points[p.id] ?? 0).toDouble();
       if (penalized.contains(p.id)) {
-        setScore(p.id, _penaltyScore);
+        setScore(p.id, base + _penaltyScore * 0.001);
       } else {
         final t = times[p.id];
-        setScore(p.id, t != null ? 1 / (t + 0.01) : 0);
+        // Tiny in-round nudge (<1) so cumulative points always dominate.
+        setScore(p.id, base + (t != null ? 0.001 / (t + 0.01) : 0));
       }
     }
   }
 
-  // ── Outcome ───────────────────────────────────────────────────────────────
+  // ── Outcome (best-of rounds) ────────────────────────────────────────────────
 
   void _resolveOutcome(double dt) {
     if (_gate.phase == ReactionPhase.done) {
@@ -427,43 +467,102 @@ class ReactionDuel extends MiniGameBase {
                 ? const []
                 : [_colorOf(w), _brighten(_colorOf(w), 0.55), _accentGold]);
       }
-      if (_sinceDone >= _lingerAfterWin) _finishFromGate();
+      if (_sinceDone >= _lingerAfterWin) _onRoundOver();
     }
     // Absolute safety net: never exceed the time limit.
     if (_elapsed >= _timeLimit && status == MiniGameStatus.running) {
       _gate.forceDone();
-      _finishFromGate();
+      _tallyRound();
+      _finishFromPoints();
     }
   }
 
-  /// Build the final ranking from the gate: winner first, then valid reactions
-  /// ascending, then non-reactors, with penalized (false-start) players last.
-  void _finishFromGate() {
-    if (status == MiniGameStatus.finished) return;
-    final times = _gate.reactionTimes;
-    final penalized = _gate.penalized;
+  /// A round has fully resolved (winner + linger done): bank its points, then
+  /// either kick off the inter-round beat or finish the whole match.
+  void _onRoundOver() {
+    _tallyRound();
+    if (_round < _roundCount) {
+      _beginInterRound();
+    } else {
+      _finishFromPoints();
+    }
+  }
+
+  /// Award this round's points to its winner (double in the lightning final).
+  /// Idempotent per round via [_roundScored] so a tally + safety-net can't
+  /// double-count.
+  void _tallyRound() {
+    if (_roundScored) return;
+    _roundScored = true;
     final winner = _gate.winner;
+    if (winner == null) return;
+    final award = _isLightning ? _lightningPoints : _normalRoundPoints;
+    _points[winner] = (_points[winner] ?? 0) + award;
+  }
 
-    final ranked = <int>[];
-    if (winner != null) ranked.add(winner);
+  /// Open the inter-round beat; [update] times it out then arms the next round.
+  void _beginInterRound() {
+    _between = true;
+    _betweenTimer = 0;
+  }
 
-    final others = times.keys
-        .where((id) => id != winner && !penalized.contains(id))
-        .toList()
-      ..sort((a, b) => times[a]!.compareTo(times[b]!));
-    ranked.addAll(others);
+  /// Arm the next round: bump the counter, roll a fresh gate (snappier delays in
+  /// the lightning final), reset every duelist to a ready stance, clear the
+  /// round-scoped fx + flags, and raise the LIGHTNING cue when it is the finale.
+  void _beginNextRound() {
+    _round += 1;
+    _between = false;
+    _betweenTimer = 0;
+    _roundScored = false;
+    _signalSeen = false;
+    _confettiFired = false;
+    _sinceDone = 0;
+    _sinceGo = 0;
+    _slashes.clear();
 
-    for (final p in ctx.players) {
-      if (ranked.contains(p.id) || penalized.contains(p.id)) continue;
-      ranked.add(p.id);
+    _gate = _isLightning
+        ? ReactionGate(ctx.rng,
+            minDelay: _lightningMinGoDelay, maxDelay: _lightningMaxGoDelay)
+        : ReactionGate(ctx.rng, minDelay: _minGoDelay, maxDelay: _maxGoDelay);
+
+    _resetDuelistsForRound();
+
+    if (_isLightning) {
+      _lightningCue = 1.0;
+      _juice.shake.medium();
+      final center = Offset(_size.width / 2, _size.height * _cueCenterFrac);
+      _juice.popup(center, 'LIGHTNING ROUND!', _lightningGold, size: 44);
+      _juice.popup(center.translate(0, _scaleUnit * 2.6), 'DOUBLE POINTS',
+          _brighten(_lightningGold, 0.2),
+          size: 26);
     }
-    for (final p in ctx.players) {
-      if (penalized.contains(p.id)) ranked.add(p.id);
-    }
+  }
 
+  /// Reset each duelist for a fresh round by rebuilding it at the same foot
+  /// anchor (un-ragdolls, re-poses, re-arms). Points live outside the reactors.
+  void _resetDuelistsForRound() {
+    for (final p in ctx.players) {
+      final old = _reactors[p.id];
+      if (old == null) continue;
+      _reactors[p.id] = _makeReactor(p, old.foot);
+    }
+  }
+
+  /// Build the final ranking from cumulative points (best→worst), with the last
+  /// round's reaction times as a gentle tiebreak (see [buildDuelRanking]). Every
+  /// player id appears exactly once.
+  void _finishFromPoints() {
+    if (status == MiniGameStatus.finished) return;
     _publishLiveScores();
+
+    final ids = buildDuelRanking(
+      ctx.players.map((p) => p.id).toList(),
+      _points,
+      _gate.reactionTimes,
+    );
+
     finishWith(WinResult(
-      ranking: ranked,
+      ranking: ids,
       finalScores: Map<int, num>.from(scores.byPlayer),
     ));
   }
@@ -483,6 +582,14 @@ class ReactionDuel extends MiniGameBase {
     // The per-zone RED→GREEN wash is the dominant, kid-clear signal. Drawn under
     // the figures so the swordsmen sit on top of their colored ground.
     _drawZoneWashes(canvas, size);
+
+    // The LIGHTNING (double-points) final round gets a persistent gold edge-wash
+    // so the climax reads at a glance; the cue peak blooms at the round start.
+    if (_isLightning) {
+      ReactionRenderer.drawLightningAmbience(
+          canvas, size, _lightningCue, _waitPulse(),
+          gold: _lightningGold);
+    }
 
     _drawDuelists(canvas);
     _drawSlashes(canvas);
@@ -688,19 +795,5 @@ class _Reactor {
     required this.figure,
     required this.clock,
     required this.jumpsTheGun,
-  });
-}
-
-/// A short-lived slash arc from the winner's blade to a loser's chest.
-class _Slash {
-  final Offset from;
-  final Offset to;
-  final Color color;
-  double life; // 1 → 0
-  _Slash({
-    required this.from,
-    required this.to,
-    required this.color,
-    required this.life,
   });
 }

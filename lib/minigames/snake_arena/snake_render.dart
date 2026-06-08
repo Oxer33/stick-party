@@ -22,6 +22,8 @@ class SnakeRenderer {
   static const Color _wallNeon = Color(0xFF2FE4FF);
   static const Color _foodCore = Color(0xFFFFF3B0);
   static const Color _foodNeon = Color(0xFFFFC93C);
+  static const Color _goldenFood = Color(0xFFFFD24A); // swingy bonus pellet
+  static const Color _sdWall = Color(0xFFFF5A3C); // SUDDEN DEATH closing wall
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _hudTrack = Color(0x33FFFFFF);
@@ -148,6 +150,29 @@ class SnakeRenderer {
     canvas.drawRect(field, core);
   }
 
+  /// The SUDDEN DEATH closing wall: a hot, throbbing red border around the
+  /// still-playable [box] (which shrinks as the finale advances). [pulse] (0..1)
+  /// breathes it. A wide faint stroke under a crisp core fakes the danger bloom
+  /// without a blur — this is the unmistakable "the arena is eating you" cue.
+  static void drawClosingWalls(Canvas canvas, Rect box, double pulse) {
+    if (box.width <= 1 || box.height <= 1) return;
+    final p = pulse.clamp(0.0, 1.0);
+    canvas.drawRect(
+      box,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _wallGlowW * (1.2 + 0.6 * p)
+        ..color = _sdWall.withValues(alpha: 0.16 + 0.16 * p),
+    );
+    canvas.drawRect(
+      box,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _wallCoreW * 1.3
+        ..color = Color.lerp(_sdWall, _white, 0.2 + 0.3 * p) ?? _sdWall,
+    );
+  }
+
   /// A pulsing food pellet at pixel [center] of radius scaled to [cell]. Layered
   /// glow → core → bright center → rotating sparkle arms. [phase] animates the
   /// pulse + sparkle; [neon] tints it.
@@ -157,19 +182,24 @@ class SnakeRenderer {
     double cell,
     double phase, {
     Color neon = _foodNeon,
+    bool golden = false,
   }) {
     if (cell <= 0) return;
+    // A golden pellet is a swingy bonus: a warm gold neon and a touch bigger so
+    // it stands out from the everyday pellets and draws a scramble.
+    final tint = golden ? _goldenFood : neon;
     final pulse = 1.0 + _foodPulseAmp * math.sin(phase * 3.0);
-    final r = cell * _foodBaseFactor * pulse;
+    final r = cell * _foodBaseFactor * pulse * (golden ? 1.35 : 1.0);
 
     // Outer glow halo: two stacked translucent rings (wide+faint, tight+stronger)
-    // instead of a per-pellet blur.
-    canvas.drawCircle(
-        center, r * 2.8, Paint()..color = neon.withValues(alpha: 0.12));
-    canvas.drawCircle(
-        center, r * 2.0, Paint()..color = neon.withValues(alpha: 0.2));
+    // instead of a per-pellet blur. Golden pellets bloom a little brighter.
+    final haloBoost = golden ? 0.10 : 0.0;
+    canvas.drawCircle(center, r * 2.8,
+        Paint()..color = tint.withValues(alpha: 0.12 + haloBoost));
+    canvas.drawCircle(center, r * 2.0,
+        Paint()..color = tint.withValues(alpha: 0.2 + haloBoost));
     // Neon body.
-    canvas.drawCircle(center, r, Paint()..color = neon);
+    canvas.drawCircle(center, r, Paint()..color = tint);
     // Bright hot core.
     canvas.drawCircle(
       center.translate(-r * 0.22, -r * 0.22),
