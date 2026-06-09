@@ -289,8 +289,11 @@ class OneTouchSoccer extends MiniGameBase {
     if (status != MiniGameStatus.running) return;
     final joy = _joysticks[input.playerId];
     if (joy == null) return;
-    // Inputs during the kickoff pause would steer on a frozen ball; ignore.
-    if (_kickoffPause > 0) return;
+    // A release must always be honored — even during the kickoff pause — so a
+    // finger lifted mid-pause can never leave the joystick stuck active (which
+    // would keep the striker running once the pause ends). Down/drag DO steer a
+    // frozen ball, so those are ignored while the pause runs.
+    if (_kickoffPause > 0 && input.phase != InputPhase.up) return;
 
     switch (input.phase) {
       case InputPhase.down:
