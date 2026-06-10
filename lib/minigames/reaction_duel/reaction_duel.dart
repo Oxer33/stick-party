@@ -122,6 +122,7 @@ class ReactionDuel extends MiniGameBase {
   double _strikeWord = 0; // 1 → 0 over [_strikeWordSec]: banner punch then fade
   bool _signalSeen = false; // the GO signal has fired at least once
   bool _confettiFired = false;
+  bool _feintLitLast = false; // edge-detect each fake-GO flash (bot bait)
 
   // ── Best-of round state (the climax is the final LIGHTNING round) ───────────
   int _round = 1; // 1-based; _round == _roundCount is the lightning final
@@ -135,6 +136,11 @@ class ReactionDuel extends MiniGameBase {
   final List<Slash> _slashes = <Slash>[]; // active slash arcs (winner→loser)
 
   bool get _isLightning => _round >= _roundCount;
+
+  /// True while a fake-GO flash is lit before the real signal — the field bluffs
+  /// green to bait a tap, but the gate is still WAITING so any tap is an early
+  /// false start. Cleared the instant the real GO fires.
+  bool get _feintLit => !_signalSeen && _gate.feintActive;
 
   @override
   void init(MiniGameContext ctx) {
@@ -308,14 +314,18 @@ class ReactionDuel extends MiniGameBase {
   }
 
   /// Bots: gun-jumpers tap during the wait; honest bots draw after the signal
-  /// on their (jittered) reaction delay. A stalled GO closes its own window so a
-  /// round of all-false-starts still resolves.
+  /// on their (jittered) reaction delay. Honest bots can also be BAITED by a
+  /// feint — on each fresh fake-GO flash they roll [BotProfile.errorRate] and,
+  /// if it lands, snap at the fake (a false start), so weak bots fall for feints
+  /// and strong bots hold. A stalled GO closes its own window so a round of
+  /// all-false-starts still resolves.
   void _driveBots(double dt) {
     final inGo = _gate.phase == ReactionPhase.go;
     if (inGo) {
       _sinceGo += dt;
       if (_gate.winner == null && _sinceGo >= _goWindow) _gate.forceDone();
     }
+    _maybeBaitBotsOnFeint();
     for (final r in _reactors.values) {
       if (!r.slot.isBot || r.acted) continue;
       if (r.jumpsTheGun && _gate.phase == ReactionPhase.waiting) {
@@ -327,6 +337,25 @@ class ReactionDuel extends MiniGameBase {
       }
       if (inGo && r.clock.tick(dt)) {
         _handleTap(r.slot.id);
+        r.acted = true;
+      }
+    }
+  }
+
+  /// On the rising edge of each feint flash, every honest, not-yet-acted bot
+  /// rolls [BotProfile.errorRate]; a hit makes it tap the fake (an early false
+  /// start). Rolled once per flash via [_feintLitLast] so a bot can't be tested
+  /// every frame the flash is lit.
+  void _maybeBaitBotsOnFeint() {
+    final lit = _gate.feintActive;
+    final rising = lit && !_feintLitLast;
+    _feintLitLast = lit;
+    if (!rising) return;
+    for (final r in _reactors.values) {
+      if (!r.slot.isBot || r.acted) continue;
+      if (r.jumpsTheGun) continue; // already committed to jumping the gun
+      if (ctx.rng.chance(ctx.botProfile.errorRate)) {
+        _handleTap(r.slot.id); // taps a fake → penalized lockout
         r.acted = true;
       }
     }
@@ -516,6 +545,7 @@ class ReactionDuel extends MiniGameBase {
     _roundScored = false;
     _signalSeen = false;
     _confettiFired = false;
+    _feintLitLast = false;
     _sinceDone = 0;
     _sinceGo = 0;
     _slashes.clear();
@@ -598,12 +628,15 @@ class ReactionDuel extends MiniGameBase {
     // every player reads their own state at a glance.
     _drawZoneLabels(canvas, size);
 
+    // During a feint we paint the same green "GO!" cue (a bluff). A steady flash
+    // value keeps the fake burst lit for the blink, snapping back to red after.
+    final feinting = _feintLit;
     ReactionRenderer.drawCenterCue(
       canvas,
       size,
-      struck: _signalSeen,
-      strikeFlash: _strikeFlash,
-      strikeWord: _strikeWord,
+      struck: _signalSeen || feinting,
+      strikeFlash: feinting ? 1.0 : _strikeFlash,
+      strikeWord: feinting ? 1.0 : _strikeWord,
       waitPulse: _waitPulse(),
       centerFrac: _cueCenterFrac,
     );
@@ -718,6 +751,11 @@ class ReactionDuel extends MiniGameBase {
       // Bright GREEN: a flash spike at the GO edge that settles to a steady "TAP".
       return (_zoneGreen, _zoneGoBaseAlpha + _zoneGoFlashAlpha * _strikeFlash);
     }
+    if (_feintLit) {
+      // FAKE GO: flash bright green to bait an early tap — same look as the real
+      // signal, but the gate is still waiting so tapping it is a false start.
+      return (_zoneGreen, _zoneGoBaseAlpha + _zoneGoFlashAlpha);
+    }
     // Waiting: a gently throbbing RED so the kid feels "not yet".
     final throb = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
     return (_zoneRed, _zoneWaitAlpha + _zoneWaitPulse * throb);
@@ -733,7 +771,8 @@ class ReactionDuel extends MiniGameBase {
     if (_gate.reactionTimes.containsKey(id)) {
       return ('GOT IT!', const Color(0xFFFFFFFF));
     }
-    if (_signalSeen) return ('TAP!', const Color(0xFFFFFFFF));
+    // A feint shows the same "TAP!" bait as the real signal (it's a fake-out).
+    if (_signalSeen || _feintLit) return ('TAP!', const Color(0xFFFFFFFF));
     return ('WAIT', const Color(0xFFFFFFFF));
   }
 

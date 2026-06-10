@@ -38,6 +38,14 @@ enum ReactionTap {
 /// the gate handles false-start penalties, picks the single winner, and records
 /// each valid reaction time.
 ///
+/// **Feints** (depth layer): during the wait it can flash 1–2 brief FAKE GOs —
+/// the field lights up "GO!"-green for a [feintFlashSec] blink, then snaps back
+/// to red. A feint is **not** the GO: the phase stays [ReactionPhase.waiting],
+/// so tapping a feint is an [ReactionTap.early] false start (same penalized
+/// lockout). Each fake fires before the real GO with a margin, so it can never
+/// be confused with — or overrun — the real signal. Read [feintActive] to draw
+/// the green flash. Disable by passing `feints: 0`.
+///
 /// Mutable single-round object. Call [reset] to roll a fresh GO time and replay.
 class ReactionGate {
   final SeededRng _rng;
@@ -48,6 +56,12 @@ class ReactionGate {
   /// Inclusive upper bound (seconds) for the random GO delay.
   final double maxDelay;
 
+  /// Most fake-GO flashes to schedule before the real GO (0 disables feints).
+  final int feints;
+
+  /// How long a single fake-GO flash stays green (seconds).
+  final double feintFlashSec;
+
   double _goAt;
   double _elapsed = 0;
   ReactionPhase _phase = ReactionPhase.waiting;
@@ -55,7 +69,18 @@ class ReactionGate {
   final Map<int, double> _reactionTimes = <int, double>{};
   final Set<int> _penalized = <int>{};
 
-  /// Creates a gate and rolls the first GO time.
+  /// Scheduled fake-GO flash start times (seconds), strictly before [_goAt].
+  final List<double> _fakeGoAt = <double>[];
+
+  /// Index of the fake currently flashing, or -1 when none is lit.
+  int _activeFeint = -1;
+
+  /// Margin (seconds) the last feint must finish before the real GO, so a feint
+  /// can never bleed into the genuine signal. Comfortably above a fast human
+  /// reaction so a feint is a real fake-out, not a disguised GO.
+  static const double _feintSafetyGap = 0.45;
+
+  /// Creates a gate and rolls the first GO time (plus any feints).
   ///
   /// Throws [ArgumentError] if the delays are negative, non-finite, or if
   /// [maxDelay] < [minDelay].
@@ -63,6 +88,8 @@ class ReactionGate {
     SeededRng rng, {
     this.minDelay = 1.0,
     this.maxDelay = 3.5,
+    this.feints = 2,
+    this.feintFlashSec = 0.22,
   })  : _rng = rng,
         _goAt = 0 {
     if (!minDelay.isFinite || !maxDelay.isFinite || minDelay < 0) {
@@ -73,13 +100,48 @@ class ReactionGate {
       throw ArgumentError('maxDelay ($maxDelay) < minDelay ($minDelay)');
     }
     _goAt = _rollGoTime();
+    _rollFeints();
   }
 
   double _rollGoTime() =>
       maxDelay == minDelay ? minDelay : _rng.range(minDelay, maxDelay);
 
+  /// Roll up to [feints] fake-GO flash times into the open window before the
+  /// real GO. We only place them in `[minDelay*0.5, _goAt - safety]`, drop any
+  /// that don't leave room for the flash + safety gap, and keep them sorted so
+  /// [update] can light them in order. Skips entirely when the wait is too
+  /// short to host a safe fake.
+  void _rollFeints() {
+    _fakeGoAt.clear();
+    _activeFeint = -1;
+    if (feints <= 0) return;
+    final latest = _goAt - _feintSafetyGap - feintFlashSec;
+    final earliest = minDelay * 0.5;
+    if (latest <= earliest) return; // no safe room for a fake
+    final count = _rng.intRange(1, feints + 1); // 1..feints
+    final times = <double>[];
+    for (var i = 0; i < count; i++) {
+      times.add(_rng.range(earliest, latest));
+    }
+    times.sort();
+    // Keep fakes spaced so two don't visually merge into one long flash.
+    var last = -1.0;
+    for (final t in times) {
+      if (t - last < feintFlashSec * 1.5) continue;
+      _fakeGoAt.add(t);
+      last = t;
+    }
+  }
+
   /// Current phase.
   ReactionPhase get phase => _phase;
+
+  /// True while a fake-GO flash is currently lit (the field should flash green
+  /// even though the phase is still [waiting] — tapping now is a false start).
+  bool get feintActive => _activeFeint >= 0;
+
+  /// Scheduled fake-GO start times (read-only view), for cues/telemetry.
+  List<double> get fakeGoTimes => List<double>.unmodifiable(_fakeGoAt);
 
   /// The winning player id, or null until a [ReactionTap.valid] tap lands.
   int? get winner => _winner;
@@ -101,13 +163,32 @@ class ReactionGate {
   }
 
   /// Advance the clock. Transitions [waiting] -> [go] once the rolled GO time
-  /// is reached. Non-positive or non-finite [dt] is ignored.
+  /// is reached. While waiting, it also tracks which (if any) fake-GO flash is
+  /// currently lit so the game can paint the feint. Non-positive or non-finite
+  /// [dt] is ignored.
   void update(double dt) {
     if (!dt.isFinite || dt <= 0) return;
     if (_phase != ReactionPhase.waiting) return;
     _elapsed += dt;
     if (_elapsed >= _goAt) {
       _phase = ReactionPhase.go;
+      _activeFeint = -1; // the real GO supersedes any feint
+      return;
+    }
+    _updateFeint();
+  }
+
+  /// Light the fake-GO flash whose [feintFlashSec] window currently contains
+  /// [_elapsed] (else clear it). Feints never change [_phase]; they only flip
+  /// [feintActive], so a tap landing on one is still an early false start.
+  void _updateFeint() {
+    _activeFeint = -1;
+    for (var i = 0; i < _fakeGoAt.length; i++) {
+      final start = _fakeGoAt[i];
+      if (_elapsed >= start && _elapsed < start + feintFlashSec) {
+        _activeFeint = i;
+        return;
+      }
     }
   }
 
@@ -148,7 +229,7 @@ class ReactionGate {
   void forceDone() => _phase = ReactionPhase.done;
 
   /// Reset to a fresh round: clears winner/penalties/times and rolls a new GO
-  /// time from the same RNG stream.
+  /// time (and a fresh set of feints) from the same RNG stream.
   void reset() {
     _elapsed = 0;
     _phase = ReactionPhase.waiting;
@@ -156,5 +237,6 @@ class ReactionGate {
     _reactionTimes.clear();
     _penalized.clear();
     _goAt = _rollGoTime();
+    _rollFeints();
   }
 }

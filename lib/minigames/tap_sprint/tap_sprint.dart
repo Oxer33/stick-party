@@ -18,11 +18,14 @@ import 'sprint_render.dart';
 /// 2nd/3rd/4th as they cross. On the time limit, unfinished runners are ranked
 /// by distance covered, so the round always resolves.
 ///
-/// Depth (still one-touch):
-///  * **Stride rhythm**: tapping in a steady cadence window grows a per-runner
-///    rhythm factor; erratic / spammed taps let it bleed off. A smooth gait
-///    converts each tap into slightly more ground (a small rhythm bonus on top
-///    of the no-decay meter), so rhythm — not just raw speed — wins the race.
+/// Depth (still one-touch) — **RHYTHM-OR-STUMBLE**:
+///  * A tap INSIDE the cadence window (`_cadenceLo.._cadenceHi`) is a clean
+///    STRIDE: it banks the base meter impulse plus a dominant rhythm-scaled
+///    bonus. A tap OUTSIDE the window is a STUMBLE: ~zero ground, a brief gait
+///    trip, and a small setback. Blind mashing (taps every frame) lands far
+///    below the window floor, so it stumbles and stalls — rhythm, not raw finger
+///    speed, wins the race. The opening tap is a free stride so nobody trips off
+///    the blocks.
 ///  * **Mash energy** drives the whole body language: a smoothed recent-tap
 ///    rate sets the run-cycle speed (we feed the animator a stretched dt), the
 ///    forward lean angle, plus footstep dust and back-streaking speed lines.
@@ -44,20 +47,36 @@ class TapSprint extends MiniGameBase {
 
   // ── Round / track tuning (no magic numbers inline) ──────────────────────────
   static const double _timeLimit = 30;
-  static const double _tapImpulse = 0.016; // base no-decay meter gain per tap
+  // Base no-decay meter gain, awarded ONLY for a tap that lands inside the
+  // cadence window (an off-beat tap stumbles and earns ~nothing — see `_tap`).
+  static const double _tapImpulse = 0.020;
   static const double _trackInsetXFrac = 0.085; // start margin / arena width
   static const double _finishInsetXFrac = 0.10; // finish margin / arena width
   static const double _trackTopFrac = 0.30; // stands above, track below
   static const double _laneTopPadFrac = 0.10; // first lane inset into track
   static const double _laneBotPadFrac = 0.10; // last lane inset into track
 
-  // ── Stride rhythm tuning ────────────────────────────────────────────────────
+  // ── Stride rhythm tuning (RHYTHM-OR-STUMBLE) ────────────────────────────────
+  // A tap INSIDE [_cadenceLo, _cadenceHi] is a clean STRIDE: it banks the base
+  // meter impulse plus a dominant in-window bonus. A tap OUTSIDE the window is a
+  // STUMBLE: ~zero ground, a brief trip (idle), and a small setback — so blind
+  // mashing (every-frame taps land far below _cadenceLo) loses to steady rhythm.
   static const double _cadenceLo = 0.07; // good-cadence window (sec) lo
   static const double _cadenceHi = 0.22; // good-cadence window (sec) hi
-  static const double _rhythmGainInWindow = 0.16; // rhythm added per good tap
-  static const double _rhythmPenaltyOutWindow = 0.20; // rhythm lost per bad tap
+  static const double _rhythmGainInWindow = 0.18; // rhythm added per good tap
+  static const double _rhythmPenaltyOutWindow = 0.5; // rhythm lost per stumble
   static const double _rhythmDecayPerSec = 0.35; // idle bleed toward 0
-  static const double _rhythmBonusPerTap = 0.004; // extra fill / tap at rhythm 1
+  // In-window stride bonus per tap (scaled 0..1 by rhythm). Sized to dominate
+  // the base impulse so a runner holding the beat far out-paces an off-beat one.
+  static const double _strideBonusPerTap = 0.020;
+  // STUMBLE: an off-beat tap loses a little hard-won ground (a small setback)
+  // and trips the gait briefly. Kept small + capped so a behind kid never goes
+  // backwards much, but enough that spamming is strictly worse than rhythm.
+  static const double _stumbleSetback = 0.006; // fill removed per stumble
+  static const double _stumbleTripSec = 0.18; // gait trip (idle) after a stumble
+  // The opening tap (and any tap after a long idle) is a free clean stride, so a
+  // runner never stumbles just getting off the blocks.
+  static const double _kickoffGraceSec = 0.6; // idle beyond this → free stride
 
   // ── Mash energy / animation tuning ──────────────────────────────────────────
   static const double _energyPerTap = 0.16; // smoothed-rate bump per tap
@@ -185,8 +204,10 @@ class TapSprint extends MiniGameBase {
     return math.max(0.05, _botBaseInterval - _botAccuracyBonus * prof.accuracy);
   }
 
-  /// Weaker bots jitter more, so they fall out of the rhythm window and lose
-  /// the per-tap bonus; strong bots stay metronomic and keep it.
+  /// Weaker bots jitter more within the (clamped) cadence window, so their
+  /// stride rate wavers; strong bots stay metronomic and faster. Jitter never
+  /// kicks a bot out of the window (see [_nextBotInterval]) so bots never
+  /// stumble themselves inert.
   double _botJitter() {
     final prof = ctx.botProfile;
     return _botJitterBase * (1.0 - prof.accuracy.clamp(0.0, 1.0)) +
@@ -237,32 +258,53 @@ class TapSprint extends MiniGameBase {
 
   // ── Tap → rhythm + meter fill ───────────────────────────────────────────────
 
+  /// One tap → STRIDE or STUMBLE, decided purely by cadence. Energy always bumps
+  /// (so the figure reads as trying), but ground is gated on timing: a tap in
+  /// the window banks the base impulse + a dominant in-window bonus; a tap out
+  /// of the window earns ~nothing, trips the gait, and nudges the runner back.
   void _tap(int id) {
     final r = _runners[id];
     if (r == null || r.finished) return;
 
-    // Rhythm: a steady cadence grows it; spammed / erratic taps bleed it.
     final gap = r.sinceTap;
     r.sinceTap = 0;
-    if (gap >= _cadenceLo && gap <= _cadenceHi) {
-      r.rhythm = (r.rhythm + _rhythmGainInWindow).clamp(0.0, 1.0);
-    } else {
-      r.rhythm = (r.rhythm - _rhythmPenaltyOutWindow).clamp(0.0, 1.0);
-    }
 
-    // Mash energy bump (drives animation speed / lean / fx).
+    // Mash energy bump (drives animation speed / lean / fx) regardless of timing.
     r.energy = (r.energy + _energyPerTap).clamp(0.0, 1.0);
 
-    // No-decay base fill from the shared meter, plus a small rhythm bonus so a
-    // smooth gait covers slightly more ground per tap.
-    r.meter.tap();
-    r.rhythmBonus += _rhythmBonusPerTap * r.rhythm;
+    // The opening tap / a tap after a long idle is a free clean stride, so a
+    // runner never trips merely getting off the blocks.
+    final isKickoff = gap >= _kickoffGraceSec;
+    final inWindow = gap >= _cadenceLo && gap <= _cadenceHi;
 
+    if (inWindow || isKickoff) {
+      _stride(r);
+    } else {
+      _stumble(r);
+    }
+  }
+
+  /// A clean in-window stride: grow rhythm, bank the base meter impulse plus a
+  /// dominant rhythm-scaled bonus, add the comeback assist, and run.
+  void _stride(_Runner r) {
+    r.rhythm = (r.rhythm + _rhythmGainInWindow).clamp(0.0, 1.0);
+    r.meter.tap(); // base no-decay fill, awarded only for on-beat taps
+    // In-window bonus dominates the base impulse so rhythm — not raw tap rate —
+    // covers ground. Scales with how locked-in the gait is (rhythm 0..1).
+    r.rhythmBonus += _strideBonusPerTap * (0.5 + 0.5 * r.rhythm);
     // Comeback (rubber-band): a runner behind the leader earns a touch more
-    // ground per tap, scaled by the gap — keeps a behind kid in the race.
+    // ground per stride, scaled by the gap — keeps a behind kid in the race.
     r.rhythmBonus += _catchUpBonus(r);
-
     r.figure.setLoco(LocoState.run);
+  }
+
+  /// An off-beat stumble: lose the rhythm, give back a little ground (floored at
+  /// 0), and trip the gait for a beat. No meter impulse — spamming gains ~nothing.
+  void _stumble(_Runner r) {
+    r.rhythm = (r.rhythm - _rhythmPenaltyOutWindow).clamp(0.0, 1.0);
+    r.rhythmBonus = math.max(0.0, r.rhythmBonus - _stumbleSetback);
+    r.tripTimer = _stumbleTripSec;
+    r.figure.setLoco(LocoState.idle); // brief trip read
   }
 
   /// Extra per-tap fill for a trailing runner, scaled 0..1 by how far behind the
@@ -277,6 +319,7 @@ class TapSprint extends MiniGameBase {
   void _tickRunners(double dt) {
     for (final r in _runners.values) {
       r.sinceTap += dt;
+      r.tripTimer = math.max(0, r.tripTimer - dt);
       // Rhythm + energy bleed when not feeding taps.
       r.rhythm = math.max(0, r.rhythm - _rhythmDecayPerSec * dt);
       r.energy = math.max(0, r.energy - _energyDecayPerSec * dt);
@@ -293,8 +336,10 @@ class TapSprint extends MiniGameBase {
   /// Drive the figure with a stride speed scaled by mash energy: more energy →
   /// faster leg cycle (we feed the animator a stretched dt). The stride phase
   /// advances with the same scaled time so footstep dust pulses with the gait.
+  /// While [_Runner.tripTimer] is live (a fresh stumble) the runner reads idle —
+  /// a visible hitch — even if energy is high.
   void _advanceFigure(_Runner r, double dt) {
-    if (r.finished || r.energy <= 0.02) {
+    if (r.finished || r.energy <= 0.02 || r.tripTimer > 0) {
       r.figure.setLoco(LocoState.idle);
       r.figure.update(dt);
       r.stridePhase += dt;
@@ -346,8 +391,14 @@ class TapSprint extends MiniGameBase {
     }
   }
 
-  double _nextBotInterval(_Runner r) =>
-      math.max(0.03, r.botInterval + ctx.rng.jitter(r.botJitter));
+  /// A bot's next tap interval, CLAMPED inside the cadence window so a bot always
+  /// lands a clean stride (never stumbles itself inert). Tiers differ by interval
+  /// length within the window — faster (harder) bots take more strides per second
+  /// — not by missing the window. A small inset keeps jitter off the boundaries.
+  double _nextBotInterval(_Runner r) {
+    final raw = r.botInterval + ctx.rng.jitter(r.botJitter);
+    return raw.clamp(_cadenceLo + 0.005, _cadenceHi - 0.005);
+  }
 
   // ── Photo finish ─────────────────────────────────────────────────────────────
 
@@ -551,6 +602,7 @@ class _Runner {
   double energy = 0; // 0..1 smoothed recent mash rate
   double rhythmBonus = 0; // extra fill earned by a smooth gait (added to meter)
   double stridePhase = 0; // gait phase (advanced with scaled dt) for dust sync
+  double tripTimer = 0; // seconds of stumble-trip remaining (gait reads idle)
 
   // Bot cadence clock.
   double botClock = 0;

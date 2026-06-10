@@ -5,6 +5,8 @@ import 'package:stick_party/core/rng.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
+import 'package:stick_party/engine/bots.dart';
+import 'package:stick_party/engine/helpers/reaction_gate.dart';
 import 'package:stick_party/minigames/reaction_duel/reaction_duel.dart';
 import 'package:stick_party/minigames/reaction_duel/reaction_duel_rounds.dart';
 
@@ -55,7 +57,11 @@ void main() {
     }
   });
 
-  test('reaction duel: early human tap is penalized and ranked last', () {
+  test('reaction duel: a human who false-starts every round is ranked last', () {
+    // HARD bots (low errorRate) reliably win their rounds rather than fluffing
+    // every feint, so a human who jumps the gun in BOTH rounds banks zero points
+    // and lands behind them. Tapping every frame while WAITING re-false-starts
+    // on each fresh round; once penalized, extra taps are ignored by the gate.
     final ctx = MiniGameContext(
       players: [
         PlayerSlot.defaults(0), // human jumps the gun
@@ -64,22 +70,60 @@ void main() {
       arena: const Size(800, 1200),
       rng: SeededRng(4),
       zones: ZoneLayout.forPlayers(2),
+      difficulty: BotDifficulty.hard,
     );
     final g = ReactionDuel()..init(ctx);
 
-    // Tap immediately (still in the waiting phase) -> false start.
+    // Tap immediately (still in the waiting phase) -> false start, and keep
+    // tapping so the next round's wait also catches an early tap.
     g.onInput(PlayerInput.down(0));
-
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.onInput(PlayerInput.down(0));
       g.update(1 / 60);
     }
 
     expect(g.status, MiniGameStatus.finished);
     final ranking = g.winResult!.ranking;
     expect(ranking.toSet(), {0, 1});
-    // Penalized player must be last.
+    // The serial false-starter must rank last behind a reliable bot.
     expect(ranking.last, 0);
+  });
+
+  test('feint: tapping a fake-GO flash locks the player out (early false start)',
+      () {
+    // Build a gate with a long wait so a feint comfortably fits before GO, and
+    // force a feint to exist (feints: 1). Advance to the lit flash, tap, and
+    // confirm the tap is an early false start that penalizes — even though the
+    // phase is still WAITING (a feint is NOT the GO).
+    final gate = ReactionGate(SeededRng(4),
+        minDelay: 3.0, maxDelay: 3.0, feints: 1, feintFlashSec: 0.25);
+    expect(gate.fakeGoTimes, isNotEmpty,
+        reason: 'a long wait must schedule at least one feint');
+
+    // Step in small ticks until the (first) fake flash lights up.
+    final flashAt = gate.fakeGoTimes.first;
+    var t = 0.0;
+    while (!gate.feintActive && t < flashAt + 0.5) {
+      gate.update(1 / 120);
+      t += 1 / 120;
+    }
+    expect(gate.feintActive, isTrue, reason: 'the feint flash must light');
+    expect(gate.phase, ReactionPhase.waiting,
+        reason: 'a feint must not advance to GO');
+
+    // Tapping the fake is an early false start and locks the player out.
+    expect(gate.onTap(0), ReactionTap.early);
+    expect(gate.penalized, contains(0));
+
+    // Later, the REAL GO still fires and the locked-out player cannot win it.
+    while (gate.phase == ReactionPhase.waiting && t < 4.0) {
+      gate.update(1 / 120);
+      t += 1 / 120;
+    }
+    expect(gate.phase, ReactionPhase.go);
+    expect(gate.onTap(0), ReactionTap.ignored);
+    expect(gate.winner, isNull);
   });
 
   test('reaction duel solo player finishes within the time limit', () {
