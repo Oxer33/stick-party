@@ -9,8 +9,9 @@ import 'dart:ui';
 /// platform with a bright energized rim and a pulsing red danger band, and
 /// glossy player-colored bumper balls with eyes, a motion trail, squash &
 /// stretch on impact and impact spark rings. There is no idle aim arrow; while
-/// a player charges, a player-colored telegraph points at the nearest opponent.
-/// A numbered ground id ring keeps each ball identifiable.
+/// a player charges, a player-colored telegraph follows their drag (where the
+/// bump will fire), and a launched ball wears a hot rocket-dash aura. A numbered
+/// ground id ring keeps each ball identifiable.
 ///
 /// Perf: per-entity glows (ball bloom, motion trail, impact ring, aim
 /// telegraph) and the ambient motes use cheap layered solid strokes — no
@@ -48,14 +49,21 @@ class BumperRenderer {
   static const double _eyeRadiusFactor = 0.20; // white radius / ball radius
   static const double _trailMaxFactor = 2.6; // trail length / ball radius
   static const int _concentricRings = 5;
-  static const double _idRingWidthFactor = 0.12; // id stroke width / ball radius
+  static const double _idRingWidthFactor =
+      0.12; // id stroke width / ball radius
   static const double _idRingWFactor = 2.4; // id ellipse width / ball radius
   static const double _idRingHFactor = 0.78; // id ellipse height / ball radius
   static const double _idPipFactor = 0.42; // id number pip radius / ball radius
+  static const double _launchAuraFactor = 1.85; // rocket aura radius / ball R
+  static const Color _launchHot = Color(0xFFFFF1C2); // rocket comet hot core
 
   // ── Background: void gradient + soft central glow ───────────────────────────
   static void drawBackground(
-      Canvas canvas, Size size, Offset center, double ringRadius) {
+    Canvas canvas,
+    Size size,
+    Offset center,
+    double ringRadius,
+  ) {
     final bg = Paint()
       ..shader = Gradient.linear(
         Offset(size.width / 2, 0),
@@ -67,11 +75,10 @@ class BumperRenderer {
     final glowR = ringRadius * _voidGlowFactor;
     if (glowR > 0) {
       final glow = Paint()
-        ..shader = Gradient.radial(
-          center,
-          glowR,
-          const [_voidGlow, Color(0x00000000)],
-        );
+        ..shader = Gradient.radial(center, glowR, const [
+          _voidGlow,
+          Color(0x00000000),
+        ]);
       canvas.drawCircle(center, glowR, glow);
     }
   }
@@ -108,7 +115,10 @@ class BumperRenderer {
       ..color = _ringShadow
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22);
     canvas.drawCircle(
-        center + Offset(0, ringRadius * _shadowDrop), ringRadius * 1.03, shadow);
+      center + Offset(0, ringRadius * _shadowDrop),
+      ringRadius * 1.03,
+      shadow,
+    );
 
     // Energized floor body.
     final floor = Paint()
@@ -122,8 +132,9 @@ class BumperRenderer {
 
     // Clip the lattice to the disc so lines never spill past the rim.
     canvas.save();
-    canvas.clipPath(Path()
-      ..addOval(Rect.fromCircle(center: center, radius: ringRadius)));
+    canvas.clipPath(
+      Path()..addOval(Rect.fromCircle(center: center, radius: ringRadius)),
+    );
     _drawHexLattice(canvas, center, ringRadius);
     _drawConcentricGrid(canvas, center, ringRadius, t);
     canvas.restore();
@@ -173,7 +184,11 @@ class BumperRenderer {
 
   /// A few slowly breathing concentric rings for a "scanline" energy feel.
   static void _drawConcentricGrid(
-      Canvas canvas, Offset center, double ringRadius, double t) {
+    Canvas canvas,
+    Offset center,
+    double ringRadius,
+    double t,
+  ) {
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(1.0, ringRadius * 0.005);
@@ -188,7 +203,11 @@ class BumperRenderer {
   /// Glowing red danger band just inside the rim: a soft halo + a crisp core
   /// line so it clearly reads as "the edge will knock you out".
   static void _drawDangerBand(
-      Canvas canvas, Offset center, double ringRadius, double pulse) {
+    Canvas canvas,
+    Offset center,
+    double ringRadius,
+    double pulse,
+  ) {
     final bandDepth = ringRadius * _dangerBandFactor;
     final bandR = ringRadius - bandDepth * 0.7;
     final alpha = (0.28 + 0.5 * pulse.clamp(0.0, 1.0));
@@ -208,7 +227,11 @@ class BumperRenderer {
   /// Bright neon rim: a controlled outer glow, a vertical gradient core stroke,
   /// and an inner highlight lip for a thick 3-D energized edge.
   static void _drawRim(
-      Canvas canvas, Offset center, double ringRadius, Color accent) {
+    Canvas canvas,
+    Offset center,
+    double ringRadius,
+    Color accent,
+  ) {
     final rimW = math.max(3.0, ringRadius * _rimWidthFactor);
     final glow = Paint()
       ..style = PaintingStyle.stroke
@@ -278,6 +301,40 @@ class BumperRenderer {
         ..strokeWidth = ballR * (0.6 + 0.8 * s)
         ..color = color.withValues(alpha: 0.34 * s),
     );
+  }
+
+  /// A hot comet aura behind a ROCKET-DASHING ball: a forward-biased glow plus
+  /// a couple of trailing embers so a launched ball reads as a dangerous streak
+  /// caroming off rivals. [heading] is the unit travel direction, [speedFrac]
+  /// 0..1 its share of max speed. Layered solids only (no blur) — cheap.
+  static void drawLaunchAura(
+    Canvas canvas,
+    Offset pos,
+    Offset heading,
+    double ballR,
+    Color color,
+    double speedFrac,
+  ) {
+    if (ballR <= 0) return;
+    final s = speedFrac.clamp(0.0, 1.0);
+    final hot = _blend(color, _launchHot, 0.5 + 0.4 * s);
+    // Wide soft halo around the ball.
+    canvas.drawCircle(
+      pos,
+      ballR * (_launchAuraFactor + 0.3 * s),
+      Paint()..color = hot.withValues(alpha: 0.18 + 0.16 * s),
+    );
+    // Two trailing embers behind the ball along its heading.
+    final back = _normalize(heading);
+    for (var i = 1; i <= 2; i++) {
+      final at = pos - back * (ballR * (0.9 * i + 0.6 * s));
+      canvas.drawCircle(
+        at,
+        ballR * (0.7 - 0.18 * i),
+        Paint()
+          ..color = hot.withValues(alpha: (0.32 - 0.1 * i) * (0.5 + 0.5 * s)),
+      );
+    }
   }
 
   /// A glossy energized bumper ball with squash & stretch.
@@ -374,7 +431,12 @@ class BumperRenderer {
   }
 
   static void _drawFace(
-      Canvas canvas, Offset pos, double ballR, Offset lookDir, int number) {
+    Canvas canvas,
+    Offset pos,
+    double ballR,
+    Offset lookDir,
+    int number,
+  ) {
     final lean = _normalize(lookDir) * (ballR * 0.16);
     final eyeOffset = ballR * _eyeOffsetFactor;
     final eyeR = ballR * _eyeRadiusFactor;
@@ -412,8 +474,13 @@ class BumperRenderer {
     );
 
     // Player number badge tucked at the top of the ball.
-    _drawNumber(canvas, pos.translate(0, -ballR * 0.46), '$number',
-        ballR * 0.4, _white.withValues(alpha: 0.85));
+    _drawNumber(
+      canvas,
+      pos.translate(0, -ballR * 0.46),
+      '$number',
+      ballR * 0.4,
+      _white.withValues(alpha: 0.85),
+    );
   }
 
   /// A crisp impact spark ring at a collision point — an expanding ring + a star
@@ -497,14 +564,19 @@ class BumperRenderer {
         ..color = _white.withValues(alpha: 0.85),
     );
     _drawNumber(
-        canvas, pipCenter, '$displayNumber', r * 1.25, _readableText(color));
+      canvas,
+      pipCenter,
+      '$displayNumber',
+      r * 1.25,
+      _readableText(color),
+    );
   }
 
   /// The player's control made visible while CHARGING only (there is no idle
-  /// arrow): a player-colored telegraph pointing straight at the nearest
-  /// opponent — where the bump will land — that grows with [charge], plus a
-  /// charge ground-arc that fills as the hold deepens. [aim] is the heading in
-  /// radians, [charge] 0..1. Drawn with cheap layered solid strokes (no blur).
+  /// arrow): a player-colored telegraph pointing the way the player is dragging
+  /// — where the bump will fire — that grows with [charge], plus a charge
+  /// ground-arc that fills as the hold deepens. [aim] is the heading in radians
+  /// (set by the drag), [charge] 0..1. Cheap layered solid strokes (no blur).
   static void drawAim(
     Canvas canvas,
     Offset center,
@@ -608,14 +680,22 @@ class BumperRenderer {
   }
 
   static void _drawNumber(
-      Canvas canvas, Offset center, String text, double fontSize, Color color) {
-    final builder = ParagraphBuilder(ParagraphStyle(
-      textAlign: TextAlign.center,
-      fontSize: fontSize,
-      fontWeight: FontWeight.w900,
-    ))
-      ..pushStyle(TextStyle(color: color))
-      ..addText(text);
+    Canvas canvas,
+    Offset center,
+    String text,
+    double fontSize,
+    Color color,
+  ) {
+    final builder =
+        ParagraphBuilder(
+            ParagraphStyle(
+              textAlign: TextAlign.center,
+              fontSize: fontSize,
+              fontWeight: FontWeight.w900,
+            ),
+          )
+          ..pushStyle(TextStyle(color: color))
+          ..addText(text);
     final paragraph = builder.build()
       ..layout(ParagraphConstraints(width: fontSize * 3));
     canvas.drawParagraph(

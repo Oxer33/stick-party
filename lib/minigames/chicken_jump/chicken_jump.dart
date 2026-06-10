@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
@@ -49,6 +51,26 @@ class _Tuning {
   static const double hopAnimSpeed = 16; // lane ease rate (snappy take-off)
   static const double jumpHoldSec = 0.22; // how long the jump pose shows
   static const double landHoldSec = 0.12; // brief squash on landing
+
+  // ── THE GAMBLE: safe single hop vs risky DOUBLE LEAP ────────────────────────
+  // A plain TAP hops ONE rung and is always safe. KEEP HOLDING past
+  // [doubleLeapHoldSec] after that hop and the climber springs a DOUBLE LEAP: a
+  // second rung in one bound that clears more lava — but it lands on a CRACKED
+  // rung that crumbles. Linger on a cracked rung longer than [crackHoldSec] and
+  // it gives way: you drop back one rung. The leap itself can also misfire
+  // ([leapMissChance]) and only manage the single rung, so going big is a real
+  // bet, not a free upgrade. Kid-readable: "hold = big scary jump".
+  static const double doubleLeapHoldSec = 0.16; // hold this long → springs +1
+  static const double crackHoldSec = 0.62; // linger on a cracked rung → drop
+  static const double leapMissChance = 0.16; // odds a double leap fizzles to +1
+  static const double crackWarnSec = 0.26; // crack flashes harder in its last beat
+
+  // Bots gamble on the double leap when the lava is closing on them: within
+  // [botLeapGapPx] of their rung they attempt the big jump instead of a single
+  // hop. Better bots judge the cracked landing and hop off in time; weaker bots
+  // (low accuracy) sometimes linger and crumble, so the leap stays a real bet
+  // even for the AI.
+  static const double botLeapGapPx = 132; // lava this close → a bot risks a leap
 
   // Figure scaling tracks column width so 1..4 towers all read clearly.
   static const double figureScaleMin = 0.85; // narrow 4-up columns
@@ -105,6 +127,13 @@ class _Climber {
   double lavaY = 0; // lava surface y for this column (rising = decreasing y)
   ReactionClock? clock;
 
+  // ── The gamble (double-leap) state ──
+  bool holdActive = false; // a finger is held down since the last hop
+  double holdSec = 0; // how long that hold has lasted
+  bool leapPending = false; // a held hop has already sprung its bonus rung
+  int crackedRung = -1; // rung currently crumbling under the climber (-1 = none)
+  double crackTimer = 0; // time left before the cracked rung gives way
+
   _Climber({
     required this.playerId,
     required this.color,
@@ -123,19 +152,27 @@ class _Climber {
 }
 
 /// Chicken Jump — a vertical survival climb a young child reads instantly:
-/// **TAP to hop up to the next platform, escape the rising lava.**
+/// **TAP to hop up one platform, escape the rising lava — or HOLD to gamble a
+/// bigger leap.**
 ///
-/// Each player owns a tower of clear stone platforms; one tap HOPS the climber
-/// up to the next rung (a satisfying hop with dust + squash). Lava floods up
-/// from the bottom of every tower, accelerating so the round always converges.
-/// The rung directly above always shows a glowing "hop here next" cue. Get
-/// caught by the lava (fall behind) → ragdoll fling + KO and you're out. Last
-/// climber standing wins; on the time limit the survivors are ranked by height.
+/// Each player owns a tower of clear stone platforms. A plain TAP HOPS the
+/// climber up exactly one rung and is ALWAYS SAFE (a satisfying hop with dust +
+/// squash). KEEP HOLDING after a hop and the climber springs a risky DOUBLE
+/// LEAP: a second rung in one bound that clears more lava — but it lands on a
+/// CRACKED rung that crumbles. Linger on a cracked rung and it gives way,
+/// dropping you a rung; the leap can also misfire and only manage the single
+/// rung. So every press is a real decision: play it safe, or gamble height
+/// against the lava. Lava floods up from the bottom of every tower,
+/// accelerating so the round always converges. The rung directly above always
+/// shows a glowing "hop here next" cue. Get caught by the lava (fall behind) →
+/// ragdoll fling + KO and you're out. Last climber standing wins; on the time
+/// limit the survivors are ranked by height.
 ///
 /// Bots read the same rising lava and hop on a [BotProfile]-timed reaction
 /// clock: better accuracy keeps a larger safety buffer, while [errorRate] makes
-/// them occasionally hesitate and get caught — so they feel reactive, not
-/// scripted, and easy bots are beatable.
+/// them hesitate. When the lava is closing fast a bot GAMBLES the double leap
+/// like a human — and a sloppy bot can dither on the cracked rung and crumble —
+/// so they feel reactive, not scripted, and easy bots are beatable.
 class ChickenJump extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -231,20 +268,63 @@ class ChickenJump extends MiniGameBase {
 
   @override
   void onInput(PlayerInput input) {
-    if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
-      return;
+    if (status != MiniGameStatus.running) return;
+    switch (input.phase) {
+      case InputPhase.down:
+        // A TAP always commits the safe SINGLE hop instantly (zero latency, and
+        // the contract a positionless test tap relies on). The press also starts
+        // a hold timer; keep holding and it upgrades into a risky DOUBLE LEAP.
+        _jump(input.playerId);
+        _beginHold(input.playerId);
+      case InputPhase.holdTick:
+        // Frame-rate-independent hold time accrues in update(); nothing to do.
+        break;
+      case InputPhase.up:
+        _releaseHold(input.playerId);
     }
-    _jump(input.playerId);
+  }
+
+  /// Begin tracking a held press on [id]'s climber (resets the hold clock and
+  /// arms the one bonus rung the hold can still spend).
+  void _beginHold(int id) {
+    final c = _climberOf(id);
+    if (c == null || !c.alive) return;
+    c.holdActive = true;
+    c.holdSec = 0;
+    c.leapPending = true; // the upcoming hold may still spring its bonus rung
+  }
+
+  /// Release a held press: the gamble window closes (no bonus rung after this).
+  void _releaseHold(int id) {
+    final c = _climberOf(id);
+    if (c == null) return;
+    c.holdActive = false;
+    c.holdSec = 0;
+    c.leapPending = false;
   }
 
   void _jump(int id) {
     final c = _climberOf(id);
     if (c == null || !c.alive) return;
+    _hopOnce(c, cracked: false);
+  }
+
+  /// Hop the climber up exactly one rung. When [cracked] is set the rung it
+  /// lands on is flagged as crumbling (the bonus rung of a DOUBLE LEAP).
+  void _hopOnce(_Climber c, {required bool cracked}) {
     final before = c.hopper.lane;
     c.hopper.hop(); // up one platform
     if (c.hopper.lane == before) return; // already at the top rung
 
     c.topReached = math.max(c.topReached, c.hopper.lane);
+    if (cracked) {
+      c.crackedRung = c.hopper.lane;
+      c.crackTimer = _Tuning.crackHoldSec;
+    } else if (c.hopper.lane != c.crackedRung) {
+      // Hopped off a cracked rung onto solid stone — clear the crumble timer.
+      c.crackedRung = -1;
+      c.crackTimer = 0;
+    }
 
     c.jumpHold = _Tuning.jumpHoldSec;
     if (!c.figure.isRagdoll) c.figure.setLoco(LocoState.jump);
@@ -261,6 +341,26 @@ class ChickenJump extends MiniGameBase {
       gravity: 480,
       life: 0.3,
     );
+  }
+
+  /// Spring the DOUBLE LEAP bonus rung once a press has been held long enough.
+  /// Clears the gamble window so a single hold can only ever buy ONE extra rung.
+  /// The leap can misfire ([leapMissChance]) and fail to gain the bonus rung —
+  /// the risk side of the bet — but the cracked-landing penalty is skipped on a
+  /// miss so a fizzle is never worse than a plain hop.
+  void _springDoubleLeap(_Climber c) {
+    c.leapPending = false;
+    final missed = ctx.rng.chance(_Tuning.leapMissChance);
+    if (missed) {
+      _juice.popup(
+        Offset(c.columnX, c.visualRungY() - c.figureLift - 14),
+        'SLIP!',
+        ChickenRenderer.slipColor,
+        size: 20,
+      );
+      return;
+    }
+    _hopOnce(c, cracked: true);
   }
 
   _Climber? _climberOf(int id) {
@@ -351,10 +451,54 @@ class ChickenJump extends MiniGameBase {
     }
 
     c.hopper.update(sdt, speed: _Tuning.hopAnimSpeed);
+    _tickHold(c, dt);
+    _tickCrack(c, dt);
     _tickPose(c, dt);
 
     c.figure.update(dt);
     _checkLava(c);
+  }
+
+  /// Accrue a held press; once it passes [doubleLeapHoldSec] spring the bonus
+  /// rung (the DOUBLE LEAP). Frame-rate independent — driven by real dt, not the
+  /// hold-tick event — so a long-press always reads the same regardless of fps.
+  void _tickHold(_Climber c, double dt) {
+    if (!c.holdActive) return;
+    c.holdSec += dt;
+    if (c.leapPending && c.holdSec >= _Tuning.doubleLeapHoldSec) {
+      _springDoubleLeap(c);
+    }
+  }
+
+  /// Tick a crumbling rung. While the climber lingers on its cracked rung the
+  /// timer drains; if it runs out the rung gives way and the climber drops back
+  /// one rung (with a puff + a light shake). Hopping off in time clears it.
+  void _tickCrack(_Climber c, double dt) {
+    if (c.crackedRung < 0 || c.hopper.lane != c.crackedRung) return;
+    if (!c.hopper.settled) return; // only counts down once actually standing
+    c.crackTimer -= dt;
+    if (c.crackTimer > 0) return;
+    _crumble(c);
+  }
+
+  /// The cracked rung collapses: drop the climber back one rung (never below the
+  /// lowest), clear the crack, and sell the give-way with dust + a light shake.
+  void _crumble(_Climber c) {
+    c.crackedRung = -1;
+    c.crackTimer = 0;
+    final before = c.hopper.lane;
+    c.hopper.hop(-1); // fall back one rung
+    if (c.hopper.lane == before) return; // already at the lowest rung
+    if (!c.figure.isRagdoll) c.figure.setLoco(LocoState.fall);
+    c.landHold = _Tuning.landHoldSec;
+    _landPuff(c);
+    _juice.shake.light();
+    _juice.popup(
+      Offset(c.columnX, c.visualRungY() - c.figureLift - 12),
+      'CRUMBLE!',
+      ChickenRenderer.slipColor,
+      size: 18,
+    );
   }
 
   void _tickPose(_Climber c, double dt) {
@@ -412,28 +556,42 @@ class ChickenJump extends MiniGameBase {
 
   /// Bots hop on their reaction clock when the lava nears their rung. Better
   /// accuracy keeps a larger safety buffer; [errorRate] makes them hesitate.
+  /// When the lava is closing fast a bot GAMBLES the DOUBLE LEAP (the same
+  /// cracked-landing bet a human takes) instead of a single hop — better bots
+  /// clear the cracked rung in time, weaker ones sometimes linger and crumble.
   void _driveBots(double dt) {
     if (_inWarmup) return; // let everyone read the board first (fair beat)
     for (final c in _climbers) {
       final clock = c.clock;
       if (clock == null || !c.alive) continue;
       if (!clock.tick(dt)) continue;
-      if (_botShouldJump(c)) {
-        _jump(c.playerId);
-      }
+      _driveBotMove(c);
       clock.arm(ctx.botProfile, ctx.rng);
     }
   }
 
-  bool _botShouldJump(_Climber c) {
+  /// One bot decision: bail off a cracked rung first (so it isn't caught when the
+  /// stone gives way), otherwise hop to outrun the lava — risking the double leap
+  /// when the lava is close enough to be worth the gamble.
+  void _driveBotMove(_Climber c) {
+    // On a cracked rung: a competent bot hops off promptly; a sloppy one (high
+    // errorRate) may dither and let it crumble — keeps the bet real for the AI.
+    if (c.crackedRung == c.hopper.lane && c.crackedRung >= 0) {
+      if (!ctx.rng.chance(ctx.botProfile.errorRate)) _jump(c.playerId);
+      return;
+    }
     final rungY = c.rungYOf(c.hopper.lane);
     final gap = c.lavaY - rungY; // positive while the lava is still below
     final buffer = _Tuning.botSafetyGapPx *
         (0.45 + _Tuning.botBufferPerAccuracy * ctx.botProfile.accuracy);
-    if (gap <= buffer) {
-      return !ctx.rng.chance(ctx.botProfile.errorRate);
+    if (gap > buffer) return; // safe for now — hold position
+    if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate (fumble)
+    // Lava closing in: gamble the double leap to clear more distance at once.
+    if (gap <= _Tuning.botLeapGapPx) {
+      _springDoubleLeap(c);
+    } else {
+      _jump(c.playerId);
     }
-    return false;
   }
 
   // ── Elimination / outcome ────────────────────────────────────────────────────
@@ -549,6 +707,7 @@ class ChickenJump extends MiniGameBase {
       final anticipate = (showNext && lane == nextLane)
           ? _anticipationPulse(danger)
           : 0.0;
+      final cracked = (c.alive && lane == c.crackedRung) ? _crackLevel(c) : 0.0;
       ChickenRenderer.drawPlatform(
         canvas,
         Offset(c.columnX, c.rungYOf(lane)),
@@ -556,6 +715,7 @@ class ChickenJump extends MiniGameBase {
         c.color,
         lit: lane == c.hopper.lane && c.alive,
         anticipate: anticipate,
+        cracked: cracked,
       );
     }
 
@@ -615,6 +775,20 @@ class ChickenJump extends MiniGameBase {
     return (1.0 - (gap / _Tuning.dangerGapPx)).clamp(0.0, 1.0);
   }
 
+  /// 0..1 urgency of the cracked rung the climber is standing on: starts low and
+  /// swells as its crumble timer drains, flashing hardest in the final
+  /// [crackWarnSec] beat so "GET OFF" reads. Zero when no crack is active.
+  double _crackLevel(_Climber c) {
+    if (c.crackedRung < 0 || c.crackTimer <= 0) return 0;
+    final drained = (1.0 - c.crackTimer / _Tuning.crackHoldSec).clamp(0.0, 1.0);
+    if (c.crackTimer > _Tuning.crackWarnSec) {
+      return (0.35 + 0.4 * drained).clamp(0.0, 1.0);
+    }
+    // Final beat: hard flash so the give-way is unmistakable.
+    final flash = 0.5 + 0.5 * math.sin(_animClock * 26);
+    return (0.75 + 0.25 * flash).clamp(0.0, 1.0);
+  }
+
   /// 0..1 strength of the next-rung anticipation cue: a calm pulse (never below
   /// [nextRungFloor], so the target is always visible) that swells (and pulses
   /// faster, via the phase) as the lava closes in.
@@ -635,4 +809,16 @@ class ChickenJump extends MiniGameBase {
 
   static Color _brighten(Color c, double t) =>
       Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
+
+  // ── Test seams (read-only) ──────────────────────────────────────────────────
+
+  /// The logical rung [id]'s climber currently stands on (0 = lowest), or -1 if
+  /// there is no such climber. Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  int heightLaneOf(int id) => _climberOf(id)?.hopper.lane ?? -1;
+
+  /// The rung currently crumbling under [id]'s climber, or -1 when none is
+  /// cracked / no such climber. Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  int crackedRungOf(int id) => _climberOf(id)?.crackedRung ?? -1;
 }

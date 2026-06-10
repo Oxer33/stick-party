@@ -94,7 +94,9 @@ class ArcherPop extends MiniGameBase {
   static const double _bobSway = 10; // px lateral sway amplitude rate
   static const double _radiusSmall = 16;
   static const double _radiusLarge = 30;
-  static const double _goldenChance = 0.12; // share of spawns that are golden
+  static const double _radiusGolden = 34; // golden = the big, contested prize
+  static const double _goldenChance = 0.05; // RARE: golden is the scarce prize
+  static const double _goldenSuppressSec = 2.4; // no new gold this long post-pop
   static const double _topMarginFrac = 0.10; // balloons gone above this (× h)
   static const double _sparkleRate = 3.0; // golden glint spin rad/s
 
@@ -104,11 +106,20 @@ class ArcherPop extends MiniGameBase {
   static const double _windEaseRate = 2.0; // ease multiplier toward target
   static const int _windStreakCount = 22;
 
+  // ── Steal bonus (contested pops) ─────────────────────────────────────────────
+  // Popping a balloon that a RIVAL archer's bow was aimed nearest at is a STEAL:
+  // it bumps the thief's combo + pays a bonus, so two players racing the same
+  // (scarce) golden is the core contest.
+  static const int _stealComboBump = 1; // combo steps granted on a steal
+  static const int _stealBonusPoints = 2; // flat bonus points on a steal
+  static const double _stealMaxBearingRad = 0.5; // rival "aiming at it" cone
+
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botBaseTolerance = 0.12; // good-aim cone at full accuracy
   static const double _botLeadSec = 0.32; // how far ahead bots lead a target
   static const double _botWildChance = 0.35; // share of errorRate → wild loose
-  static const double _botGoldenBias = 1.6; // bots favor golden lineups
+  static const double _botGoldenBias = 2.2; // bots strongly favor golden lineups
+  static const double _botGoldenOnly = 0.6; // chance a bot ignores plain if gold
 
   // ── Climax (frenzy) tuning ──────────────────────────────────────────────────
   // The final ~30% of the round: balloons rush in faster, more of them are
@@ -117,13 +128,14 @@ class ArcherPop extends MiniGameBase {
   static const double _frenzyFrac = 0.7; // enters at this share of the limit
   static const double _frenzySpawnMul = 0.5; // spawn interval × this in frenzy
   static const int _frenzyMaxBalloons = 16; // higher field cap in frenzy
-  static const double _frenzyGoldenChance = 0.26; // golden share in frenzy
+  static const double _frenzyGoldenChance = 0.12; // golden share in frenzy
 
   // ── Visuals / ambient ───────────────────────────────────────────────────────
   static const double _horizonFactor = 0.40; // horizon Y / arena height
   static const int _cloudCount = 5;
   static const Color _muzzlePuff = Color(0xFFFFF0C4);
   static const Color _comboColor = Color(0xFFFFD24A);
+  static const Color _stealColor = Color(0xFFFFFFFF); // STEAL! popup text
 
   late Juice _juice;
   late Size _size;
@@ -141,6 +153,11 @@ class ArcherPop extends MiniGameBase {
   double _animClock = 0; // real-time clock (never scaled) for ambient/flash
   double _spawnTimer = 0;
   bool _frenzyAnnounced = false;
+
+  /// Seconds left during which NO new golden balloon may spawn. Set after any
+  /// golden pop so the next prize is briefly withheld — players must RACE for it
+  /// when it finally returns. Counts down on the sim clock.
+  double _goldenSuppress = 0;
 
   // Wind: a single crosswind value eased toward a fresh random target.
   double _windX = 0;
@@ -367,6 +384,9 @@ class ArcherPop extends MiniGameBase {
   // ── Balloon spawning + motion ───────────────────────────────────────────────
 
   void _spawnTick(double dt) {
+    if (_goldenSuppress > 0) {
+      _goldenSuppress = math.max(0, _goldenSuppress - dt);
+    }
     _spawnTimer += dt;
     // Frenzy: balloons rush in roughly twice as fast and the field holds more.
     final every = _isFrenzy ? _spawnEvery * _frenzySpawnMul : _spawnEvery;
@@ -379,13 +399,14 @@ class ArcherPop extends MiniGameBase {
 
   void _spawnBalloon({bool seeded = false}) {
     final w = _size.width, h = _size.height;
-    // Frenzy mints far more golden balloons (fat points for a late comeback).
-    final golden =
-        ctx.rng.chance(_isFrenzy ? _frenzyGoldenChance : _goldenChance);
-    // Smaller balloons are worth more; golden ones use a mid radius.
-    final radius = golden
-        ? (_radiusSmall + _radiusLarge) * 0.5
-        : ctx.rng.range(_radiusSmall, _radiusLarge);
+    // Golden is the RARE prize: low base odds, a little richer in frenzy, and
+    // fully withheld for a beat right after one is popped so the next is raced.
+    final goldenChance = _isFrenzy ? _frenzyGoldenChance : _goldenChance;
+    final golden = _goldenSuppress <= 0 && ctx.rng.chance(goldenChance);
+    // Golden balloons are the BIG target (the prize + score driver); plain ones
+    // vary small→large, smaller worth more.
+    final radius =
+        golden ? _radiusGolden : ctx.rng.range(_radiusSmall, _radiusLarge);
     // New balloons rise from just below the field; the initial seed is spread
     // up through the play area so the field reads full from the first frame.
     final x = ctx.rng.range(w * 0.1, w * 0.9);
@@ -446,15 +467,21 @@ class ArcherPop extends MiniGameBase {
   }
 
   /// A bot looses when its live sweep angle is within an accuracy-scaled cone of
-  /// the wind-lead-corrected bearing to a live balloon (golden balloons get a
-  /// wider, more attractive cone). Low-accuracy bots also take occasional wild
-  /// shots so they are never idle.
+  /// the wind-lead-corrected bearing to a live balloon. To CONTEST the scarce
+  /// gold, golden balloons get a much wider, more attractive cone AND, while a
+  /// golden is on the field but not yet lined up, the bot often HOLDS its shot
+  /// on plain balloons — spending its tempo racing for the prize. Low-accuracy
+  /// bots still take occasional wild shots so they are never idle.
   bool _botShouldLoose(_Archer archer) {
     final accuracy = ctx.botProfile.accuracy.clamp(0.2, 1.0);
     final baseTol = _botBaseTolerance / accuracy;
     final origin = _muzzleOf(archer);
+
+    var goldenOnField = false;
+    var plainLinedUp = false;
     for (final b in _balloons) {
       if (b.popT > 0) continue;
+      if (b.golden) goldenOnField = true;
       // Lead: aim where the balloon (and wind-borne arrow) will be shortly.
       final lead =
           b.pos + (b.vel + Offset(_windX * _windShareOnBalloon, 0)) * _botLeadSec;
@@ -464,9 +491,19 @@ class ArcherPop extends MiniGameBase {
       // Accuracy error nudges the wanted angle so good lineups still sometimes
       // miss at lower difficulties.
       final err = ctx.rng.jitter((1 - accuracy) * _sweepHalfBand * 0.5);
-      if (wrapAngle(archer.bow.angle - (wanted + err)).abs() <= tol) {
-        return true;
-      }
+      final lined = wrapAngle(archer.bow.angle - (wanted + err)).abs() <= tol;
+      if (!lined) continue;
+      // A lined-up golden is taken immediately (the prize). A lined-up plain is
+      // remembered but may be passed up to keep contesting the gold.
+      if (b.golden) return true;
+      plainLinedUp = true;
+    }
+
+    if (plainLinedUp) {
+      // Hold a plain shot (race for the gold) only while a golden is up and the
+      // bot rolls into its golden-focus; otherwise take the plain pop.
+      final holdForGold = goldenOnField && ctx.rng.chance(_botGoldenOnly);
+      if (!holdForGold) return true;
     }
     return ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance);
   }
@@ -515,11 +552,20 @@ class ArcherPop extends MiniGameBase {
     return null;
   }
 
-  /// Award points for a pop with combo multiplier + streak bonus, fire the burst
-  /// + popups, and start the balloon's burst animation.
+  /// Award points for a pop with combo multiplier + streak bonus (+ a STEAL
+  /// bonus when the balloon was contested), fire the burst + popups, suppress the
+  /// next golden when this one was golden, and start the balloon's burst.
   void _registerPop(int shooterId, _Balloon target) {
     final archer = _archerOf(shooterId);
     if (archer == null) return;
+
+    // STEAL: did a RIVAL have their bow lined up nearest on this balloon? If so
+    // the shooter snatched it — bump the combo before scoring so the steal pays.
+    final stole = _isStealFrom(shooterId, target);
+    if (stole) {
+      archer.combo = (archer.combo + _stealComboBump).clamp(1, _maxCombo);
+      archer.comboTimer = _comboWindowSec;
+    }
 
     // Combo: pops inside the window stack the multiplier; else it resets to 1.
     if (archer.comboTimer > 0) {
@@ -530,12 +576,17 @@ class ArcherPop extends MiniGameBase {
     archer.comboTimer = _comboWindowSec;
     archer.streak += 1;
 
-    // Streak bonus grows the per-pop value every few consecutive hits.
+    // Streak bonus grows the per-pop value every few consecutive hits; a steal
+    // adds a flat bonus on top (paid through the combo multiplier).
     final streakBonus =
         (archer.streak ~/ _streakForBonus).clamp(0, _maxStreakBonus);
     final unit = target.golden ? _goldenPoints : _baseHitPoints + streakBonus;
-    final gained = unit * archer.combo;
+    final gained = unit * archer.combo + (stole ? _stealBonusPoints : 0);
     addScore(shooterId, gained);
+
+    // Golden is the scarce prize: popping one withholds the next golden briefly
+    // so the table RACES for its return.
+    if (target.golden) _goldenSuppress = _goldenSuppressSec;
 
     // Juice: a colored burst (golden gets a hotter, bigger one) + popups.
     final popColor = target.golden ? _comboColor : archer.color;
@@ -549,18 +600,44 @@ class ArcherPop extends MiniGameBase {
       life: target.golden ? 0.6 : 0.45,
     );
     _juice.shake.light();
-    if (target.golden || archer.combo >= 3) {
+    if (target.golden || stole || archer.combo >= 3) {
       _juice.hitStop.trigger(0.05, scale: 0.2);
     }
+    // Label the pop: a steal shouts STEAL!, else the gained points (× combo).
+    final label = stole
+        ? 'STEAL! +$gained'
+        : (archer.combo >= 2 ? '+$gained  x${archer.combo}' : '+$gained');
     _juice.popup(
       target.pos.translate(0, -target.radius),
-      archer.combo >= 2 ? '+$gained  x${archer.combo}' : '+$gained',
-      popColor,
-      size: target.golden ? 30 : 24,
+      label,
+      stole ? _stealColor : popColor,
+      size: target.golden || stole ? 30 : 24,
     );
 
     // Start the balloon's burst animation (it self-removes after).
     target.popT = 1.0;
+  }
+
+  /// True when a RIVAL archer (not [shooterId]) had their bow aimed nearest at
+  /// [target] — i.e. the closest-bearing bow to the balloon belongs to someone
+  /// else and is within the steal cone. That makes the shooter's pop a STEAL.
+  /// With a single archer there is never a rival, so this is always false.
+  bool _isStealFrom(int shooterId, _Balloon target) {
+    int? nearestId;
+    var nearestErr = double.infinity;
+    for (final a in _archers) {
+      final to = target.pos - _muzzleOf(a);
+      if (to.distance < 1e-3) continue;
+      final bearing = math.atan2(to.dy, to.dx);
+      final err = wrapAngle(a.bow.angle - bearing).abs();
+      if (err < nearestErr) {
+        nearestErr = err;
+        nearestId = a.playerId;
+      }
+    }
+    return nearestId != null &&
+        nearestId != shooterId &&
+        nearestErr <= _stealMaxBearingRad;
   }
 
   bool _outOfBounds(Offset p) {

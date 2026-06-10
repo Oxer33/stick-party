@@ -14,31 +14,37 @@ import 'sumo_render.dart';
 
 /// Sumo Smash — every player is a sumo wrestler in a circular dohyo.
 ///
-/// CONTROL (the heart of it — full player agency, one touch):
-///  * Each wrestler has an AIM ARROW that constantly sweeps around it.
-///  * Quick TAP  → a light shove in the arrow's current direction.
-///  * HOLD then release → the aim LOCKS and a charge meter fills; releasing
-///    fires a powerful lunge in the locked direction (power ∝ charge).
-///  So the player chooses WHERE to push (time the sweep) and HOW HARD (charge):
-///  aim a charged shove to send a rival off the edge, or quick-tap inward to
-///  save yourself. Nothing is auto-aimed.
+/// CONTROL (the heart of it — full player agency, one touch; the player owns
+/// the aim, nothing auto-targets):
+///  * DRAG from your wrestler in the direction you want to shove — the AIM
+///    ARROW follows your thumb, so YOU pick the angle every shove.
+///  * HOLD builds a charge meter while you keep dragging to re-aim; the longer
+///    you hold the harder the lunge (power ∝ charge).
+///  * RELEASE → BAM: a lunge fires in the direction you were dragging.
+///  * A quick TAP with no drag aims at the nearest rival (a safe default for
+///    little kids), so even a mash is sensible.
+///  So a clever player drags a charged shove into a rival near the edge to
+///  ring them out, or drags inward to save themselves.
+///
+/// RISK: while charging you are slowed to a near-root, so a whiffed charge
+/// leaves you a sitting duck — committing to a big shove is a real decision.
 ///
 /// Feel: low-friction clay so shoves carry; collisions transfer momentum so a
 /// well-aimed charge launches the victim (ragdoll) off the ring. The dohyo
 /// shrinks after a grace period (sudden death) so matches always resolve.
 ///
-/// Bots time an aimed, charged shove toward the nearest opponent and retreat
-/// from the edge; [BotProfile] governs timing, charge and aim error.
+/// Bots cannot drag, so they aim at the nearest opponent (via [_aimAtNearest])
+/// and retreat from the edge; [BotProfile] governs timing, charge and aim error.
 class SumoSmash extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
-        id: 'sumo_smash',
-        name: 'Sumo Smash',
-        minPlayers: 1,
-        maxPlayers: 4,
-        modes: [GameMode.ffa, GameMode.duel1v1],
-        inputHint: 'TAP / HOLD',
-      );
+    id: 'sumo_smash',
+    name: 'Sumo Smash',
+    minPlayers: 1,
+    maxPlayers: 4,
+    modes: [GameMode.ffa, GameMode.duel1v1],
+    inputHint: 'DRAG / HOLD',
+  );
 
   // ── Arena / sim tuning ──────────────────────────────────────────────────────
   // Tuned on-device for a ~15-25s match: smaller bodies + bigger ring + grippier
@@ -58,6 +64,13 @@ class SumoSmash extends MiniGameBase {
   static const double _dashCharge = 3.8; // full hold = a strong launch
   static const double _selfPushback = 0.08; // recoil opposite the shove
   static const double _trailLifeSec = 0.24;
+  // Drag aim: the touch must move at least this far (fraction of the min screen
+  // side) from the wrestler before it counts as a deliberate aim; a smaller
+  // wiggle is treated as a no-drag tap (→ aim at nearest, a kid-safe default).
+  static const double _aimDragDeadzone = 0.018;
+  // While charging, retain only this share of speed per 1/60s — a near-root so a
+  // whiffed charge is punishable (the player is briefly a sitting duck).
+  static const double _chargeRootRetain = 0.62;
 
   // ── Knockback (contact) tuning ──────────────────────────────────────────────
   static const double _contactSpeedRef = 700.0;
@@ -75,7 +88,8 @@ class SumoSmash extends MiniGameBase {
   // DEATH banner throbs, so the round visibly ramps to a finish.
   static const double _suddenDeathFrac = 0.72; // enters at this share of time
   static const double _suddenDeathShrinkMul = 2.6; // shrink speed multiplier
-  static const double _suddenDeathFloorMul = 0.78; // tighter floor in sudden death
+  static const double _suddenDeathFloorMul =
+      0.78; // tighter floor in sudden death
 
   // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
   // One star at a time floats near the center; grabbing it grants a brief shove
@@ -105,7 +119,8 @@ class SumoSmash extends MiniGameBase {
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botWarmupSec = 2.0; // grace before bots engage
   static const double _botCloseRangeFactor = 4.2; // approach vs shove threshold
-  static const double _botEdgeBackoff = 0.62; // dist/ring above → retreat inward
+  static const double _botEdgeBackoff =
+      0.62; // dist/ring above → retreat inward
   static const double _botAimErrorRad = 0.55; // max aim jitter at accuracy 0
   static const double _botCarrySpeed = 120.0; // skip shove while already fast
 
@@ -228,15 +243,15 @@ class SumoSmash extends MiniGameBase {
   }
 
   StickStyle _styleFor(Color color) => StickStyle(
-        fill: color,
-        outline: _brighten(color, 0.45),
-        glowSigma: 5,
-        lineWidth: 1.1,
-        rimAlpha: 0.3,
-        shadowAlpha: 0.0,
-        gradientBottom: 0.5,
-        smearAlpha: 0.28,
-      );
+    fill: color,
+    outline: _brighten(color, 0.45),
+    glowSigma: 5,
+    lineWidth: 1.1,
+    rimAlpha: 0.3,
+    shadowAlpha: 0.0,
+    gradientBottom: 0.5,
+    smearAlpha: 0.28,
+  );
 
   void _seedDust() {
     final rng = ctx.rng;
@@ -256,17 +271,45 @@ class SumoSmash extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        if (f.ready) f.charging = true; // lock aim, begin charging
+        if (f.ready) {
+          f.charging = true; // begin charging
+          f.hasDragAim = false; // until the thumb moves, no chosen direction
+          _applyDragAim(input, body, f); // a press already away from us aims
+        }
+      case InputPhase.holdTick:
+        // A drag sample re-aims toward the thumb (the player owns the angle).
+        _applyDragAim(input, body, f);
       case InputPhase.up:
         if (f.charging) {
           f.charging = false;
-          final aim = _aimAtNearest(input.playerId) ?? f.aim;
+          _applyDragAim(input, body, f); // final flick can still steer
+          // Player-chosen aim wins; with no drag, fall back to nearest (kids).
+          final aim = f.hasDragAim
+              ? f.aim
+              : (_aimAtNearest(input.playerId) ?? f.aim);
           _commitDash(input.playerId, body, aim, f.charge);
           f.charge = 0;
+          f.hasDragAim = false;
         }
-      case InputPhase.holdTick:
-        break; // charge accrues in update() for frame-rate independence
     }
+  }
+
+  /// Set the fighter's aim from the drag vector (touch [input.normPos] relative
+  /// to the wrestler), in true screen pixels so the angle is not skewed by the
+  /// portrait aspect. A move shorter than [_aimDragDeadzone] (or a synthetic
+  /// hold-tick with no position) is ignored, leaving any prior chosen aim — or
+  /// the nearest-opponent fallback — intact.
+  void _applyDragAim(PlayerInput input, Body body, _Fighter f) {
+    if (!f.charging) return;
+    final touch = Offset(
+      input.normPos.dx * _size.width,
+      input.normPos.dy * _size.height,
+    );
+    final d = touch - body.pos;
+    final minSide = math.min(_size.width, _size.height);
+    if (d.distance < minSide * _aimDragDeadzone) return;
+    f.aim = math.atan2(d.dy, d.dx);
+    f.hasDragAim = true;
   }
 
   @override
@@ -282,8 +325,13 @@ class SumoSmash extends MiniGameBase {
     _tickFighters(dt);
     _driveBots(dt);
     _shrinkRing(dt);
-    _stars.tick(dt, _arena.aliveBodies.length, ctx.rng, _center,
-        _currentRingRadius);
+    _stars.tick(
+      dt,
+      _arena.aliveBodies.length,
+      ctx.rng,
+      _center,
+      _currentRingRadius,
+    );
 
     _arena.update(sdt);
 
@@ -306,16 +354,25 @@ class SumoSmash extends MiniGameBase {
   /// True once the match has entered its climax (sudden death) window.
   bool get _isSuddenDeath => _elapsed >= _timeLimit * _suddenDeathFrac;
 
-  /// Aim always tracks the nearest opponent (so a tap/charge strikes straight
-  /// at it — no rotating arrow to time), fill charge while held, recover cooldown.
+  /// Fill charge while held and recover cooldown. The aim is NOT touched here —
+  /// it is owned by the player's drag (see [_applyDragAim]); a bot or a no-drag
+  /// tap resolves it at fire time via [_aimAtNearest]. While charging, the
+  /// wrestler is rooted to a near-stop so a whiffed charge is punishable.
   void _tickFighters(double dt) {
     for (final entry in _fighters.entries) {
       final f = entry.value;
-      if (_isAlive(entry.key)) {
-        final a = _aimAtNearest(entry.key);
-        if (a != null) f.aim = a;
-        if (f.charging) {
-          f.charge = math.min(1.0, f.charge + dt / _chargeTimeSec);
+      if (_isAlive(entry.key) && f.charging) {
+        f.charge = math.min(1.0, f.charge + dt / _chargeTimeSec);
+        // No drag yet → preview the nearest-opponent fallback so the arrow the
+        // player sees matches where a release would actually fire.
+        if (!f.hasDragAim) {
+          final a = _aimAtNearest(entry.key);
+          if (a != null) f.aim = a;
+        }
+        final body = _bodyOf(entry.key);
+        if (body != null) {
+          final retain = math.pow(_chargeRootRetain, dt * 60.0).toDouble();
+          body.vel *= retain;
         }
       }
       f.tick(dt);
@@ -350,11 +407,15 @@ class SumoSmash extends MiniGameBase {
     if (self == null || !self.alive || f == null || !f.ready) return;
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate / mistake
 
-    final err = (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
+    final err =
+        (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
 
     // Near the edge: save self with a moderate shove back toward the centre.
     if (_isNearEdge(self)) {
-      final aim = math.atan2(_center.dy - self.pos.dy, _center.dx - self.pos.dx);
+      final aim = math.atan2(
+        _center.dy - self.pos.dy,
+        _center.dx - self.pos.dx,
+      );
       f.aim = aim;
       _commitDash(playerId, self, aim, 0.5);
       return;
@@ -383,7 +444,8 @@ class SumoSmash extends MiniGameBase {
     // A collected star briefly amplifies every shove — the buffed wrestler hits
     // noticeably harder, the core of the chaos swing.
     final buffMul = f.buffed ? _buffDashMul : 1.0;
-    final magnitude = _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
+    final magnitude =
+        _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
     _arena.impulse(playerId, dir * magnitude);
     _arena.impulse(playerId, -dir * magnitude * _selfPushback);
 
@@ -467,7 +529,8 @@ class SumoSmash extends MiniGameBase {
     final headOn = (attackerDir.dx * toVictim.dx + attackerDir.dy * toVictim.dy)
         .clamp(0.0, 1.0);
     final speedFactor = (speed / _contactSpeedRef).clamp(0.0, 1.4);
-    final bonus = _ringRadius *
+    final bonus =
+        _ringRadius *
         _contactBonusScale *
         speedFactor *
         (1.0 + _headOnExtra * headOn);
@@ -479,12 +542,13 @@ class SumoSmash extends MiniGameBase {
       _juice.shake.medium();
     } else {
       _juice.particles.burst(
-          at: at,
-          count: 6,
-          color: _colorOf(attacker.id),
-          speed: 200,
-          size: 5,
-          life: 0.35);
+        at: at,
+        count: 6,
+        color: _colorOf(attacker.id),
+        speed: 200,
+        size: 5,
+        life: 0.35,
+      );
       _juice.shake.light();
     }
   }
@@ -500,8 +564,10 @@ class SumoSmash extends MiniGameBase {
         _ringRadius * _minRingFactor * (sudden ? _suddenDeathFloorMul : 1.0);
     if (_currentRingRadius <= floor) return;
     final rate = _shrinkPerSec * (sudden ? _suddenDeathShrinkMul : 1.0);
-    _currentRingRadius = (_currentRingRadius - _ringRadius * rate * dt)
-        .clamp(floor, _ringRadius);
+    _currentRingRadius = (_currentRingRadius - _ringRadius * rate * dt).clamp(
+      floor,
+      _ringRadius,
+    );
   }
 
   // ── Star pickup (chaos) ─────────────────────────────────────────────────────
@@ -527,8 +593,11 @@ class SumoSmash extends MiniGameBase {
       );
       _juice.hit(b.pos, _colorOf(b.id), sparks: 8);
       _juice.popup(
-          b.pos.translate(0, -_bodyRadius * 1.8), 'POWER!', _starColor,
-          size: 30);
+        b.pos.translate(0, -_bodyRadius * 1.8),
+        'POWER!',
+        _starColor,
+        size: 30,
+      );
       return;
     }
   }
@@ -541,7 +610,8 @@ class SumoSmash extends MiniGameBase {
       final fig = entry.value;
       if (body != null && body.alive && !fig.isRagdoll) {
         fig.setLoco(
-            body.vel.distance > _runSpeed ? LocoState.run : LocoState.idle);
+          body.vel.distance > _runSpeed ? LocoState.run : LocoState.idle,
+        );
       }
       fig.update(dt);
     }
@@ -575,13 +645,18 @@ class SumoSmash extends MiniGameBase {
         gravity: 260,
         life: 0.7,
       );
-      _juice.popup(b.pos.translate(0, -_bodyRadius * 1.7), 'RING OUT!', _accent,
-          size: 40);
+      _juice.popup(
+        b.pos.translate(0, -_bodyRadius * 1.7),
+        'RING OUT!',
+        _accent,
+        size: 40,
+      );
 
       final fig = _figures[b.id];
       if (fig != null) {
         final outward = _normalize(b.pos - _center);
-        final fling = outward * _ringRadius * _flingBaseFactor +
+        final fling =
+            outward * _ringRadius * _flingBaseFactor +
             outVel * _flingSpeedFactor;
         final groundY = b.pos.dy + b.radius * 2;
         fig.enterRagdoll(_figureRoot(b), groundY, fling);
@@ -594,12 +669,17 @@ class SumoSmash extends MiniGameBase {
   void _resolveOutcome() {
     // Announce the climax exactly once with a screen shake + center popup, then
     // the fast-shrink ring + banner carry the moment.
-    if (!_suddenDeathAnnounced && _isSuddenDeath && _arena.aliveBodies.length > 1) {
+    if (!_suddenDeathAnnounced &&
+        _isSuddenDeath &&
+        _arena.aliveBodies.length > 1) {
       _suddenDeathAnnounced = true;
       _juice.shake.medium();
-      _juice.popup(_center.translate(0, -_currentRingRadius * 0.2),
-          'SUDDEN DEATH', _accent,
-          size: 38);
+      _juice.popup(
+        _center.translate(0, -_currentRingRadius * 0.2),
+        'SUDDEN DEATH',
+        _accent,
+        size: 38,
+      );
     }
     final alive = _arena.aliveBodies;
     if (alive.length <= 1 || _elapsed >= _timeLimit) _finishRanked(alive);
@@ -608,7 +688,9 @@ class SumoSmash extends MiniGameBase {
   void _finishRanked(List<Body> alive) {
     final ranked = alive.map((b) => b.id).toList()
       ..sort((a, b) => _distToCenter(a).compareTo(_distToCenter(b)));
-    finishByOrder(_dedupeAllPlayers([...ranked, ..._eliminationOrder.reversed]));
+    finishByOrder(
+      _dedupeAllPlayers([...ranked, ..._eliminationOrder.reversed]),
+    );
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -621,8 +703,13 @@ class SumoSmash extends MiniGameBase {
 
     SumoRenderer.drawBackground(canvas, size, _center, _ringRadius);
     SumoRenderer.drawAmbientDust(canvas, _dust, _animClock);
-    SumoRenderer.drawDohyo(canvas, _center, _currentRingRadius,
-        accent: _accent, dangerPulse: _dangerPulse());
+    SumoRenderer.drawDohyo(
+      canvas,
+      _center,
+      _currentRingRadius,
+      accent: _accent,
+      dangerPulse: _dangerPulse(),
+    );
 
     final star = _stars.star;
     if (star != null) SumoFx.drawStar(canvas, star);
@@ -630,8 +717,12 @@ class SumoSmash extends MiniGameBase {
     _drawWrestlers(canvas);
 
     if (_isSuddenDeath) {
-      SumoFx.drawSuddenDeathBanner(canvas, size, _suddenDeathBannerPulse(),
-          _animClock);
+      SumoFx.drawSuddenDeathBanner(
+        canvas,
+        size,
+        _suddenDeathBannerPulse(),
+        _animClock,
+      );
     }
 
     _juice.render(canvas);
@@ -639,8 +730,7 @@ class SumoSmash extends MiniGameBase {
   }
 
   /// Banner intensity: full once in sudden death (held up while ≥2 alive).
-  double _suddenDeathBannerPulse() =>
-      _arena.aliveBodies.length > 1 ? 1.0 : 0.0;
+  double _suddenDeathBannerPulse() => _arena.aliveBodies.length > 1 ? 1.0 : 0.0;
 
   double _dangerPulse() {
     final shrink =
@@ -666,12 +756,13 @@ class SumoSmash extends MiniGameBase {
       if (f?.trail != null) {
         final tr = f!.trail!;
         SumoRenderer.drawDashTrail(
-            canvas,
-            tr.from,
-            tr.from + tr.dir * (_bodyRadius * 2.2),
-            _bodyRadius,
-            color,
-            tr.strength);
+          canvas,
+          tr.from,
+          tr.from + tr.dir * (_bodyRadius * 2.2),
+          _bodyRadius,
+          color,
+          tr.strength,
+        );
       }
 
       // A pulsing gold aura while the star buff is active so the table can see
@@ -684,8 +775,9 @@ class SumoSmash extends MiniGameBase {
           Paint()
             ..style = PaintingStyle.stroke
             ..strokeWidth = _bodyRadius * 0.18
-            ..color = _starColor
-                .withValues(alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0)),
+            ..color = _starColor.withValues(
+              alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0),
+            ),
         );
       }
 
@@ -695,12 +787,23 @@ class SumoSmash extends MiniGameBase {
       // The wrestler + belt.
       SumoRenderer.drawWrestler(canvas, fig, _figureRoot(b));
       SumoRenderer.drawBelt(
-          canvas, _pelvisOf(b), _bodyRadius, fig.facing, color);
+        canvas,
+        _pelvisOf(b),
+        _bodyRadius,
+        fig.facing,
+        color,
+      );
 
       // The aim arrow + charge — the player's control, drawn on top.
       if (f != null && f.charging) {
-        SumoRenderer.drawAim(canvas, b.pos, _bodyRadius, color,
-            aim: f.aim, charge: f.charge);
+        SumoRenderer.drawAim(
+          canvas,
+          b.pos,
+          _bodyRadius,
+          color,
+          aim: f.aim,
+          charge: f.charge,
+        );
       }
     }
   }
@@ -757,11 +860,12 @@ class SumoSmash extends MiniGameBase {
   }
 }
 
-/// Per-player control state: sweeping aim, charge while held, cooldown, trail.
-/// Mutable round-scoped state (allowed for one round).
+/// Per-player control state: player-chosen drag aim, charge while held,
+/// cooldown, trail. Mutable round-scoped state (allowed for one round).
 class _Fighter {
-  double aim; // current aim angle (radians)
+  double aim; // current aim angle (radians) — set by the player's drag
   bool charging = false;
+  bool hasDragAim = false; // true once this charge has a thumb-chosen angle
   double charge = 0; // 0..1 while held
   double _cooldown = 0;
   double buff = 0; // seconds of star shove-buff remaining
@@ -791,7 +895,7 @@ class _DashTrail {
   double life;
   final double maxLife;
   _DashTrail({required this.from, required this.dir, required this.life})
-      : maxLife = life;
+    : maxLife = life;
 
   double get strength => maxLife <= 0 ? 0 : (life / maxLife).clamp(0.0, 1.0);
 }

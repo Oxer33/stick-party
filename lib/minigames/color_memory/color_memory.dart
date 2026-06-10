@@ -8,8 +8,10 @@ import '../../engine/player_manager.dart';
 import 'memory_render.dart';
 
 /// Round phase. [showing] flashes the sequence (the light show); [input] takes
-/// each player's reproduction by direct pad taps.
-enum _Phase { showing, input }
+/// each player's reproduction by direct pad taps; [appending] hands the round
+/// WINNER one tap to choose the new color that everyone must remember next round
+/// (call-and-response — the winner literally builds the pattern for the table).
+enum _Phase { showing, input, appending }
 
 /// Per-player reproduction state for the current round. Mutable round-scoped
 /// state (allowed for the duration of one round).
@@ -69,13 +71,21 @@ class _Pad {
 ///  * A tap that misses every pad (the center hub / a gap) is ignored, so a
 ///    fumbled touch never eliminates a kid.
 ///
-/// When the round resolves, the sequence grows by one and replays. Last player
-/// standing wins via [finishByOrder].
+/// Call-and-response growth (the PvP hook): the FIRST player to correctly
+/// reproduce the whole pattern wins the round and becomes the **appender**. The
+/// round then enters a short [_Phase.appending] beat where that winner taps ONE
+/// colored pad — and THAT color is appended to the shared sequence everyone must
+/// remember next round. So you are not just racing an isolated memory test: when
+/// you win, you choose the tricky color the whole table (and the bots) has to
+/// recall next. A winner who can't decide in time (or a round nobody cleared)
+/// falls back to a random color so the game always moves on.
+///
+/// Last player standing wins via [finishByOrder].
 ///
 /// Termination is guaranteed several ways: a per-round input deadline
-/// ([_roundDeadlineSec]) eliminates anyone who hasn't finished, a sequence
-/// length cap ([_maxSeqLen]), last-player-standing, and the overall
-/// [_timeLimit].
+/// ([_roundDeadlineSec]) eliminates anyone who hasn't finished, a bounded append
+/// beat ([_appendDeadlineSec]) with a random-color fallback, a sequence length
+/// cap ([_maxSeqLen]), last-player-standing, and the overall [_timeLimit].
 class ColorMemory extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -97,6 +107,16 @@ class ColorMemory extends MiniGameBase {
   static const int _maxSeqLen = 20; // absolute cap so it always terminates
   static const int _startSeqLen = 1;
   static const int _round1Retries = 1; // forgiving extra tries on round 1
+
+  // ── Call-and-response append beat ────────────────────────────────────────────
+  // After a round is won, the winner gets this long to tap their chosen color
+  // for the next pattern. If they dawdle past it (or no one cleared the round),
+  // a random color is appended so the game always advances.
+  static const double _appendDeadlineSec = 3.0; // cap on the winner's choice
+  static const double _appendLeadSec = 0.35; // calm beat before a tap counts
+  // A bot winner "thinks" for a reaction beat, then taps a color it picks at
+  // random (deterministic via ctx.rng) — so the CPU also feeds the table.
+  static const double _botAppendDelaySec = 0.6;
 
   // ── Climax: the DRUMROLL on a long pattern (the unmistakable peak) ──────────
   // Once the sequence reaches [_climaxSeqLen] the light show speeds up toward
@@ -146,6 +166,11 @@ class ColorMemory extends MiniGameBase {
   bool _drumrollAnnounced = false; // the climax banner fired for this round
   double _drumrollAcc = 0; // banks lead-in time toward each drum tick
   Size _lastSize = const Size(1, 1);
+
+  // ── Call-and-response state ─────────────────────────────────────────────────
+  int? _appenderId; // who won this round (first to finish) → builds the pattern
+  int? _appendedColor; // the color the winner chose for the next round (0..3)
+  bool _appendBotChose = false; // latch so a bot winner only taps its choice once
 
   @override
   void init(MiniGameContext ctx) {
@@ -228,11 +253,14 @@ class ColorMemory extends MiniGameBase {
 
   @override
   void onInput(PlayerInput input) {
-    if (status != MiniGameStatus.running ||
-        _phase != _Phase.input ||
-        input.phase != InputPhase.down) {
+    if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
       return;
     }
+    if (_phase == _Phase.appending) {
+      _handleAppendTap(input);
+      return;
+    }
+    if (_phase != _Phase.input) return;
     final pad = _padOf(input.playerId);
     if (pad == null || !pad.alive || pad.done) return;
     // Tap a real colored pad: hit-test the quadrant the touch landed in. A tap
@@ -240,6 +268,36 @@ class ColorMemory extends MiniGameBase {
     final slot = _padHitTest(input.playerId, input.normPos);
     if (slot < 0) return;
     _commit(pad, slot);
+  }
+
+  /// During the append beat, ONLY the round winner's tap matters: the colored
+  /// pad they tap becomes the next shared sequence entry. A short lead-in beat
+  /// swallows the very first frames (so a leftover reproduction tap doesn't get
+  /// captured by accident), and a tap that misses every pad is ignored.
+  void _handleAppendTap(PlayerInput input) {
+    if (_appendedColor != null) return; // already chosen
+    if (input.playerId != _appenderId) return; // only the winner appends
+    if (_phaseTimer < _appendLeadSec) return; // calm beat before a tap counts
+    final slot = _padHitTest(input.playerId, input.normPos);
+    if (slot < 0) return;
+    _chooseAppendColor(slot);
+  }
+
+  /// Record the winner's chosen [color] (0..3) for the next round, with a happy
+  /// pad bloom + spark so the choice reads, then let the round resolve & grow.
+  void _chooseAppendColor(int color) {
+    final c = color.clamp(0, _palette - 1);
+    _appendedColor = c;
+    final pad = _appenderId != null ? _padOf(_appenderId!) : null;
+    if (pad != null) {
+      pad.bumpBloom(c);
+      _juice.hit(_padCenter(pad.playerId), MemoryRenderer.palette[c], sparks: 8);
+      _juice.popup(
+          _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
+          'ADD!',
+          MemoryRenderer.palette[c],
+          size: 26);
+    }
   }
 
   _Pad? _padOf(int id) {
@@ -276,11 +334,15 @@ class ColorMemory extends MiniGameBase {
       _juice.hit(_padCenter(pad.playerId), pad.accent, sparks: 6);
       if (pad.progress >= _sequence.length) {
         pad.done = true;
+        // First player to clear the whole pattern WINS the round and earns the
+        // right to append the next color (call-and-response). Latched once.
+        final justWon = _appenderId == null;
+        if (justWon) _appenderId = pad.playerId;
         _juice.popup(
             _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
-            'NICE!',
+            justWon ? 'WIN!' : 'NICE!',
             pad.accent,
-            size: 26);
+            size: justWon ? 30 : 26);
       }
       return;
     }
@@ -330,10 +392,13 @@ class ColorMemory extends MiniGameBase {
       pad.decay(dt, _bloomDecayPerSec);
     }
 
-    if (_phase == _Phase.showing) {
-      _updateShowing(sdt);
-    } else {
-      _updateInput(sdt);
+    switch (_phase) {
+      case _Phase.showing:
+        _updateShowing(sdt);
+      case _Phase.input:
+        _updateInput(sdt);
+      case _Phase.appending:
+        _updateAppending(sdt);
     }
 
     if (_elapsed >= _timeLimit) _finishNow();
@@ -396,8 +461,8 @@ class ColorMemory extends MiniGameBase {
     _juice.shake.light();
   }
 
-  /// Drive bots, then resolve the round when everyone alive is done or the input
-  /// deadline passes.
+  /// Drive bots, then close the input phase when everyone alive is done or the
+  /// input deadline passes.
   void _updateInput(double dt) {
     _driveBots(dt);
 
@@ -409,7 +474,44 @@ class ColorMemory extends MiniGameBase {
       }
     }
 
-    if (_roundResolved()) _resolveRound();
+    if (_roundResolved()) _endInputPhase();
+  }
+
+  /// Input is over. Resolve terminal conditions; if the match continues, hand
+  /// off to the WINNER to append the next color (call-and-response). When no one
+  /// cleared the round (e.g. a mass deadline wipe of survivors) there is no
+  /// appender, so we grow with a random color and replay immediately.
+  void _endInputPhase() {
+    if (_checkTerminal()) return; // last-standing / wiped / cap → finished
+    if (_appenderId != null && _padOf(_appenderId!)!.alive) {
+      _enterAppending();
+    } else {
+      // No winner this round → keep the table moving with a random color.
+      _growSequence(ctx.rng.intRange(0, _palette));
+      _enterShowing();
+    }
+  }
+
+  /// Terminal-condition gate shared by the input and append beats. Returns true
+  /// (and finishes) when the match is over; false when it should continue.
+  bool _checkTerminal() {
+    final alive = _pads.where((p) => p.alive).length;
+    // Last player standing (multi-player) ends the match.
+    if (_pads.length > 1 && alive <= 1) {
+      _finishNow();
+      return true;
+    }
+    // Everyone wiped simultaneously (e.g. single-player miss / mass deadline).
+    if (alive == 0) {
+      _finishNow();
+      return true;
+    }
+    // Sequence cap reached → stop here and rank survivors.
+    if (_sequence.length >= _maxSeqLen) {
+      _finishNow();
+      return true;
+    }
+    return false;
   }
 
   /// Bots tap one pad per reaction tick. They reproduce the pattern from their
@@ -444,29 +546,52 @@ class ColorMemory extends MiniGameBase {
     return true;
   }
 
-  /// Round over: check terminal conditions, else grow the sequence and replay.
-  void _resolveRound() {
-    final alive = _pads.where((p) => p.alive).length;
+  /// Begin the call-and-response append beat: the round winner now chooses the
+  /// next color. Resets the per-beat clock + choice latches.
+  void _enterAppending() {
+    _phase = _Phase.appending;
+    _phaseTimer = 0;
+    _appendedColor = null;
+    _appendBotChose = false;
+  }
 
-    // Last player standing (multi-player) ends the match.
-    if (_pads.length > 1 && alive <= 1) {
-      _finishNow();
-      return;
-    }
-    // Everyone wiped simultaneously (e.g. single-player miss / mass deadline).
-    if (alive == 0) {
-      _finishNow();
-      return;
-    }
-    // Sequence cap reached → stop here and rank survivors.
-    if (_sequence.length >= _maxSeqLen) {
-      _finishNow();
-      return;
-    }
+  /// The append beat: wait for the winner's chosen color (human tap routed via
+  /// [_handleAppendTap], bot via [_driveAppendBot]). Once chosen — or the beat's
+  /// deadline lapses (fallback to a random color) — grow the sequence & replay.
+  void _updateAppending(double dt) {
+    // A bot winner picks its color after a short "thinking" beat.
+    _driveAppendBot();
 
-    _sequence.add(ctx.rng.intRange(0, _palette));
-    _round += 1;
+    final timedOut = _phaseTimer >= _appendDeadlineSec;
+    if (_appendedColor == null && !timedOut) return;
+
+    // Chosen color, or a random fallback if the winner dawdled. Clamp guards a
+    // stray value; the fallback keeps the game deterministic + always advancing.
+    final color = _appendedColor ?? ctx.rng.intRange(0, _palette);
+    _growSequence(color);
     _enterShowing();
+  }
+
+  /// If the round winner is a bot, after a reaction beat it taps one color it
+  /// picks at random (deterministic via ctx.rng). Latched so it only chooses
+  /// once per beat.
+  void _driveAppendBot() {
+    if (_appendBotChose || _appendedColor != null) return;
+    final id = _appenderId;
+    if (id == null) return;
+    final pad = _padOf(id);
+    if (pad == null || pad.clock == null) return; // human winner → wait for tap
+    if (_phaseTimer < _botAppendDelaySec) return;
+    _appendBotChose = true;
+    _chooseAppendColor(ctx.rng.intRange(0, _palette));
+  }
+
+  /// Append [color] to the shared sequence and advance the round counter. The
+  /// winner's pick (or a fallback) — this is how the pattern grows now.
+  void _growSequence(int color) {
+    _sequence.add(color.clamp(0, _palette - 1));
+    _round += 1;
+    _appenderId = null; // cleared for the next round's race
   }
 
   /// Build best→worst ranking: survivors first (more progress / longer-lived),
@@ -519,8 +644,17 @@ class ColorMemory extends MiniGameBase {
 
   void _drawHud(Canvas canvas, Size size, bool watching) {
     final throb = 0.5 + 0.5 * math.sin(_animClock * _bannerThrobHz);
-    MemoryRenderer.drawPhaseBanner(canvas, size,
-        watching: watching, pulse: throb);
+    if (_phase == _Phase.appending) {
+      // Call-and-response cue: tell the table the winner is adding a color.
+      final accent = _appenderId != null
+          ? (_padOf(_appenderId!)?.accent ?? _white)
+          : _white;
+      MemoryRenderer.drawAppendBanner(canvas, size,
+          appenderNumber: (_appenderId ?? 0) + 1, accent: accent, pulse: throb);
+    } else {
+      MemoryRenderer.drawPhaseBanner(canvas, size,
+          watching: watching, pulse: throb);
+    }
     MemoryRenderer.drawRoundCounter(canvas, size, _round);
     MemoryRenderer.drawSharedSequence(
       canvas,
@@ -553,10 +687,16 @@ class ColorMemory extends MiniGameBase {
   /// Draw one player's Simon cluster + identity tab + progress pips, plus the
   /// elimination stamp once they are out. During input the whole plate gives a
   /// gentle "your turn" pulse so a kid knows it is time to tap the colors (no
-  /// per-pad cursor); a forgiven miss flashes the plate.
+  /// per-pad cursor); during the append beat the WINNER's plate pulses instead
+  /// (tap to add a color); a forgiven miss flashes the plate.
   void _drawCluster(Canvas canvas, _Pad pad, int index, bool watching) {
     final block = _padBlockRect(_playerRegion(index, _pads.length));
-    final turnPulse = (!watching && pad.alive && !pad.done)
+    final appendingTurn = _phase == _Phase.appending &&
+        pad.alive &&
+        pad.playerId == _appenderId &&
+        _appendedColor == null;
+    final inputTurn = _phase == _Phase.input && pad.alive && !pad.done;
+    final turnPulse = (inputTurn || appendingTurn)
         ? 0.5 + 0.5 * math.sin(_animClock * _bannerThrobHz)
         : 0.0;
 
@@ -568,6 +708,7 @@ class ColorMemory extends MiniGameBase {
       done: pad.done,
       accent: pad.accent,
       turnPulse: turnPulse,
+      appendInvite: appendingTurn,
       oops: pad.oopsFlash > 0
           ? (pad.oopsFlash / _oopsFlashSec).clamp(0.0, 1.0)
           : 0.0,

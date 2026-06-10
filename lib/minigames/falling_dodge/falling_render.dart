@@ -594,6 +594,70 @@ class FallingRenderer {
     );
   }
 
+  // ── Graze-chain streak badge ───────────────────────────────────────────────
+
+  static const Color _chainCool = Color(0xFF35E0FF); // low streak
+  static const Color _chainHot = Color(0xFFFFC23C); // high streak
+
+  /// A floating streak badge above the runner showing the live graze chain: a
+  /// stack of pips (one per link, capped) plus an "xN" once it is worth bragging
+  /// about. Cool at a short streak, hot as it grows — the at-a-glance "how big
+  /// is my combo" read that makes hugging danger feel rewarding to kids. Drawn
+  /// only while a chain is live ([chain] >= 1).
+  static void drawGrazeChain(
+    Canvas canvas,
+    Offset above,
+    double figureScale,
+    int chain,
+    int maxPips,
+    double pulse,
+  ) {
+    if (chain < 1) return;
+    final shown = chain < maxPips ? chain : maxPips;
+    final heat = (maxPips <= 1 ? 0.0 : (shown - 1) / (maxPips - 1)).clamp(0.0, 1.0);
+    final color = _blend(_chainCool, _chainHot, heat);
+    final p = pulse.clamp(0.0, 1.0);
+
+    final r = math.max(2.0, 3.0 * figureScale) * (1.0 + 0.12 * p);
+    final gap = r * 2.6;
+    final totalW = (shown - 1) * gap;
+    final y = above.dy;
+    final startX = above.dx - totalW / 2;
+    for (var i = 0; i < shown; i++) {
+      final c = Offset(startX + i * gap, y);
+      canvas.drawCircle(
+          c, r * 1.7, Paint()..color = color.withValues(alpha: 0.18));
+      canvas.drawCircle(c, r, Paint()..color = color);
+      canvas.drawCircle(
+        c.translate(-r * 0.28, -r * 0.28),
+        r * 0.4,
+        Paint()..color = _white.withValues(alpha: 0.6),
+      );
+    }
+    // "xN" label once the streak is genuinely stacking.
+    if (chain >= 2) {
+      _drawChainLabel(canvas, Offset(above.dx, y - r * 3.4), 'x$chain',
+          color, math.max(11.0, 9.0 * figureScale) * (1.0 + 0.08 * p));
+    }
+  }
+
+  static void _drawChainLabel(Canvas canvas, Offset center, String text,
+      Color color, double fontSize) {
+    if (fontSize <= 1) return;
+    final builder = ParagraphBuilder(ParagraphStyle(
+      textAlign: TextAlign.center,
+      fontSize: fontSize,
+      fontWeight: FontWeight.w900,
+    ))
+      ..pushStyle(TextStyle(color: color))
+      ..addText(text);
+    const w = 120.0;
+    final paragraph = builder.build()
+      ..layout(const ParagraphConstraints(width: w));
+    canvas.drawParagraph(
+        paragraph, Offset(center.dx - w / 2, center.dy - fontSize * 0.6));
+  }
+
   // ── Near-miss flash on a lane ──────────────────────────────────────────────
 
   /// A brief cyan column flash in the lane where a near-miss just happened.

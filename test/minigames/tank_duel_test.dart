@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -8,13 +9,15 @@ import 'package:stick_party/minigames/tank_duel/tank_duel.dart';
 import 'package:stick_party/minigames/tank_duel/tank_fx.dart';
 
 void main() {
-  MiniGameContext ctxFor(int n, {int seed = 7}) {
+  MiniGameContext ctxFor(int n,
+      {int seed = 7, BotDifficulty difficulty = BotDifficulty.medium}) {
     final players = [for (var i = 0; i < n; i++) PlayerSlot.defaults(i, isBot: true)];
     return MiniGameContext(
       players: players,
       arena: const Size(800, 1200),
       rng: SeededRng(seed),
       zones: ZoneLayout.forPlayers(n),
+      difficulty: difficulty,
     );
   }
 
@@ -108,7 +111,11 @@ void main() {
     expect(g.status, MiniGameStatus.finished);
   });
 
-  test('a hold (down, wait, release) slows aim then fires; round resolves', () {
+  test('a full charge (down, long hold, release) fires a charged shell; '
+      'round resolves', () {
+    // A long hold (well past the ~0.9s full-charge time) must accrue power and
+    // still loose a shell on release without throwing — exercising the new
+    // charge ramp + the charged-speed launch path. ~70 frames ≈ 1.17s hold.
     final players = [
       PlayerSlot.defaults(0),
       PlayerSlot.defaults(1, isBot: true),
@@ -122,17 +129,43 @@ void main() {
     final g = TankDuel()..init(ctx);
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
-      if (n % 40 == 0) {
+      if (n % 120 == 0) {
         expect(() => g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down)),
             returnsNormally);
       }
-      if (n % 40 == 12) {
+      if (n % 120 == 70) {
         expect(() => g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up)),
             returnsNormally);
       }
       g.update(1 / 60);
     }
     expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('charging bots fire, land hits, and resolve (arc solved at charge speed)',
+      () {
+    // Hard bots wind up a charged shot a good share of the time. A charged shell
+    // is solved at the SAME (faster) speed it launches at, so it must still
+    // connect rather than sail away. Across several hard-bot rounds the games
+    // resolve and hits land in aggregate (score accrues from landed shells) —
+    // and crucially nothing throws while charged shells are in flight.
+    var totalHits = 0.0;
+    for (var seed = 0; seed < 6; seed++) {
+      final g = TankDuel()
+        ..init(ctxFor(2, seed: 200 + seed, difficulty: BotDifficulty.hard));
+      var n = 0;
+      expect(() {
+        while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+          g.update(1 / 60);
+        }
+      }, returnsNormally, reason: 'seed $seed threw mid-flight');
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      for (final v in g.winResult!.finalScores.values) {
+        totalHits += v.toDouble();
+      }
+    }
+    // Shells (tap + charged) reach their targets, so hits accumulate overall.
+    expect(totalHits, greaterThan(0));
   });
 
   group('AirdropController (chaos pickup)', () {

@@ -560,12 +560,15 @@ class PaintRenderer {
     canvas.restore();
   }
 
-  // ── Zone borders (whose canvas is whose) ───────────────────────────────────
+  // ── Home corners (where each player starts on the SHARED canvas) ────────────
 
-  /// Faint player-tinted borders around each player's paintable zone so the
-  /// split of the canvas reads instantly. [zones] pairs each normalized rect
-  /// with that player's color. A single full-screen zone (solo play) is skipped
-  /// since there is nothing to divide.
+  /// Faint player-tinted "home" wash marking the corner each player STARTS from
+  /// on the one shared canvas. This replaces the old hard zone-wall borders:
+  /// there are no longer any walls (every brush roams and steals the whole
+  /// board), so we only hint each player's starting territory with a soft
+  /// inward-fading glow in their color — readable, but never a barrier. [zones]
+  /// pairs each normalized rect with that player's color; solo play (a single
+  /// full-screen zone) is skipped since there is nothing to distinguish.
   static void drawZoneBorders(
     Canvas canvas,
     Size size,
@@ -578,25 +581,33 @@ class PaintRenderer {
         z.rect.top * size.height,
         z.rect.right * size.width,
         z.rect.bottom * size.height,
-      ).deflate(2);
-      // Soft tinted halo just inside the seam: a wide, faint stroke (no blur)
-      // under the crisp thin border below.
-      canvas.drawRect(
-        r,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(3.0, math.min(size.width, size.height) * 0.018)
-          ..color = z.color.withValues(alpha: 0.1),
       );
-      // Crisp thin border.
+      // A soft radial wash anchored at the zone's outer corner, fading toward
+      // the board centre — a gentle "this corner is your start" cue, not a wall.
+      final corner = _outerCorner(r, size);
+      final reach = math.min(size.width, size.height) * 0.5;
       canvas.drawRect(
         r,
         Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(1.0, math.min(size.width, size.height) * 0.003)
-          ..color = z.color.withValues(alpha: 0.5),
+          ..shader = Gradient.radial(
+            corner,
+            reach,
+            [
+              z.color.withValues(alpha: 0.12),
+              const Color(0x00000000),
+            ],
+            const [0.0, 1.0],
+          ),
       );
     }
+  }
+
+  /// The corner of [rect] that sits against the outer edge of the [size] canvas
+  /// (the player's "home" corner), used to anchor the home-glow wash.
+  static Offset _outerCorner(Rect rect, Size size) {
+    final left = rect.center.dx < size.width / 2;
+    final top = rect.center.dy < size.height / 2;
+    return Offset(left ? rect.left : rect.right, top ? rect.top : rect.bottom);
   }
 
   // ── Coverage bars (live HUD) ───────────────────────────────────────────────

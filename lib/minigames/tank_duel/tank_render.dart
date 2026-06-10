@@ -38,7 +38,8 @@ class TankView {
   final double muzzle; // 0..1 muzzle-flash amount
   final double invuln; // 0..1 invulnerability blink phase (0 = none)
   final double scale; // body scale factor (fits the arena)
-  final bool precision; // true while the player holds to slow-aim (fine-tune)
+  final bool precision; // true while the player holds to charge (fine-tune aim)
+  final double charge; // 0..1 charge level while holding (0 = snap/tap)
 
   const TankView({
     required this.base,
@@ -53,6 +54,7 @@ class TankView {
     required this.invuln,
     required this.scale,
     this.precision = false,
+    this.charge = 0,
   });
 }
 
@@ -114,6 +116,7 @@ class TankRenderer {
   static const Color _muzzleCore = Color(0xFFFFC23C);
   static const Color _shellHot = Color(0xFFFFE6A0);
   static const Color _embers = Color(0xFFFF9A3C);
+  static const Color _chargeHot = Color(0xFFFF5A2E); // full-charge gauge tint
 
   // ── Geometry tuning (fractions of the tank base radius) ────────────────────
   static const double _hullW = 2.5;
@@ -335,13 +338,18 @@ class TankRenderer {
 
   // ── Aim guide / reticle from the barrel ────────────────────────────────────
   /// A dashed fading guide line + reticle along the barrel. While the player
-  /// holds to slow-aim ([t.precision]) the guide reaches further and brightens
-  /// and the reticle gains crosshair ticks, so a deliberate precision shot reads
-  /// clearly distinct from the idle sweep.
+  /// holds to charge ([t.precision]) the guide brightens, gains crosshair ticks,
+  /// and its reach grows with [t.charge] — so the reticle visibly creeps out
+  /// from a near lob toward a far snipe as power builds, and a charging shot
+  /// reads clearly distinct from the idle sweep.
   static void drawAimGuide(Canvas canvas, TankView t) {
     final dir = Offset(math.cos(t.aimAngle), math.sin(t.aimAngle));
     final muzzle = _muzzlePoint(t);
-    final reach = _aimGuideLen * (t.precision ? 1.5 : 1.0);
+    final c = t.charge.clamp(0.0, 1.0);
+    // Reach: idle = base; charging starts short (near lob) and extends toward a
+    // long snipe as the gauge fills.
+    final reachMul = t.precision ? (0.7 + 1.1 * c) : 1.0;
+    final reach = _aimGuideLen * reachMul;
     final end = muzzle + dir * reach;
     final boost = t.precision ? 1.0 : 0.0;
     // Dashed fading guide line (brighter + longer dashes while precision-aiming).
@@ -378,7 +386,40 @@ class TankRenderer {
         ..color = _white.withValues(alpha: 0.7);
       canvas.drawLine(end - dir * tick, end + dir * tick, p);
       canvas.drawLine(end - perp * tick, end + perp * tick, p);
+      _drawChargeGauge(canvas, end, ringR, c);
     }
+  }
+
+  /// A power arc hugging the reticle that sweeps from empty to a full hot ring as
+  /// [charge] fills — the at-a-glance "how hard is this shot" read for kids.
+  static void _drawChargeGauge(
+      Canvas canvas, Offset center, double ringR, double charge) {
+    final c = charge.clamp(0.0, 1.0);
+    final gaugeR = ringR * 1.9;
+    final rect = Rect.fromCircle(center: center, radius: gaugeR);
+    // Faint full backing ring.
+    canvas.drawCircle(
+      center,
+      gaugeR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _white.withValues(alpha: 0.18),
+    );
+    if (c <= 0.001) return;
+    // Filled sweep from straight up, hue shifting cool→hot with power.
+    final fill = Color.lerp(_muzzleCore, _chargeHot, c) ?? _muzzleCore;
+    canvas.drawArc(
+      rect,
+      -math.pi / 2,
+      math.pi * 2 * c,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.6
+        ..strokeCap = StrokeCap.round
+        ..color = fill.withValues(alpha: 0.95),
+    );
   }
 
   // ── Tank ───────────────────────────────────────────────────────────────────

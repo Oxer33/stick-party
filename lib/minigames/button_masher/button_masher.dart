@@ -7,29 +7,31 @@ import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../core/constants.dart';
 import '../../core/math2.dart';
-import '../../engine/helpers/tap_mash_meter.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'masher_render.dart';
 
-/// Button Masher — a carnival "high striker" (test-your-strength) race. Every
-/// player owns a strength tower; each tap swings their little stickman's hammer
-/// onto the lever, kicks the puck a notch higher and lights up the next strength
-/// level toward the bell at the top. Most height (≡ most taps) in the time
-/// window wins.
+/// Button Masher — a carnival "high striker" (test-your-strength) race with an
+/// OVERHEAT gauge. Every player owns a strength tower; each tap swings their
+/// little stickman's hammer onto the lever and feeds HEAT into the striker.
 ///
-/// Depth (still one-touch MASH):
-///  * **Power band**: sustained, rhythmic mashing builds a per-player power
-///    level that decays when you slack off. A tap's puck kick scales with power,
-///    so a steady hammering run climbs far faster than a few stray slaps —
-///    mashing *cadence* matters, not just the raw count.
-///  * **Screen-filling feedback**: every tap throws a colored flash ring + a
-///    spark burst off the lever, so a frantic finish reads as a fireworks storm.
-///  * **Bell payoff**: the first time a puck tops out it rings the bell with a
-///    "DING!" popup, a golden burst, hit-stop and a shake — a clear, juicy goal.
+/// Depth — the real per-tap DECISION (still one-touch MASH):
+///  * **Heat gauge / sweet-zone**: every tap adds heat; heat bleeds off when you
+///    ease up. A tap only kicks the puck a FULL notch while heat sits in the
+///    GREEN band. Mash past the redline into the RED overheat zone and a tap
+///    gives almost nothing AND the puck DROPS — a wild masher boils over and
+///    slides back down. So you tap fast to get hot, then *ease off the throttle*
+///    to stay in the green: a steady, listening player out-climbs a button-mash.
+///  * **Score = HEIGHT, not taps**: a player is scored by the highest the puck
+///    ever reached ([_Striker.peakHeight]), so managing heat — not raw mash
+///    count — wins. The bell at the top is the clear goal.
+///  * **FRENZY finale + comeback assist**: the final stretch gives the climb an
+///    extra shove (a swingy late rally) and a trailing player a gentle catch-up
+///    boost, both shaped so they help you climb without rewarding a redline mash.
 ///
-/// Bots mash on a [BotProfile]-driven cadence (harder tiers hammer faster and
-/// steadier), so the towers feel like a real four-way scramble.
+/// Kid read: keep the gauge GREEN, don't let it go RED. Tap-tap-tap… ease…
+/// tap-tap. Bots ride the green band on a [BotProfile]-driven cadence (harder
+/// tiers hold the sweet zone tighter), so the towers feel like a real scramble.
 class ButtonMasher extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -44,27 +46,30 @@ class ButtonMasher extends MiniGameBase {
   // ── Round tuning (no magic numbers inline) ──────────────────────────────────
   static const double _timeLimit = 10;
   static const int _levels = 12; // lit strength rungs on each tower
+  // peakHeight is 0..1; scale it to a tidy integer score so the HUD reads big.
+  static const double _scorePerHeight = 1000;
 
-  // ── Power band (rewards steady cadence) ─────────────────────────────────────
-  static const double _powerPerTap = 0.16; // power gained per tap
-  static const double _powerDecayPerSec = 0.85; // bleeds when you slack off
-  static const double _powerKickBoost = 1.6; // +160% puck kick at full power
-
-  // ── Combo multiplier (the skill layer) ──────────────────────────────────────
-  // Taps landed within a steady cadence window grow a combo streak; a tap that
-  // comes too fast (mash-spam) or too slow (a stall) snaps it back to 0. The
-  // puck kick is multiplied by the combo tier, so holding a clean rhythm climbs
-  // far faster than a flat-out button-mash — that is the skill, shown as a live
-  // "xN" combo badge.
-  static const double _comboWindowLo = 0.07; // good-cadence gap (sec) lower edge
-  static const double _comboWindowHi = 0.26; // good-cadence gap (sec) upper edge
-  static const int _comboMax = 12; // cap on the combo streak
-  static const double _comboMultPerStep = 0.12; // +12% kick per combo step
-  static const double _comboBreakGraceSec = 0.5; // miss this long → combo resets
+  // ── Heat gauge (the sweet-zone DECISION) ────────────────────────────────────
+  // Heat 0..1. Each tap shoves it up; it bleeds down when you ease off. The puck
+  // only climbs at full strength while heat is inside the GREEN band; below the
+  // band a tap is a weak warm-up nudge, and ABOVE the redline the striker has
+  // boiled over — taps stop climbing and the puck slides back down.
+  static const double _heatPerTap = 0.13; // heat added per tap
+  static const double _heatDecayPerSec = 0.55; // bleeds when you slack off
+  static const double _heatGreenLo = 0.45; // green band lower edge
+  static const double _heatGreenHi = 0.82; // green band upper edge (redline)
+  // Below-green taps still nudge the puck a little so a timid player climbs
+  // slowly instead of being stuck at zero (kid-forgiving warm-up).
+  static const double _coldKickFrac = 0.4;
+  // Overheated taps give almost nothing — the climb essentially stalls in red.
+  static const double _overheatKickFrac = 0.06;
 
   // ── Puck climb ──────────────────────────────────────────────────────────────
-  static const double _baseKickPerTap = 0.018; // puck height per tap at 0 power
+  static const double _baseKickPerTap = 0.05; // puck height per green tap
   static const double _puckGravityPerSec = 0.16; // puck eases back down if idle
+  // While overheated the puck doesn't just idle-bleed — it actively DROPS faster
+  // (reuses the same gravity unit, scaled up) so boiling over is clearly costly.
+  static const double _overheatDropMult = 2.2;
   static const double _puckSpringPerSec = 14.0; // puck chases its target height
 
   // ── Hammer swing (per tap) ──────────────────────────────────────────────────
@@ -75,24 +80,29 @@ class ButtonMasher extends MiniGameBase {
   static const int _maxFlashes = 6; // flashes kept per striker
 
   // ── FRENZY climax ─────────────────────────────────────────────────────────
-  // In the final stretch every tap counts DOUBLE (a finale scoring surge) with a
-  // one-shot "FRENZY!" banner + shake + a hotter puck kick, so the last seconds
-  // are a frantic, swingy scramble where a late rally can still steal the win.
+  // In the final stretch a green tap kicks the puck harder (a finale climb
+  // surge) with a one-shot "FRENZY!" banner + shake, so the last seconds are a
+  // swingy scramble where a late, well-managed rally can still steal the win.
   static const double _frenzyFrac = 0.75; // fraction of timeLimit → frenzy begins
-  static const int _frenzyTapBonus = 1; // extra score per tap during frenzy
-  static const double _frenzyKickBoost = 0.6; // +60% puck kick during frenzy
+  static const double _frenzyKickBoost = 0.6; // +60% green-tap climb during frenzy
 
   // ── Comeback (kid-assist) ────────────────────────────────────────────────────
-  // A player behind the leader earns a small fractional score bonus per tap,
-  // scaled by the gap — keeps a trailing kid's tower climbing without ever
-  // out-scoring a steadier masher on raw count alone.
-  static const double _catchUpMaxBonusPerTap = 0.5; // extra score / tap at full gap
-  static const double _catchUpGapFull = 40; // tap-count gap for the full bonus
+  // A player whose puck sits below the leader's peak gets a small climb boost on
+  // a GREEN tap, scaled by the height gap — keeps a trailing kid's tower rising
+  // without ever rewarding a redline mash (the assist rides the same green tap).
+  static const double _catchUpMaxBoost = 0.6; // +60% green climb at full gap
+  static const double _catchUpGapFull = 0.5; // peak-height gap for the full boost
 
-  // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
-  static const double _botBaseInterval = 0.155;
-  static const double _botAccuracyBonus = 0.075; // faster at high accuracy
+  // ── Bot mash cadence (sec/tap); harder bots ride the green band tighter ─────
+  static const double _botBaseInterval = 0.16;
+  static const double _botAccuracyBonus = 0.05; // faster at high accuracy
   static const double _botJitterBase = 0.05; // sloppier at low accuracy
+  // A bot eases off the throttle when its own heat climbs near the redline, so a
+  // strong bot hovers in the green instead of boiling over — its skill reads as
+  // "holds the sweet zone". Weaker bots react later (higher trigger) so they
+  // overheat more, mirroring a wild human masher.
+  static const double _botEaseHeatBase = 0.7; // heat at which a bot starts easing
+  static const double _botEasePause = 0.22; // sec a bot waits while it cools
   // Bots wait a beat before they start hammering so a human gets a fair head
   // start and an idle player is never instantly buried at the gun.
   static const double _botWarmupSec = 1.5;
@@ -123,7 +133,6 @@ class ButtonMasher extends MiniGameBase {
     for (final p in ctx.players) {
       _strikers[p.id] = _Striker(
         slot: p,
-        meter: TapMashMeter(tapImpulse: 1, maxValue: 1e9), // count-only meter
         figure: StickFigure(
           proportions: proportions,
           style: _styleFor(Color(p.colorArgb)),
@@ -132,6 +141,7 @@ class ButtonMasher extends MiniGameBase {
         footReach: footReach,
         botInterval: _botInterval(),
         botJitter: _botJitter(),
+        botEaseHeat: _botEaseHeat(),
       );
     }
     begin();
@@ -167,6 +177,15 @@ class ButtonMasher extends MiniGameBase {
         _botJitterBase * 0.25;
   }
 
+  /// The heat at which a bot eases off to cool down. A high-accuracy bot eases
+  /// early (just under the redline) so it rides the green; a low-accuracy bot
+  /// eases late (or past the line) so it boils over like a wild masher.
+  double _botEaseHeat() {
+    final prof = ctx.botProfile;
+    // accuracy 1 → ease at the green ceiling; accuracy 0 → ease well into red.
+    return _botEaseHeatBase + (1.0 - prof.accuracy.clamp(0.0, 1.0)) * 0.25;
+  }
+
   // ── Input ───────────────────────────────────────────────────────────────────
 
   @override
@@ -192,17 +211,18 @@ class ButtonMasher extends MiniGameBase {
 
     for (final s in _strikers.values) {
       _tickStriker(s, sdt);
-      // Score = raw taps + frenzy/comeback bonus (rounded so it stays integral).
-      setScore(s.slot.id, s.meter.tapCount + s.bonusScore.round());
+      // Score = HEIGHT reached (×scale, rounded). Managing heat — not raw mash
+      // count — drives the climb, so a steady player out-scores a spammer.
+      setScore(s.slot.id, (s.peakHeight * _scorePerHeight).round());
     }
 
     if (_elapsed >= _timeLimit) {
-      finishByScore(); // most taps (≡ most height) wins
+      finishByScore(); // most height (≡ best heat management) wins
     }
   }
 
-  /// True once the round enters the final stretch — taps count double + the puck
-  /// kick runs hotter so the finale is a frantic, swingy scramble.
+  /// True once the round enters the final stretch — green taps climb harder so
+  /// the finale is a swingy scramble.
   bool get _inFrenzy => _elapsed >= _timeLimit * _frenzyFrac;
 
   /// Fire the one-shot "FRENZY!" climax cue over the towers when frenzy begins.
@@ -219,17 +239,19 @@ class ButtonMasher extends MiniGameBase {
   }
 
   void _tickStriker(_Striker s, double dt) {
-    // Power decays so you must keep a steady cadence to stay strong.
-    s.power = math.max(0.0, s.power - _powerDecayPerSec * dt);
+    // Heat bleeds off so you must keep tapping to stay hot — but easing off is
+    // exactly how you drop OUT of the red back into the green.
+    s.heat = math.max(0.0, s.heat - _heatDecayPerSec * dt);
 
-    // Puck eases toward its target (taps push the target up; idle bleeds it).
-    s.targetHeight = math.max(0.0, s.targetHeight - _puckGravityPerSec * dt);
+    // Puck eases toward its target. While overheated it drops faster (an active
+    // boil-over slide), otherwise it just idle-bleeds toward the target.
+    final drop = _isOverheated(s.heat)
+        ? _puckGravityPerSec * _overheatDropMult
+        : _puckGravityPerSec;
+    s.targetHeight = math.max(0.0, s.targetHeight - drop * dt);
     final follow = (1.0 - math.exp(-_puckSpringPerSec * dt)).clamp(0.0, 1.0);
     s.puckHeight += (s.targetHeight - s.puckHeight) * follow;
     s.peakHeight = math.max(s.peakHeight, s.puckHeight);
-
-    // Combo breaks if the player stalls past the grace window.
-    if (s.combo > 0 && s.sinceTap + dt > _comboBreakGraceSec) s.combo = 0;
 
     // Hammer swing + tap-flash clocks.
     if (s.swing > 0) s.swing = math.max(0.0, s.swing - dt);
@@ -242,38 +264,39 @@ class ButtonMasher extends MiniGameBase {
     s.figure.update(dt);
   }
 
-  // ── Tap → power + puck kick + swing + feedback ──────────────────────────────
+  /// True when heat has crossed the redline into the overheat (RED) zone.
+  bool _isOverheated(double heat) => heat > _heatGreenHi;
+
+  /// True when heat sits inside the GREEN band (full-strength climb).
+  bool _isInGreen(double heat) => heat >= _heatGreenLo && heat <= _heatGreenHi;
+
+  // ── Tap → heat + puck kick + swing + feedback ───────────────────────────────
 
   void _tap(int id) {
     final s = _strikers[id];
     if (s == null) return;
 
-    // Combo: a tap inside the cadence window extends the streak; a too-fast or
-    // too-slow tap snaps it. This is the skill layer — rhythm beats raw speed.
-    final gap = s.sinceTap;
-    if (gap >= _comboWindowLo && gap <= _comboWindowHi) {
-      s.combo = math.min(_comboMax, s.combo + 1);
-    } else {
-      s.combo = 0;
-    }
-
-    s.meter.tap();
     s.sinceTap = 0;
 
-    // FRENZY: late-round taps count double. COMEBACK: a trailing striker earns a
-    // small fractional bonus scaled by its gap to the leader. Both feed the
-    // separate bonus accumulator so the raw tap count stays clean.
-    if (_inFrenzy) s.bonusScore += _frenzyTapBonus;
-    s.bonusScore += _catchUpBonus(s);
+    // Add heat FIRST, then judge the band — a tap that tips you over the redline
+    // boils over on that very tap (so spamming is self-punishing).
+    s.heat = math.min(1.0, s.heat + _heatPerTap);
 
-    // Build power (capped), then kick the puck target scaled by current power
-    // AND the combo multiplier, so a clean rhythm run climbs far faster. The
-    // frenzy gives the kick an extra shove so the towers visibly surge.
-    s.power = math.min(1.0, s.power + _powerPerTap);
-    final comboMult = 1.0 + _comboMultPerStep * s.combo;
+    // Climb strength by band: green = full, cold = weak warm-up, red = stall.
+    final double bandFrac;
+    if (_isOverheated(s.heat)) {
+      bandFrac = _overheatKickFrac;
+    } else if (_isInGreen(s.heat)) {
+      bandFrac = 1.0;
+    } else {
+      bandFrac = _coldKickFrac; // below the green band
+    }
+
+    // FRENZY shoves a green climb harder; COMEBACK gives a trailing striker a
+    // gentle extra push — both ride the green tap so neither rewards a redline.
     final frenzyMult = _inFrenzy ? (1.0 + _frenzyKickBoost) : 1.0;
-    final kick =
-        _baseKickPerTap * (1.0 + _powerKickBoost * s.power) * comboMult * frenzyMult;
+    final catchUpMult = 1.0 + _catchUpBoost(s);
+    final kick = _baseKickPerTap * bandFrac * frenzyMult * catchUpMult;
     s.targetHeight = math.min(1.0, s.targetHeight + kick);
 
     // Swing the hammer down-stroke + a chop drives the lever.
@@ -284,29 +307,31 @@ class ButtonMasher extends MiniGameBase {
     _maybeRingBell(s);
   }
 
-  /// Extra per-tap score for a trailing striker, scaled 0..1 by how far behind
-  /// the leader it sits (capped at [_catchUpGapFull]). Gap is on the raw tap
-  /// count (stable) so the assist never feeds back on itself. Zero for the lead.
-  double _catchUpBonus(_Striker s) {
-    final gap = _leadCount() - s.meter.tapCount;
+  /// Extra green-tap climb for a trailing striker, scaled 0..1 by how far its
+  /// puck sits below the current leader's peak (capped at [_catchUpGapFull]).
+  /// Zero for the leader. Gap is on peak height (the scored quantity).
+  double _catchUpBoost(_Striker s) {
+    final gap = _leadPeak() - s.peakHeight;
     if (gap <= 0) return 0;
     final t = (gap / _catchUpGapFull).clamp(0.0, 1.0);
-    return _catchUpMaxBonusPerTap * t;
+    return _catchUpMaxBoost * t;
   }
 
-  /// The highest raw tap count across all strikers (the current leader).
-  int _leadCount() {
-    var best = 0;
+  /// The highest peak height across all strikers (the current leader).
+  double _leadPeak() {
+    var best = 0.0;
     for (final s in _strikers.values) {
-      if (s.meter.tapCount > best) best = s.meter.tapCount;
+      if (s.peakHeight > best) best = s.peakHeight;
     }
     return best;
   }
 
-  /// Each tap = a flash ring + a small spark spray off the lever plate.
+  /// Each tap = a flash ring + a small spark spray off the lever plate. A red
+  /// (overheated) tap sprays in the danger color so a boil-over reads instantly.
   void _spawnTapFeedback(_Striker s) {
     final base = _leverAnchor(s);
-    final color = _colorOf(s.slot.id);
+    final color =
+        _isOverheated(s.heat) ? MasherRenderer.overheatRed : _colorOf(s.slot.id);
     s.flashes.add(_Flash(at: base, life: _flashLifeSec));
     if (s.flashes.length > _maxFlashes) s.flashes.removeAt(0);
     _juice.particles.burst(
@@ -357,18 +382,31 @@ class ButtonMasher extends MiniGameBase {
     _juice.hitStop.trigger(Feel.hitStopDefaultSec);
   }
 
-  /// Bots mash on a cadence clock with [BotProfile]-driven interval + jitter, so
-  /// they read as steady (hard) or sloppy (easy) without branching beyond "is
-  /// this slot a bot?". The guard caps catch-up taps for huge frame steps.
+  /// Bots mash on a cadence clock with [BotProfile]-driven interval + jitter, and
+  /// — the skill layer — EASE OFF when their heat nears the redline so a strong
+  /// bot rides the green band instead of boiling over. The guard caps catch-up
+  /// taps for huge frame steps.
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return; // let the human get a head start
     for (final s in _strikers.values) {
       if (!s.slot.isBot) continue;
+      // Cooling pause: while easing, the bot holds off tapping so its heat
+      // bleeds back down into the green (mirrors a human laying off the button).
+      if (s.botCooldown > 0) {
+        s.botCooldown = math.max(0.0, s.botCooldown - dt);
+        continue;
+      }
       s.botClock += dt;
       var guard = 0;
       while (s.botClock >= s.nextTapAt && guard++ < 8) {
         s.botClock -= s.nextTapAt;
         _tap(s.slot.id);
+        // After tapping, if heat has climbed to this bot's ease point, take a
+        // cooling beat before the next tap.
+        if (s.heat >= s.botEaseHeat) {
+          s.botCooldown = _botEasePause;
+          break;
+        }
         s.nextTapAt = _nextBotInterval(s);
       }
     }
@@ -447,23 +485,17 @@ class ButtonMasher extends MiniGameBase {
       scale: tower.width,
     );
 
-    // Power meter bar at the lane base.
-    MasherRenderer.drawPowerBar(
+    // HEAT gauge at the lane base: the green sweet-zone band, the red overheat
+    // zone, and the live heat fill. This is the player's decision readout — keep
+    // the fill in the green, off the red.
+    MasherRenderer.drawHeatGauge(
       canvas,
       Offset(lane.center, lane.feet.dy + tower.width * 0.55),
       tower.width * 1.7,
-      s.power,
-      color,
-    );
-
-    // Live combo multiplier badge above the striker (the skill readout). Pops +
-    // goes gold as the streak climbs; hidden until the player chains a couple.
-    MasherRenderer.drawComboBadge(
-      canvas,
-      Offset(feet.dx, root.dy - s.footReach * 0.35),
-      s.combo,
-      _comboMax,
-      color,
+      heat: s.heat,
+      greenLo: _heatGreenLo,
+      greenHi: _heatGreenHi,
+      color: color,
       pulse: 0.5 + 0.5 * math.sin(_animClock * 12.0 + s.slot.id),
     );
   }
@@ -573,36 +605,33 @@ class _Flash {
 /// the duration of a single round).
 class _Striker {
   final PlayerSlot slot;
-  final TapMashMeter meter; // count-only; tapCount drives the score
   final StickFigure figure;
   final double footReach;
   final double botInterval;
   final double botJitter;
+  final double botEaseHeat; // heat at which this bot eases off to cool down
 
-  double power = 0; // 0..1 cadence-built power
-  // Extra score on top of the raw tap count: frenzy double-count + comeback
-  // assist. Kept separate so the meter stays a pure tap counter.
-  double bonusScore = 0;
-  int combo = 0; // current rhythm streak (drives the puck-kick multiplier)
+  double heat = 0; // 0..1 sweet-zone gauge (the decision)
   double puckHeight = 0; // 0..1 current rendered puck height
   double targetHeight = 0; // 0..1 height the puck eases toward
-  double peakHeight = 0; // best height reached (high-water mark)
+  double peakHeight = 0; // best height reached — THIS is the score source
   double swing = 0; // seconds of hammer down-stroke remaining
   bool belled = false; // rang the bell at least once
   double sinceTap = 1e9; // seconds since this striker's last tap
 
-  // Bot cadence clock.
+  // Bot cadence clock + cooling beat.
   double botClock = 0;
   double nextTapAt;
+  double botCooldown = 0; // seconds the bot holds off to cool back into green
 
   final List<_Flash> flashes = <_Flash>[];
 
   _Striker({
     required this.slot,
-    required this.meter,
     required this.figure,
     required this.footReach,
     required this.botInterval,
     required this.botJitter,
+    required this.botEaseHeat,
   }) : nextTapAt = botInterval;
 }

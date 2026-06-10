@@ -18,6 +18,9 @@ class ChickenRenderer {
   /// Hot accent for the one-shot "HURRY!" climax popup (matches the lava crest).
   static const Color hurryColor = Color(0xFFFFC93C);
 
+  /// Warning accent for the gamble's downside cues ("SLIP!" / "CRUMBLE!").
+  static const Color slipColor = Color(0xFFFF5A4A);
+
   // ── Palette (no magic colors inline elsewhere) ─────────────────────────────
   static const Color _skyTop = Color(0xFF1A1230); // upper cave sky
   static const Color _skyMid = Color(0xFF241733);
@@ -33,6 +36,7 @@ class ChickenRenderer {
   static const Color _platMid = Color(0xFF63708A);
   static const Color _platLo = Color(0xFF333C52);
   static const Color _platEdge = Color(0xFF1A1F2C);
+  static const Color _crackWarn = Color(0xFFFF5A4A); // crumbling-rung fissures
 
   static const Color _lavaCore = Color(0xFFFF7321); // main molten body
   static const Color _lavaDeep = Color(0xFFB81E12); // deep red toward bottom
@@ -223,11 +227,13 @@ class ChickenRenderer {
     Color color, {
     required bool lit,
     double anticipate = 0,
+    double cracked = 0,
   }) {
     if (columnWidth <= 1) return;
 
     final w = columnWidth * _platWidthFactor;
     final h = math.max(6.0, columnWidth * _platHeightFactor);
+    final crk = cracked.clamp(0.0, 1.0);
 
     // Next-rung target cue, drawn beneath the platform so the stone reads on top.
     final ant = anticipate.clamp(0.0, 1.0);
@@ -296,7 +302,47 @@ class ChickenRenderer {
         ..strokeWidth = math.max(1.0, h * 0.12)
         ..color = _platEdge,
     );
+
+    // CRACKED rung overlay: jagged red fissures across the stone + a warning rim
+    // that brightens as it nears collapse, so the gamble's downside is legible.
+    if (crk > 0.01) _drawCracks(canvas, w, h, crk);
+
     canvas.restore();
+  }
+
+  /// Jagged fracture lines + a hot rim on a crumbling rung (drawn in the
+  /// platform's local space). [crk] in 0..1 scales how bright/angry the cracks
+  /// read as the rung nears giving way.
+  static void _drawCracks(Canvas canvas, double w, double h, double crk) {
+    final warn = _crackWarn.withValues(alpha: 0.5 + 0.5 * crk);
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.2, h * 0.16)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = warn;
+
+    // Three deterministic zig-zag fissures fanning down from the top edge.
+    const seeds = [0.32, 0.55, 0.74];
+    for (var i = 0; i < seeds.length; i++) {
+      final sx = (-0.5 + seeds[i]) * w; // start x across the top
+      final path = Path()..moveTo(sx, -h * 0.4);
+      final dir = i.isEven ? 1.0 : -1.0;
+      path.lineTo(sx + dir * w * 0.08, -h * 0.05);
+      path.lineTo(sx - dir * w * 0.06, h * 0.2);
+      path.lineTo(sx + dir * w * 0.1, h * 0.42);
+      canvas.drawPath(path, stroke);
+    }
+
+    // A warning rim that grows with urgency.
+    final rect = Rect.fromCenter(center: Offset.zero, width: w, height: h);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, Radius.circular(h * 0.4)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, h * 0.2 * (0.6 + 0.6 * crk))
+        ..color = _crackWarn.withValues(alpha: 0.3 + 0.5 * crk),
+    );
   }
 
   /// A bobbing "tap to hop" cue floating just above the climber during the
@@ -316,6 +362,7 @@ class ChickenRenderer {
     final base = head.translate(0, -columnWidth * 0.42 + bob);
     final chevColor = _blend(color, _white, 0.4);
     final cw = columnWidth * 0.14;
+    // Two solid chevrons = "TAP to hop" (the always-safe single rung).
     for (var i = 0; i < 2; i++) {
       final cy = base.dy - i * h * 1.1;
       final path = Path()
@@ -332,6 +379,26 @@ class ChickenRenderer {
           ..color = chevColor.withValues(alpha: i == 0 ? 0.95 : 0.55),
       );
     }
+    // A third, wider chevron pulsing higher above = "HOLD to leap higher" (the
+    // risky double jump). Slower throb + a hot tint so it reads as the bigger,
+    // optional bet, not the default.
+    final throb = 0.5 + 0.5 * math.sin(t * 2.2);
+    final cyHold = base.dy - 2 * h * 1.1 - h * (0.6 + 0.5 * throb);
+    final holdW = cw * 1.5;
+    final holdPath = Path()
+      ..moveTo(base.dx - holdW, cyHold + h * 0.7)
+      ..lineTo(base.dx, cyHold - h * 0.3)
+      ..lineTo(base.dx + holdW, cyHold + h * 0.7);
+    canvas.drawPath(
+      holdPath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(2.0, h * 0.34)
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..color =
+            _blend(color, hurryColor, 0.5).withValues(alpha: 0.4 + 0.5 * throb),
+    );
   }
 
   /// The "hop here next" cue under a target rung: a soft halo plus a stack of

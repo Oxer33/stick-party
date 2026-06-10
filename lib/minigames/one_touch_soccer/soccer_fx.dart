@@ -252,6 +252,17 @@ class SoccerFx {
     return squash;
   }
 
+  static const Color _trapTint = Color(0xFFBFE9FF);
+
+  /// React to a TRAP (the un-tapped default contact): a soft puff of dust at the
+  /// striker's [feet], so a kid sees the ball was caught and stuck to the feet
+  /// rather than booted. Pure feedback (no sim mutation).
+  static void fireTrapFeedback(Juice juice, {required Offset feet}) {
+    juice.particles.burst(
+        at: feet, count: 4, color: _trapTint, speed: 80, size: 3,
+        gravity: 160, life: 0.24);
+  }
+
   /// Fire the speed-pad pickup juice: a forward spark fan + light shake + a
   /// SPEED! popup, in the boost [dir]. Pure feedback (no sim mutation).
   static void fireSpeedBurst(

@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../engine/bots.dart';
 import '../../engine/mini_game.dart';
@@ -27,7 +29,13 @@ import 'snake_render.dart';
 ///    player sees. A tap with no position (e.g. a synthetic/test tap) defaults
 ///    to a right turn so the old one-tap behavior still works.
 ///  * Eat a glowing food pellet to grow by [_growPerFood] segments and +1 score;
-///    a fresh pellet then respawns on a free cell.
+///    a fresh pellet then respawns on a free cell. Only [_foodCount] pellets
+///    exist at once and a fresh one is biased to spawn near the LONGEST snake,
+///    so eating is a CONTESTED race (snakes converge on the same food) rather
+///    than parallel grazing.
+///  * Force a rival to crash into your body and you bank a [_takedownScore] +
+///    [_takedownGrow]-segment TAKEDOWN bonus — blocking is worth playing for, so
+///    snakes actively cut each other off, not just chase food.
 ///  * A snake dies when its next head cell hits a wall, its own body, or any
 ///    other snake's body (head-on swaps kill both). Death = explosion burst +
 ///    heavy shake + hit-stop, and the snake is eliminated.
@@ -59,7 +67,28 @@ class SnakeArena extends MiniGameBase {
   static const double _timeLimit = 35;
   static const int _startLength = 3;
   static const int _growPerFood = 2;
-  static const int _foodCount = 4; // simultaneous pellets on the board
+  // Only TWO pellets on the board at once (was 4): scarcity turns eating into a
+  // contested RACE instead of parallel grazing — snakes converge on the same
+  // food and steal/block each other.
+  static const int _foodCount = 2; // simultaneous pellets on the board
+
+  // ── Contested spawns: bias fresh food toward the LEADER ─────────────────────
+  // A fresh pellet has a [_leaderBiasChance] chance to spawn within
+  // [_leaderBiasRadius] cells of the CURRENT LONGEST snake's head, dragging the
+  // pack into the leader's space so the lead is contestable (rubber-band without
+  // nerfing anyone's score). Falls back to a free uniform cell if the biased
+  // pick is occupied/walled.
+  static const double _leaderBiasChance = 0.66; // odds a pellet targets the lead
+  static const int _leaderBiasRadius = 5; // cells around the leader head
+
+  // ── Reward for forcing a rival crash ────────────────────────────────────────
+  // When a snake dies by running INTO another living snake's body, the snake it
+  // hit is credited a [_takedownScore] bonus — blocking a rival is now worth
+  // playing for, adding direct interaction on top of the food race. (Wall, self
+  // and mutual head-on deaths credit no one — only a clean body-block pays.)
+  static const int _takedownScore = 2; // score for causing a rival's crash
+  static const int _takedownGrow = 2; // bonus segments for a takedown (feeds length)
+  static const int _takedownSparks = 12; // celebratory burst on a takedown
 
   // ── Climax: SUDDEN DEATH (the arena closes in) ──────────────────────────────
   // In the final [_suddenDeathSec] the walls march inward one ring at a time
@@ -79,7 +108,10 @@ class SnakeArena extends MiniGameBase {
   static const Color _goldFx = Color(0xFFFFD24A); // golden pellet / cue accent
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
-  static const double _botFoodBias = 0.55; // chance to chase food when safe
+  // With only two pellets, a stronger food pull makes bots converge on the same
+  // scarce food and actively contest it (the leader-biased spawns put that food
+  // in crowded space), so the race reads as competitive rather than aimless.
+  static const double _botFoodBias = 0.7; // chance to chase food when safe
   static const int _botLookahead = 5; // cells of free space a bot wants ahead
   static const int _botFloodCap = 24; // max cells counted by the safety flood
   static const double _botSpaceWeight = 1.6; // free-space vs food-distance weight
@@ -156,10 +188,12 @@ class SnakeArena extends MiniGameBase {
   }
 
   /// Spawn one pellet on a free cell (not on a body, not on another pellet, not
-  /// in a closed SUDDEN-DEATH ring). Tries random cells; falls back to a
-  /// deterministic scan so it never hangs. A fresh pellet may be GOLDEN — a
-  /// swingy bonus worth more growth + score that any snake can race for.
+  /// in a closed SUDDEN-DEATH ring). With [_leaderBiasChance] it first targets a
+  /// cell near the LONGEST snake's head (contested spawn — drags the pack toward
+  /// the leader); otherwise (and as a fallback) it tries uniform-random cells,
+  /// then a deterministic scan so it never hangs. A fresh pellet may be GOLDEN.
   void _spawnOneFood() {
+    if (ctx.rng.chance(_leaderBiasChance) && _trySpawnNearLeader()) return;
     const maxTries = 40;
     for (var t = 0; t < maxTries; t++) {
       final c = Cell(ctx.rng.intRange(0, _cols), ctx.rng.intRange(0, _rows));
@@ -177,6 +211,42 @@ class SnakeArena extends MiniGameBase {
         }
       }
     }
+  }
+
+  /// Try to place a pellet within [_leaderBiasRadius] cells of the current
+  /// longest living snake's head, so fresh food keeps appearing in contested
+  /// space around the leader. Returns false (no spawn) if there is no leader or
+  /// no free biased cell was found in a bounded number of tries — the caller
+  /// then falls back to a uniform spawn.
+  bool _trySpawnNearLeader() {
+    final leader = _longestLivingSnake();
+    if (leader == null) return false;
+    final head = leader.head;
+    const maxTries = 24;
+    for (var t = 0; t < maxTries; t++) {
+      final r = _leaderBiasRadius;
+      final c = Cell(
+        head.col + ctx.rng.intRange(-r, r + 1),
+        head.row + ctx.rng.intRange(-r, r + 1),
+      );
+      if (c.col < 0 || c.col >= _cols || c.row < 0 || c.row >= _rows) continue;
+      if (_isFree(c) && !_hitsWall(c)) {
+        _addFood(c);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// The longest living snake (ties broken by first found), or null if none are
+  /// alive — drives the contested-spawn bias toward the current leader.
+  Snake? _longestLivingSnake() {
+    Snake? best;
+    for (final s in _snakes) {
+      if (!s.alive) continue;
+      if (best == null || s.length > best.length) best = s;
+    }
+    return best;
   }
 
   /// Place a pellet and roll whether it is golden (tracked in [_golden]).
@@ -340,6 +410,43 @@ class SnakeArena extends MiniGameBase {
     return false;
   }
 
+  /// The living snake (other than [exclude]) whose body occupies [c], or null if
+  /// none — used to attribute a takedown to the snake that blocked a rival. The
+  /// mover's own about-to-vacate tail is ignored so a self-trim is not a body.
+  Snake? _bodyOwnerAt(Cell c, {required Snake exclude}) {
+    for (final s in _snakes) {
+      if (!s.alive || identical(s, exclude)) continue;
+      for (var i = 0; i < s.body.length; i++) {
+        if (s.body[i] == c) return s;
+      }
+    }
+    return null;
+  }
+
+  /// Credit [blocker] a takedown: bump its score + pop a celebratory burst and a
+  /// "TAKEDOWN!" cue so forcing a rival crash reads as a deliberate win.
+  void _awardTakedown(Snake blocker) {
+    blocker.score += _takedownScore;
+    // Bonus growth feeds the length-based ranking too, so a takedown is a real
+    // edge (longer snake) rather than a cosmetic counter.
+    blocker.pendingGrowth += _takedownGrow;
+    setScore(blocker.playerId, blocker.score);
+    final at = _cellCenter(blocker.head, _lastSize);
+    _juice.particles.burst(
+      at: at,
+      count: _takedownSparks,
+      color: Color.lerp(blocker.color, const Color(0xFFFFFFFF), 0.3) ??
+          blocker.color,
+      speed: 260,
+      size: 6,
+      gravity: 80,
+      life: 0.5,
+    );
+    _juice.popup(at.translate(0, -_cell() * 0.9), 'TAKEDOWN!', blocker.color,
+        size: 24);
+    _juice.shake.medium();
+  }
+
   // ── Step resolution ──────────────────────────────────────────────────────────
 
   /// Advance all living snakes one cell, resolving deaths and eating, then check
@@ -353,12 +460,21 @@ class SnakeArena extends MiniGameBase {
       for (final s in living) s: s.head.plus(kStep[s.heading]!),
     };
 
-    // Phase 1: flag deaths (wall, body, head-on swap, shared target cell).
+    // Phase 1: flag deaths (wall, body, head-on swap, shared target cell). When
+    // the death is a clean block — running into ANOTHER snake's body — remember
+    // who owns that body so it can be credited a takedown (interaction reward).
     final dying = <Snake>{};
+    final killer = <Snake, Snake>{}; // victim → the rival whose body blocked it
     for (final s in living) {
       final nh = nextHeads[s]!;
-      if (_hitsWall(nh) || _hitsAnyBody(nh, ignoreTailOf: s)) {
+      if (_hitsWall(nh)) {
         dying.add(s);
+        continue;
+      }
+      if (_hitsAnyBody(nh, ignoreTailOf: s)) {
+        dying.add(s);
+        final blocker = _bodyOwnerAt(nh, exclude: s);
+        if (blocker != null) killer[s] = blocker; // crashed into a rival
         continue;
       }
       for (final o in living) {
@@ -396,6 +512,13 @@ class SnakeArena extends MiniGameBase {
     // Phase 3: kill flagged snakes (after moves so the burst lands at the head).
     for (final s in dying) {
       _kill(s);
+    }
+
+    // Phase 3b: pay out takedowns — a snake that blocked a rival (and survived
+    // the step itself) banks the bonus, so cutting another snake off is worth
+    // playing for, not just incidental.
+    for (final blocker in killer.values) {
+      if (blocker.alive) _awardTakedown(blocker);
     }
 
     // Phase 4: near-miss feedback — a survivor whose head is now one cell from a
@@ -733,5 +856,52 @@ class SnakeArena extends MiniGameBase {
     final cw = f.width / _cols;
     final ch = f.height / _rows;
     return Offset(f.left + (c.col + 0.5) * cw, f.top + (c.row + 0.5) * ch);
+  }
+
+  // ── Test seams (read-only / setup) ──────────────────────────────────────────
+
+  /// Number of pellets currently on the board (should never exceed [_foodCount]).
+  @visibleForTesting
+  int get foodCount => _food.length;
+
+  /// The simultaneous-pellet cap, exposed so a test reads the tuned value.
+  @visibleForTesting
+  static int get maxFood => _foodCount;
+
+  /// Snapshot of the live pellet cells (copy — mutating it cannot affect state).
+  @visibleForTesting
+  List<Cell> get foodCells => List.unmodifiable(_food);
+
+  /// Head cell of [id]'s snake, or null if there is no such snake.
+  @visibleForTesting
+  Cell? headOf(int id) {
+    for (final s in _snakes) {
+      if (s.playerId == id) return s.head;
+    }
+    return null;
+  }
+
+  /// Append [n] trailing segments to [id]'s snake (a deterministic way to make a
+  /// clear leader in tests). The extra cells are stacked behind the tail; they
+  /// only need to make [Snake.length] larger for the leader-bias spawn logic.
+  @visibleForTesting
+  void growSnakeForTest(int id, int n) {
+    for (final s in _snakes) {
+      if (s.playerId != id) continue;
+      final tail = s.body.last;
+      for (var i = 0; i < n; i++) {
+        s.body.add(tail); // duplicate-tail padding; length is all the bias reads
+      }
+      return;
+    }
+  }
+
+  /// Clear all pellets, then spawn one fresh pellet — lets a test exercise the
+  /// (leader-biased) spawn path in isolation and inspect where it lands.
+  @visibleForTesting
+  void respawnSingleFoodForTest() {
+    _food.clear();
+    _golden.clear();
+    _spawnOneFood();
   }
 }

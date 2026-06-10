@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/helpers/area_fill_grid.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -52,13 +53,92 @@ void main() {
     }
   });
 
-  test('bots steer + spray on their own, covering ground over the round', () {
+  test('bots roam + spray on their own, covering ground over the round', () {
     final g = PaintSplash()..init(ctxFor(4, 7));
     runToEnd(g);
-    // Each self-driving bot should paint a meaningful chunk of its own zone.
+    // Each self-driving bot should own a meaningful chunk of the shared board.
     for (var id = 0; id < 4; id++) {
       expect(g.scores.of(id), greaterThan(0), reason: 'bot $id painted nothing');
     }
+  });
+
+  test('overpaint flips a cell to the new owner (grid steal mechanic)', () {
+    // The structural heart of the redesign: the canvas is shared and paint is
+    // last-writer-wins, so painting over a rival's cell STEALS it. Verified
+    // directly on the grid: player 1 owns a spot, then player 0 paints the same
+    // spot and the cell's owner flips to 0, while player 1's coverage drops.
+    final grid = AreaFillGrid(cols: 30, rows: 38);
+    const at = Offset(0.5, 0.5);
+    const r = 0.06;
+
+    grid.paintCircle(1, at, r);
+    final ownedByOneBefore = grid.coverageOf(1);
+    expect(ownedByOneBefore, greaterThan(0));
+    // The exact center cell belongs to player 1.
+    expect(grid.ownerAt(15, 19), 1);
+
+    grid.paintCircle(0, at, r);
+    // The overlapping cells flipped from 1 to 0.
+    expect(grid.ownerAt(15, 19), 0,
+        reason: 'painting over a rival cell must transfer ownership');
+    expect(grid.coverageOf(0), greaterThan(0));
+    expect(grid.coverageOf(1), lessThan(ownedByOneBefore),
+        reason: 'the rival should lose the stolen cells');
+  });
+
+  test('a player paints over a rival on the shared canvas and steals turf', () {
+    // Game-level proof of the steal on ONE shared canvas. Two humans, identical
+    // setup. Final scores are each player's owned-cell count at the buzzer.
+    //
+    //  * Control: player 1 holds the centre for ~1s and nobody contests it →
+    //    player 1 ends owning that whole patch (its uncontested coverage).
+    //  * Raided: player 1 holds the centre for ~1s, THEN player 0 holds the SAME
+    //    centre for ~1s, painting over it → player 0 ends owning the overlap and
+    //    player 1 ends owning strictly LESS than in the control run.
+    //
+    // Deterministic: fixed seed, fixed inputs, no bots, no other touches.
+    const center = Offset(0.5, 0.5);
+    const phaseA = 60; // ~1s: player 1 paints the centre
+    const phaseB = 120; // then ~1s: (optionally) player 0 overpaints it
+
+    ({int p0, int p1}) runSteal({required bool rivalRaids}) {
+      final g = PaintSplash()
+        ..init(MiniGameContext(
+          players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(4),
+          zones: ZoneLayout.forPlayers(2),
+        ));
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 45) {
+        g.update(1 / 60);
+        if (frames <= phaseA) {
+          g.onInput(frames == 1
+              ? const PlayerInput(
+                  playerId: 1, phase: InputPhase.down, normPos: center)
+              : const PlayerInput(
+                  playerId: 1, phase: InputPhase.holdTick, dt: 1 / 60));
+        } else if (rivalRaids && frames <= phaseB) {
+          g.onInput(frames == phaseA + 1
+              ? const PlayerInput(
+                  playerId: 0, phase: InputPhase.down, normPos: center)
+              : const PlayerInput(
+                  playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+        }
+      }
+      expect(g.status, MiniGameStatus.finished);
+      return (p0: g.scores.of(0).toInt(), p1: g.scores.of(1).toInt());
+    }
+
+    final control = runSteal(rivalRaids: false);
+    final raided = runSteal(rivalRaids: true);
+
+    expect(control.p1, greaterThan(0), reason: 'player 1 must paint something');
+    expect(raided.p0, greaterThan(0),
+        reason: 'player 0 must own the cells it painted over');
+    expect(raided.p1, lessThan(control.p1),
+        reason: 'painting over player 1 must steal cells from it '
+            '(control=${control.p1} raided=${raided.p1})');
   });
 
   test('held spray accumulates coverage into the score', () {

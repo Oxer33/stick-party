@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -16,6 +17,8 @@ void main() {
       zones: ZoneLayout.forPlayers(n),
     );
   }
+
+  // ── Invariants (kept) ───────────────────────────────────────────────────────
 
   test('chicken jump finishes with four bots and ranks all players', () {
     final g = ChickenJump()..init(ctxFor(4));
@@ -56,7 +59,41 @@ void main() {
     expect(simSeconds, lessThan(30.0));
   });
 
-  test('tapping to jump keeps a player alive longer without throwing', () {
+  test('all-bot rounds finish across difficulties and seeds within the cap', () {
+    // The DOUBLE-LEAP gamble (bots risk it when the lava is close, and can
+    // crumble on the cracked landing) must never break convergence: every
+    // all-bot field still resolves with a full ranking by the 30s time cap
+    // (+ a small resolution buffer; the round may run right up to the limit).
+    const maxTicks = 60 * 31; // 30s cap + a 1s resolution buffer
+    for (final diff in BotDifficulty.values) {
+      for (final seed in const [1, 7, 13, 21]) {
+        final ctx = MiniGameContext(
+          players: [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(seed),
+          zones: ZoneLayout.forPlayers(4),
+          difficulty: diff,
+        );
+        final g = ChickenJump()..init(ctx);
+        var ticks = 0;
+        while (g.status != MiniGameStatus.finished && ticks < 60 * 80) {
+          g.update(1 / 60);
+          ticks++;
+        }
+        expect(g.status, MiniGameStatus.finished,
+            reason: 'diff=$diff seed=$seed must finish');
+        expect(ticks, lessThanOrEqualTo(maxTicks),
+            reason: 'diff=$diff seed=$seed must resolve within the cap');
+        expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3},
+            reason: 'diff=$diff seed=$seed full ranking');
+      }
+    }
+  });
+
+  test('a steady stream of safe single TAPS keeps a player alive and finishes',
+      () {
+    // BACK-COMPAT: the old behavior — a positionless down tap every ~20 frames
+    // is a safe single hop — must still keep the human in the round and resolve.
     final players = [
       PlayerSlot.defaults(0),
       PlayerSlot.defaults(1, isBot: true),
@@ -71,9 +108,103 @@ void main() {
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
       g.update(1 / 60);
-      if (n % 20 == 0) g.onInput(PlayerInput.down(0));
+      if (n % 20 == 0) {
+        // A discrete tap = down immediately followed by up (no sustained hold),
+        // so it stays a SAFE single rung — never a double leap.
+        g.onInput(PlayerInput.down(0));
+        g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+      }
     }
     expect(g.status, MiniGameStatus.finished);
     expect(g.winResult!.ranking.toSet(), {0, 1});
+  });
+
+  // ── New behavior: the GAMBLE (double leap + cracked rung) ────────────────────
+
+  test('holding past the leap threshold climbs higher than the same number of '
+      'single taps (the double-leap gamble)', () {
+    // A single human vs no pressure: compare two identical players, one tapping
+    // safely, one holding each press. Over the same number of presses the holder
+    // should reach a strictly greater height — the bonus rung is real. Driven
+    // entirely off the deterministic context clock (no rng in the assert path
+    // beyond the seeded miss roll, which a low miss chance keeps reliable here).
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(3),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = ChickenJump()..init(ctx);
+
+    // Settle the warmup so hops register cleanly.
+    for (var i = 0; i < 130; i++) {
+      g.update(1 / 60);
+    }
+
+    // Player 0 taps safely; player 1 holds each press long enough to leap.
+    // 6 presses each, spaced so the hopper settles and (for the holder) the hold
+    // clears the leap threshold (~0.16s) but the cracked rung is vacated before
+    // it crumbles (crack hold ~0.62s).
+    for (var press = 0; press < 6; press++) {
+      g.onInput(PlayerInput.down(0));
+      g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+
+      g.onInput(PlayerInput.down(1)); // begin a hold (also commits a safe hop)
+      for (var f = 0; f < 16; f++) {
+        // ~0.27s held → springs the bonus rung, then release before crumble.
+        g.update(1 / 60);
+      }
+      g.onInput(const PlayerInput(playerId: 1, phase: InputPhase.up));
+      for (var f = 0; f < 12; f++) {
+        g.update(1 / 60);
+      }
+    }
+
+    expect(g.heightLaneOf(1), greaterThan(g.heightLaneOf(0)),
+        reason: 'the holder should out-climb the safe tapper via double leaps');
+  });
+
+  test('lingering on a cracked rung crumbles the climber back down a rung', () {
+    // Hold to leap onto a cracked rung, then DO NOTHING — the rung must give way
+    // and drop the climber one rung below where the leap landed. The leap can
+    // miss (a seeded ~16% fizzle), so retry presses until a crack actually forms
+    // before testing the crumble — the assertion is on the crumble, not the roll.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1, isBot: true)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(2),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = ChickenJump()..init(ctx);
+    for (var i = 0; i < 130; i++) {
+      g.update(1 / 60);
+    }
+
+    // Press-and-hold until a cracked rung is underfoot (bounded retries so a
+    // missed leap never wedges the test). Release between attempts.
+    var formed = false;
+    for (var attempt = 0; attempt < 8 && !formed; attempt++) {
+      g.onInput(PlayerInput.down(0));
+      for (var f = 0; f < 14 && !formed; f++) {
+        g.update(1 / 60); // hold past the leap threshold
+        if (g.crackedRungOf(0) >= 0) formed = true;
+      }
+      if (!formed) {
+        g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+        for (var f = 0; f < 8; f++) {
+          g.update(1 / 60);
+        }
+      }
+    }
+    expect(formed, isTrue,
+        reason: 'a held press should eventually spring a cracked rung');
+    final peak = g.heightLaneOf(0);
+
+    // Keep lingering past the crumble window (~0.62s) without hopping off.
+    for (var f = 0; f < 60; f++) {
+      g.update(1 / 60);
+    }
+    expect(g.heightLaneOf(0), lessThan(peak),
+        reason: 'a lingered cracked rung must crumble and drop the climber');
   });
 }

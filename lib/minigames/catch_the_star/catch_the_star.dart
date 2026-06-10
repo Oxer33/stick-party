@@ -1,34 +1,42 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../engine/bots.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'catch_render.dart';
 
-/// Catch the Star — a single glowing star wanders a night sky; each player has a
-/// fixed catcher anchored in their screen zone and snatches with one tap.
+/// Catch the Star — a single glowing star roams a night sky and EVERY player
+/// chases it: you DRAG your net around your own zone to get under the star, then
+/// TAP to snatch it. It is a shared, contested prize — first net there wins it,
+/// so 1-4 players are racing for position, not waiting in a fixed slot.
 ///
-/// Depth (still one-touch):
-///  * The star steers smoothly toward a roaming waypoint (velocity + steering,
-///    re-picked on arrival or timeout) so it curves rather than snapping, and
-///    drags a fading comet trail behind it.
-///  * A tap snatches: if the star is within [_snatchRadius] of that player's
-///    catcher they score. Consecutive catches inside [_comboWindowSec] build a
-///    combo that multiplies the award ("+N xC"), with a satisfying shockwave,
-///    catcher flash and burst; the star then zips to a fresh point far from all
-///    catchers (pop-in).
+/// Depth (still one-touch — drag to move, tap to grab):
+///  * The star steers smoothly toward a free roaming waypoint (velocity +
+///    steering, re-picked on arrival or timeout) so it curves rather than
+///    snapping, drifting across the WHOLE arena instead of being fed to a
+///    catcher — players must move to it. It drags a fading comet trail.
+///  * Each player's net STEERS toward their latest drag point ([input.normPos]),
+///    clamped to that player's zone so nobody reaches into a rival's slice. A TAP
+///    (the [InputPhase.down]) also snatches: if the star is within [_snatchRadius]
+///    of your net you score. Consecutive catches inside [_comboWindowSec] build a
+///    combo that multiplies the award ("+N xC"), with a shockwave, net flash and
+///    burst; the star keeps roaming (it teleports away on a catch so the next
+///    chase starts fresh and nobody can camp the kill spot).
 ///  * Occasional GOLDEN bonus stars are worth [_bonusPoints] and a great catch
 ///    (golden, or a high combo) triggers a brief slow-mo (hit-stop) for impact.
 ///
 /// Most catches at [_timeLimit] wins via [finishByScore]; the round always runs
 /// to the limit so it can never stall.
 ///
-/// Bots snatch when the star is in range, gated by their reaction clock; a
-/// deliberate-mistake roll ([BotProfile.errorRate]) makes them whiff and the
-/// remaining [BotProfile.accuracy] decides whether the in-range snatch lands, so
-/// difficulty reads as deliberate rather than random.
+/// Bots DRIVE their net toward the star (clamped to their zone) and TAP when it
+/// is in range, gated by their reaction clock; a deliberate-mistake roll
+/// ([BotProfile.errorRate]) makes them whiff and the remaining
+/// [BotProfile.accuracy] decides whether the in-range snatch lands, so a weaker
+/// bot is slower to the prize and a human can out-position it.
 class CatchTheStar extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -61,11 +69,11 @@ class CatchTheStar extends MiniGameBase {
   static const int _comebackRefGap = 6; // score gap that earns the full bonus
 
   // ── Star motion tuning (normalized units / sec) ────────────────────────────
-  // The star is a touch slower than a pure chase so the catchable window over a
-  // catcher feels generous (you can still miss it), and its waypoints are biased
-  // to FLY THROUGH catchers (see [_nextWaypoint]) so it constantly teases each
-  // player instead of wandering empty sky — many more snatch chances, fairly
-  // shared, which is what makes the round feel alive rather than sparse.
+  // The star roams FREE — waypoints are random points across the whole arena, so
+  // it never homes onto a player. It is a touch slower than a top-speed chase so
+  // a net that positions well can get under it (you can still just miss it). This
+  // is what makes the round a positioning RACE: the prize moves on its own and
+  // everyone has to drive their net to it.
   static const double _maxSpeed = 0.52; // top speed
   static const double _goldenSpeedBoost = 1.18; // golden stars are friskier
   static const double _accel = 2.4; // steering acceleration
@@ -73,8 +81,15 @@ class CatchTheStar extends MiniGameBase {
   static const double _arriveDist = 0.05; // waypoint reached threshold
   static const double _margin = 0.1; // keep the star off the edges
   static const double _wallDamp = 0.4; // velocity kept on a wall bounce
-  static const double _visitCatcherChance = 0.6; // waypoint aims near a catcher
-  static const double _visitJitter = 0.12; // sweep offset around a visited zone
+
+  // ── Catcher (net) control tuning ────────────────────────────────────────────
+  // A net eases toward its steer target (a human drag point, or a bot's chase
+  // point) with a frame-rate-independent follow so a drag reads as a smooth glide
+  // rather than a teleport. Bots cap their net travel so a weak bot can be
+  // out-raced to the star by a human.
+  static const double _netFollowPerSec = 16.0; // net → target ease speed
+  static const double _botNetSpeed = 0.62; // bot net travel (units/sec)
+  static const double _zoneInset = 0.02; // keep the net off the zone seam
 
   // ── Trail tuning ───────────────────────────────────────────────────────────
   static const double _trailSampleSec = 1 / 60; // sample cadence
@@ -143,21 +158,27 @@ class CatchTheStar extends MiniGameBase {
     final count = ctx.players.length;
     for (var i = 0; i < count; i++) {
       final p = ctx.players[i];
+      final zone = _zoneFor(p.id, i, count);
+      final start = zone.center;
       _catchers.add(_Catcher(
         playerId: p.id,
         displayNumber: p.id + 1,
         color: Color(p.colorArgb),
-        pos: _anchorFor(p.id, i, count),
+        zone: zone,
+        pos: start,
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
     }
   }
 
-  /// Catcher anchor: prefer the player's zone center, else spread evenly.
-  Offset _anchorFor(int id, int index, int count) {
+  /// The slice of the arena a player's net is confined to. Prefer the real
+  /// [PlayerZone]; fall back to an even split so the game still works if a
+  /// context arrives without a matching zone for a player id.
+  Rect _zoneFor(int id, int index, int count) {
     final zone = ctx.zones.forPlayer(id);
-    if (zone != null) return zone.center;
-    return Offset((index + 0.5) / count, index.isEven ? 0.8 : 0.2);
+    if (zone != null) return zone.normRect;
+    final w = 1.0 / count;
+    return Rect.fromLTRB(index * w, 0, (index + 1) * w, 1);
   }
 
   /// A fixed field of background stars with a depth/phase packed per star: the
@@ -177,32 +198,46 @@ class CatchTheStar extends MiniGameBase {
         ctx.rng.range(_margin, 1 - _margin),
       );
 
-  /// Pick the star's next waypoint. Most of the time ([_visitCatcherChance]) it
-  /// aims at a random catcher's zone with a small sweep offset so the star
-  /// arcs *through* that catch zone (a real snatch chance) rather than parking on
-  /// it; otherwise a free roam point keeps the path unpredictable. This is what
-  /// turns the round from sparse wandering into a constant tease past every
-  /// player — and it is identical for humans and bots, so it stays fair.
-  Offset _nextWaypoint() {
-    if (_catchers.isNotEmpty && ctx.rng.chance(_visitCatcherChance)) {
-      final target = ctx.rng.pick(_catchers).pos;
-      final jittered = target +
-          Offset(ctx.rng.jitter(_visitJitter), ctx.rng.jitter(_visitJitter));
-      return Offset(
-        jittered.dx.clamp(_margin, 1 - _margin),
-        jittered.dy.clamp(_margin, 1 - _margin),
-      );
-    }
-    return _randomPoint();
-  }
+  /// Pick the star's next waypoint: a free random point anywhere in the play
+  /// area. It deliberately does NOT home onto any catcher, so the star is a
+  /// neutral roaming prize that every player must chase down with their net —
+  /// the source of the positioning race. Identical for the whole field, so fair.
+  Offset _nextWaypoint() => _randomPoint();
 
   @override
   void onInput(PlayerInput input) {
-    if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
-      return;
+    if (status != MiniGameStatus.running) return;
+    final c = _catcherOf(input.playerId);
+    if (c == null) return;
+
+    switch (input.phase) {
+      case InputPhase.down:
+        // A press both aims the net at the touch and tries to snatch right away,
+        // so a quick tap exactly where the star is grabs it in one motion.
+        _steerNet(c, input.normPos);
+        _trySnatch(input.playerId);
+      case InputPhase.holdTick:
+        // Dragging glides the net toward the latest touch point; a positionless
+        // per-frame tick (normPos == Offset.zero) carries no new target.
+        if (input.normPos != Offset.zero) _steerNet(c, input.normPos);
+      case InputPhase.up:
+        break;
     }
-    _trySnatch(input.playerId);
   }
+
+  /// Aim a human net's steering target at [normPos] (full-screen), clamped into
+  /// that player's zone so a net can only roam its own slice of the arena.
+  void _steerNet(_Catcher c, Offset normPos) {
+    if (!normPos.dx.isFinite || !normPos.dy.isFinite) return;
+    c.target = _clampToZone(c.zone, normPos);
+  }
+
+  /// Clamp a normalized point into [zone] with a tiny inset so the net centre
+  /// never sits exactly on a zone seam.
+  Offset _clampToZone(Rect zone, Offset p) => Offset(
+        p.dx.clamp(zone.left + _zoneInset, zone.right - _zoneInset),
+        p.dy.clamp(zone.top + _zoneInset, zone.bottom - _zoneInset),
+      );
 
   /// Award a catch if the star is in range of [id]'s catcher. Returns true on a
   /// successful snatch. Drives combo, popup, shockwave, flash and slow-mo.
@@ -256,8 +291,8 @@ class CatchTheStar extends MiniGameBase {
   /// waypoint so the comet immediately reads as "zipping away".
   void _respawnStar() {
     _star = _farRespawn();
-    // Aim straight back toward a catcher so the star re-enters the action fast
-    // after popping in far away, instead of drifting through empty sky first.
+    // Pick a fresh free waypoint and aim the comet at it so the star immediately
+    // reads as zipping away to a new spot the field now has to chase down.
     _target = _nextWaypoint();
     _golden = ctx.rng.chance(_goldenChanceNow());
     // Snappier pop-in during the flurry so goldens keep flooding the field.
@@ -286,6 +321,7 @@ class CatchTheStar extends MiniGameBase {
     _moveStar(sdt);
     _sampleTrail(sdt);
     _driveBots(sdt);
+    _steerNets(sdt);
     _tickEffects(dt);
 
     if (_elapsed >= _timeLimit) _finish();
@@ -395,15 +431,23 @@ class CatchTheStar extends MiniGameBase {
     }
   }
 
-  /// Bots snatch when the star is near their catcher, gated by reaction time;
+  /// Bots CHASE the star with their net and snatch when it is in range. Each
+  /// frame the bot aims its net at the star's position (clamped to its own zone,
+  /// so it can only contest the part of the arena it owns) and glides toward it
+  /// at [_botNetSpeed] — a capped speed, so a faster human can beat a weak bot to
+  /// the prize. When the star is within reach the bot taps on its reaction clock;
   /// an [BotProfile.errorRate] roll fumbles the attempt outright, otherwise
   /// [BotProfile.accuracy] decides whether the in-range snatch actually lands.
   void _driveBots(double dt) {
     for (final c in _catchers) {
       final clock = c.clock;
       if (clock == null) continue;
-      final inRange = (_star - c.pos).distance <= _snatchRadiusFor(c);
-      if (!inRange) continue;
+
+      // Drive the net toward the star (clamped to the bot's zone). Steering the
+      // target each frame lets [_steerNets] glide the net smoothly like a human.
+      c.target = _clampToZone(c.zone, _star);
+
+      if ((_star - c.pos).distance > _snatchRadiusFor(c)) continue;
       if (!clock.tick(dt)) continue;
       clock.arm(ctx.botProfile, ctx.rng);
       // Deliberate miss, scaled by difficulty.
@@ -411,6 +455,33 @@ class CatchTheStar extends MiniGameBase {
       if (ctx.rng.chance(ctx.botProfile.accuracy)) {
         _trySnatch(c.playerId);
       }
+    }
+  }
+
+  /// Glide every net toward its steering target. Humans set the target by
+  /// dragging ([_steerNet]); bots set it toward the star in [_driveBots]. A net
+  /// eases with a frame-rate-independent follow so motion reads as a smooth slide
+  /// rather than a snap, and stays clamped inside its owner's zone. Bot nets are
+  /// additionally speed-capped so they can be out-raced.
+  void _steerNets(double dt) {
+    if (dt <= 0) return;
+    final follow = (1.0 - math.exp(-_netFollowPerSec * dt)).clamp(0.0, 1.0);
+    for (final c in _catchers) {
+      final to = c.target - c.pos;
+      Offset next;
+      if (c.clock != null) {
+        // Bot: capped travel toward the target so weak bots stay beatable.
+        final step = _botNetSpeed * dt;
+        next = to.distance <= step || to.distance < 1e-6
+            ? c.target
+            : c.pos + to / to.distance * step;
+      } else {
+        next = Offset(
+          c.pos.dx + to.dx * follow,
+          c.pos.dy + to.dy * follow,
+        );
+      }
+      c.pos = _clampToZone(c.zone, next);
     }
   }
 
@@ -569,18 +640,33 @@ class CatchTheStar extends MiniGameBase {
 
   Offset _toPixels(Offset norm) =>
       Offset(norm.dx * _lastSize.width, norm.dy * _lastSize.height);
+
+  /// Test-only view of the roaming star's normalized position so deterministic
+  /// tests can steer a net exactly onto it (the core chase mechanic). Not used
+  /// by gameplay or rendering.
+  @visibleForTesting
+  Offset get starPosForTest => _star;
+
+  /// Test-only view of a player's net position so tests can assert the net stays
+  /// clamped inside its zone. Returns null for an unknown id. Not used by
+  /// gameplay or rendering.
+  @visibleForTesting
+  Offset? netPosForTest(int id) => _catcherOf(id)?.pos;
 }
 
-/// Per-player catcher bookkeeping: fixed anchor, color, optional bot clock and
-/// the round-scoped flash + combo state. Mutable for the duration of one round
-/// (allowed by [MiniGameBase]).
+/// Per-player catcher (net) bookkeeping: the zone it is confined to, its live
+/// position + steering target, color, optional bot clock and the round-scoped
+/// flash + combo state. Mutable for the duration of one round (allowed by
+/// [MiniGameBase]).
 class _Catcher {
   final int playerId;
   final int displayNumber;
   final Color color;
-  final Offset pos; // normalized 0..1 anchor
+  final Rect zone; // this player's slice of the arena (normalized)
   final ReactionClock? clock;
 
+  Offset pos; // normalized 0..1 net position (steered by drag / bot)
+  Offset target; // where the net is gliding toward (clamped into [zone])
   double flash = 0; // seconds of snatch flash remaining
   int _combo = 0; // current combo count (1.. on a live chain)
   double _comboTimer = 0; // seconds left to keep the chain alive
@@ -589,9 +675,10 @@ class _Catcher {
     required this.playerId,
     required this.displayNumber,
     required this.color,
+    required this.zone,
     required this.pos,
     this.clock,
-  });
+  }) : target = pos;
 
   /// Register a successful catch: extend/grow the combo within its window and
   /// return the resulting multiplier (1..[max]).

@@ -193,6 +193,8 @@ class TrackFx {
   int hopDir = 1; // last hop direction (bounces at the ends)
   double spawnTimer = 0;
   double hopHold = 0; // brief jump-pose timer after a hop
+  int grazeChain = 0; // consecutive close-dodge streak (resets on over-fleeing)
+  double eliminatedAt = 0; // elapsed time this runner was crushed (0 = alive)
   ReactionClock? clock;
 
   TrackFx({
@@ -241,6 +243,9 @@ class FallingTrackPainter {
 
   static const double _hintPulseHz = 3.2;
   static const double _spinPerSec = 2.4;
+  static const int _chainMaxPips = 6; // streak pips shown above the runner
+  static const double _chainPulseHz = 6.0; // streak badge throb rate
+  static const double _chainLiftFactor = 0.5; // badge lift / lane spacing
 
   static void draw(
     Canvas canvas,
@@ -293,6 +298,23 @@ class FallingTrackPainter {
 
     FallingRenderer.drawRunner(
         canvas, t.figure, Offset(runnerX, t.runnerY - t.figureLift));
+
+    // Live graze-chain streak badge floating above the runner's head. Only the
+    // close dodge banks points, so showing the streak here makes "stay near the
+    // danger" the obvious play.
+    if (t.alive && t.grazeChain >= 1) {
+      final pulse = 0.5 + 0.5 * math.sin(animClock * _chainPulseHz);
+      final headY =
+          t.runnerY - t.figureLift - t.lanes.spacing.abs() * _chainLiftFactor;
+      FallingRenderer.drawGrazeChain(
+        canvas,
+        Offset(runnerX, headY),
+        t.figureScale,
+        t.grazeChain,
+        _chainMaxPips,
+        pulse,
+      );
+    }
 
     // Golden token (chaos pickup), drawn above the runner so the prize reads as
     // a falling collectible the player races to line up under.

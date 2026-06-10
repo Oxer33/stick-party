@@ -402,12 +402,15 @@ class SoccerRenderer {
   /// The on-screen virtual joystick for one human player: a translucent base
   /// disc + ring at [origin] and a brighter thumb at [thumb], clamped to
   /// [maxRadius]. Drawn in the player's [color] so each stick is identifiable.
+  /// When [armed] the thumb wears a bright halo ring — the "tap will SHOOT the
+  /// next touch" cue — versus a plain thumb while it would only trap/dribble.
   static void drawJoystick(
     Canvas canvas, {
     required Offset origin,
     required Offset thumb,
     required double maxRadius,
     required Color color,
+    bool armed = false,
   }) {
     if (maxRadius <= 1) return;
     // Clamp the thumb inside the base radius.
@@ -440,6 +443,18 @@ class SoccerRenderer {
 
     // Thumb: solid color core + white rim.
     final thumbR = maxRadius * _joyThumbFactor;
+    // Armed-to-shoot halo: a bright ring just outside the thumb so a kid can see
+    // their next touch will SHOOT (a plain thumb = the touch will trap/dribble).
+    if (armed) {
+      canvas.drawCircle(
+        clamped,
+        thumbR * 1.5,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, thumbR * 0.3)
+          ..color = _white.withValues(alpha: 0.7),
+      );
+    }
     canvas.drawCircle(
         clamped, thumbR, Paint()..color = color.withValues(alpha: 0.92));
     canvas.drawCircle(

@@ -20,7 +20,7 @@ const int _maxFrames = 60 * 80;
 
 BumperBalls _build(int count, int seed) {
   final players = [
-    for (var i = 0; i < count; i++) PlayerSlot.defaults(i, isBot: true)
+    for (var i = 0; i < count; i++) PlayerSlot.defaults(i, isBot: true),
   ];
   final ctx = MiniGameContext(
     players: players,
@@ -80,51 +80,124 @@ void main() {
       _runToFinish(g);
       expect(g.status, MiniGameStatus.finished, reason: '$count players');
       expect(g.winResult, isNotNull, reason: '$count players');
-      expect(
-        g.winResult!.ranking.toSet(),
-        {for (var i = 0; i < count; i++) i},
-        reason: '$count players',
-      );
+      expect(g.winResult!.ranking.toSet(), {
+        for (var i = 0; i < count; i++) i,
+      }, reason: '$count players');
     }
   });
 
-  test('tap and hold/release inputs never throw and the round resolves', () {
-    final players = [
-      for (var i = 0; i < 3; i++) PlayerSlot.defaults(i, isBot: i != 0)
-    ];
-    final ctx = MiniGameContext(
-      players: players,
-      arena: const Size(800, 1200),
-      rng: SeededRng(5),
-      zones: ZoneLayout.forPlayers(3),
-    );
-    final g = BumperBalls()..init(ctx);
-    var n = 0;
-    while (g.status != MiniGameStatus.finished && n < _maxFrames) {
-      // Quick tap (down+up same frame) and a held charge (down, wait, up).
-      if (n % 30 == 0) {
-        expect(() => g.onInput(PlayerInput.down(0)), returnsNormally);
-        expect(
-          () => g.onInput(
-              const PlayerInput(playerId: 0, phase: InputPhase.up)),
-          returnsNormally,
-        );
+  test(
+    'tap, drag and charged-rocket inputs never throw and the round resolves',
+    () {
+      final players = [
+        for (var i = 0; i < 3; i++) PlayerSlot.defaults(i, isBot: i != 0),
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(5),
+        zones: ZoneLayout.forPlayers(3),
+      );
+      final g = BumperBalls()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n < _maxFrames) {
+        // No-drag tap (down+up same frame) → fires at nearest, never throws.
+        if (n % 30 == 0) {
+          expect(() => g.onInput(PlayerInput.down(0)), returnsNormally);
+          expect(
+            () =>
+                g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up)),
+            returnsNormally,
+          );
+        }
+        // Drag-charge rocket: press, drag the thumb across, release after a long
+        // hold so the charge passes the rocket threshold.
+        if (n % 47 == 0) {
+          expect(
+            () => g.onInput(PlayerInput.down(0, const Offset(0.5, 0.7))),
+            returnsNormally,
+          );
+        }
+        if (n % 47 == 6) {
+          expect(
+            () => g.onInput(
+              const PlayerInput(
+                playerId: 0,
+                phase: InputPhase.holdTick,
+                normPos: Offset(0.1, 0.6),
+              ),
+            ),
+            returnsNormally,
+          );
+        }
+        if (n % 47 == 40) {
+          expect(
+            () => g.onInput(
+              const PlayerInput(
+                playerId: 0,
+                phase: InputPhase.up,
+                normPos: Offset(0.1, 0.6),
+              ),
+            ),
+            returnsNormally,
+          );
+        }
+        g.update(1 / _fps);
+        n++;
       }
-      if (n % 47 == 0) {
-        expect(() => g.onInput(PlayerInput.down(0)), returnsNormally);
+      expect(g.status, MiniGameStatus.finished);
+      expect(g.winResult!.ranking.toSet(), {0, 1, 2});
+    },
+  );
+
+  test('ROCKET DASH: a charged drag keeps a round resolving and ranks everyone '
+      'across seeds (momentum-keep must not stall or crash the sim)', () {
+    // The rocket-dash counteracts ring-friction for ~1s; this guards that a
+    // human spamming charged drags (arming rockets repeatedly) never softlocks
+    // the sim, never throws, and still converges to a full ranking. Several
+    // seeds so it is not luck of one RNG.
+    for (final seed in const [2, 8, 14, 23]) {
+      final players = [
+        for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: i != 0),
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(4),
+      );
+      final g = BumperBalls()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n < _maxFrames) {
+        final phase = n % 24;
+        if (phase == 0) {
+          g.onInput(PlayerInput.down(0, const Offset(0.25, 0.7)));
+        } else if (phase < 18) {
+          // Drag toward the opposite corner → a definite aim past the deadzone.
+          g.onInput(
+            const PlayerInput(
+              playerId: 0,
+              phase: InputPhase.holdTick,
+              normPos: Offset(0.85, 0.85),
+            ),
+          );
+        } else if (phase == 18) {
+          g.onInput(
+            const PlayerInput(
+              playerId: 0,
+              phase: InputPhase.up,
+              normPos: Offset(0.85, 0.85),
+            ),
+          );
+        }
+        g.update(1 / _fps);
+        n++;
       }
-      if (n % 47 == 9) {
-        expect(
-          () => g.onInput(
-              const PlayerInput(playerId: 0, phase: InputPhase.up)),
-          returnsNormally,
-        );
-      }
-      g.update(1 / _fps);
-      n++;
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      expect(g.winResult, isNotNull, reason: 'seed $seed');
+      expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3}, reason: 'seed $seed');
+      expect(n, lessThan(_maxFrames), reason: 'seed $seed hit the cap');
     }
-    expect(g.status, MiniGameStatus.finished);
-    expect(g.winResult!.ranking.toSet(), {0, 1, 2});
   });
 
   test('render does not throw before or after finish', () {
@@ -143,14 +216,14 @@ void main() {
 
   group('StarController (chaos pickup)', () {
     StarController make() => StarController(
-          radius: 14,
-          firstSpawnSec: 2.0,
-          respawnSec: 5.0,
-          lifeSec: 4.0,
-          appearPerSec: 3.0,
-          spinPerSec: 3.0,
-          spawnSpreadFactor: 0.4,
-        );
+      radius: 14,
+      firstSpawnSec: 2.0,
+      respawnSec: 5.0,
+      lifeSec: 4.0,
+      appearPerSec: 3.0,
+      spinPerSec: 3.0,
+      spawnSpreadFactor: 0.4,
+    );
 
     test('never spawns with a single ball alive', () {
       final c = make();
@@ -170,8 +243,10 @@ void main() {
       final star = c.star;
       expect(star, isNotNull);
       expect(star!.ready, isTrue);
-      expect((star.pos - const Offset(400, 600)).distance,
-          lessThanOrEqualTo(300 * 0.4 + 1));
+      expect(
+        (star.pos - const Offset(400, 600)).distance,
+        lessThanOrEqualTo(300 * 0.4 + 1),
+      );
     });
 
     test('consume clears the live star', () {

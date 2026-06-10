@@ -41,6 +41,9 @@ class MasherRenderer {
 
   // ── Shared palette (no magic colors inline elsewhere) ───────────────────────
   static const Color bellGold = Color(0xFFFFD23C);
+  // Overheat danger color — the RED zone of the heat gauge + boil-over sparks.
+  static const Color overheatRed = Color(0xFFFF4438);
+  static const Color heatGreen = Color(0xFF46E06A); // the sweet-zone band
 
   static const Color _bgTop = Color(0xFF2A1640);
   static const Color _bgMid = Color(0xFF1A0E2B);
@@ -651,82 +654,98 @@ class MasherRenderer {
     _softGlow(canvas, at, r * 0.5, color, 0.28 * k);
   }
 
-  // ── Power bar ───────────────────────────────────────────────────────────────
-  /// A centered power meter under the striker. [power] 0..1 fills from the
-  /// middle outward and goes gold near full (the "fired up" band).
-  static void drawPowerBar(
+  // ── Heat gauge (the sweet-zone DECISION readout) ────────────────────────────
+  /// A centered HEAT meter under the striker — the player's whole decision.
+  /// A dark track carries a bright GREEN sweet-zone band and a RED overheat zone
+  /// at the top end; the live [heat] (0..1) fills left→right and is tinted by the
+  /// band it currently sits in (cold = player color, green = sweet, red = boiled
+  /// over). A redline tick marks where green ends. [greenLo]/[greenHi] are the
+  /// band edges (0..1, must match the sim); [pulse] (0..1) throbs the fill while
+  /// overheated so a boil-over visibly alarms. Side-effect free; never throws.
+  static void drawHeatGauge(
     Canvas canvas,
     Offset center,
-    double width,
-    double power,
-    Color color,
-  ) {
-    final p = power.clamp(0.0, 1.0);
-    final h = math.max(5.0, width * 0.09);
-    final track = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: center, width: width, height: h),
-      Radius.circular(h / 2),
-    );
-    canvas.drawRRect(track, Paint()..color = _black.withValues(alpha: 0.4));
-
-    final fillW = width * p;
-    if (fillW <= 1) return;
-    final hot = Color.lerp(color, bellGold, p * p)!;
-    final fillRect = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: center, width: fillW, height: h),
-      Radius.circular(h / 2),
-    );
-    canvas.drawRRect(fillRect, Paint()..color = hot);
-    if (p > 0.6) {
-      // Wide faint solid plate over the fill fakes a hot bloom (no blur).
-      final glow = ((p - 0.6) / 0.4).clamp(0.0, 1.0);
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromCenter(center: center, width: fillW, height: h * 2.0),
-          Radius.circular(h),
-        ),
-        Paint()..color = bellGold.withValues(alpha: 0.22 * glow),
-      );
-    }
-  }
-
-  // ── Combo badge ───────────────────────────────────────────────────────────
-  /// A live "xN" combo multiplier badge floating above the striker. [combo] is
-  /// the current streak (0 hides it until the player chains a couple), [comboMax]
-  /// scales the gold "fired up" tint, and [pulse] 0..1 animates a heartbeat
-  /// scale so a hot streak visibly throbs. Centered at [anchor].
-  static void drawComboBadge(
-    Canvas canvas,
-    Offset anchor,
-    int combo,
-    int comboMax,
-    Color color, {
+    double width, {
+    required double heat,
+    required double greenLo,
+    required double greenHi,
+    required Color color,
     double pulse = 0,
   }) {
-    if (combo < 2 || !anchor.dx.isFinite || !anchor.dy.isFinite) return;
-    final t = (combo / math.max(1, comboMax)).clamp(0.0, 1.0);
-    final p = pulse.clamp(0.0, 1.0);
-    final hot = Color.lerp(color, bellGold, t)!;
-    final fontSize = 18.0 + 16.0 * t + 3.0 * p;
+    if (width <= 2 || !center.dx.isFinite || !center.dy.isFinite) return;
+    final h = math.max(6.0, width * 0.11);
+    final lo = greenLo.clamp(0.0, 1.0);
+    final hi = greenHi.clamp(0.0, 1.0);
+    final left = center.dx - width / 2;
+    final radius = Radius.circular(h / 2);
 
-    // Glow puck behind the text so it reads over the busy carnival background:
-    // cheap stacked-disc halo instead of a per-frame blur.
-    _softGlow(canvas, anchor, fontSize * (0.9 + 0.2 * p), hot, 0.22 + 0.18 * t);
-    _drawText(
-      canvas,
-      'x$combo',
-      anchor,
-      fontSize,
-      _white,
-      bold: true,
+    // Map a 0..1 heat value to an x along the track.
+    double xAt(double f) => left + width * f.clamp(0.0, 1.0);
+
+    // Dark track.
+    final track = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: width, height: h),
+      radius,
     );
-    // A thin colored under-stroke via a slightly offset tinted copy for punch.
-    _drawText(
-      canvas,
-      'x$combo',
-      anchor.translate(0, fontSize * 0.06),
-      fontSize,
-      hot.withValues(alpha: 0.55),
+    canvas.drawRRect(track, Paint()..color = _black.withValues(alpha: 0.5));
+
+    // GREEN sweet-zone band (faint solid plate behind the fill).
+    if (hi > lo) {
+      canvas.drawRect(
+        Rect.fromLTRB(xAt(lo), center.dy - h / 2, xAt(hi), center.dy + h / 2),
+        Paint()..color = heatGreen.withValues(alpha: 0.34),
+      );
+    }
+    // RED overheat zone (everything past the green ceiling / redline).
+    if (hi < 1.0) {
+      canvas.drawRect(
+        Rect.fromLTRB(xAt(hi), center.dy - h / 2, xAt(1.0), center.dy + h / 2),
+        Paint()..color = overheatRed.withValues(alpha: 0.40),
+      );
+    }
+
+    // Live heat fill, tinted by the band it sits in.
+    final f = heat.clamp(0.0, 1.0);
+    final fillW = width * f;
+    if (fillW > 1) {
+      final overheated = f > hi;
+      final inGreen = f >= lo && f <= hi;
+      final fillCol = overheated
+          ? overheatRed
+          : (inGreen ? heatGreen : Color.lerp(color, heatGreen, 0.3)!);
+      final fillRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, center.dy - h / 2, fillW, h),
+        radius,
+      );
+      canvas.drawRRect(fillRect, Paint()..color = fillCol);
+      // Overheated → a pulsing red bloom over the fill so a boil-over alarms.
+      if (overheated) {
+        final p = pulse.clamp(0.0, 1.0);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(left, center.dy - h, fillW, h * 2.0),
+            Radius.circular(h),
+          ),
+          Paint()..color = overheatRed.withValues(alpha: 0.25 + 0.2 * p),
+        );
+      }
+    }
+
+    // Track outline + a bright redline tick where green ends.
+    canvas.drawRRect(
+      track,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, h * 0.12)
+        ..color = _white.withValues(alpha: 0.25),
+    );
+    canvas.drawLine(
+      Offset(xAt(hi), center.dy - h * 0.7),
+      Offset(xAt(hi), center.dy + h * 0.7),
+      Paint()
+        ..strokeWidth = math.max(2.0, h * 0.18)
+        ..strokeCap = StrokeCap.round
+        ..color = overheatRed,
     );
   }
 

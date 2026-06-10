@@ -12,17 +12,17 @@ import 'bumper_render.dart';
 /// Bumper Balls — neon knockout. Every player is a glowing bumper ball on a
 /// circular platform and shoves rivals off the edge.
 ///
-/// CONTROL (the heart of it — full player agency, one touch; mirrors Sumo):
-///  * There is NO rotating idle arrow. The aim ALWAYS tracks the nearest
-///    opponent, so a tap or charged bump always strikes straight at it — the
-///    player picks WHEN and HOW HARD, never WHERE-by-timing-a-sweep.
-///  * Quick TAP  → a small nudge straight toward the nearest opponent
-///    (positioning / pressure), or a panic save toward the centre when bots
-///    auto-target the edge.
-///  * HOLD then release → a charge meter fills; releasing fires a powerful bump
-///    toward the nearest opponent (power ∝ charge). While charging, a telegraph
-///    points at the target so the player sees exactly where the bump will land.
-///  Nothing is auto-fired: the player still decides every shove.
+/// CONTROL (the heart of it — full player agency, one touch; the player owns
+/// the aim, nothing auto-targets):
+///  * DRAG from your ball in the direction you want to fire — the telegraph
+///    follows your thumb, so YOU choose the angle every bump.
+///  * HOLD builds a charge meter while you keep dragging to re-aim; longer hold
+///    = harder bump (power ∝ charge).
+///  * RELEASE → a charged release becomes a ROCKET DASH: the ball keeps its
+///    momentum and stays bouncy for ~1s, so you carom off rivals (elastic
+///    caroms) to knock them into the edge while you ricochet on — a real
+///    "trick shot" decision instead of one dead-stop nudge.
+///  * A quick TAP with no drag fires at the nearest rival (a kid-safe default).
 ///
 /// Feel: a slick-but-grippy floor so bumps carry without instantly ejecting an
 /// idle ball; elastic caroms (PushArena) plus a speed- and head-on-scaled
@@ -30,21 +30,21 @@ import 'bumper_render.dart';
 /// graze. Squash & stretch on impact, impact spark rings, motion trails, and a
 /// platform that slowly shrinks after a grace period so matches always resolve.
 ///
-/// Bots get a short warmup before they engage, then approach an opponent with a
-/// light nudge and commit a charged shove only when close; near the edge they
-/// save themselves toward the centre. [BotProfile] governs timing, charge and
-/// aim error so they read as deliberate, not random — and never eject an idle
-/// player in the first several seconds.
+/// Bots cannot drag, so they aim at the nearest opponent (via [_aimAtNearest]):
+/// a short warmup, then approach with a light nudge and commit a charged rocket
+/// only when close; near the edge they save themselves toward the centre.
+/// [BotProfile] governs timing, charge and aim error so they read as deliberate,
+/// not random — and never eject an idle player in the first several seconds.
 class BumperBalls extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
-        id: 'bumper_balls',
-        name: 'Bumper Balls',
-        minPlayers: 1,
-        maxPlayers: 4,
-        modes: [GameMode.ffa, GameMode.duel1v1],
-        inputHint: 'TAP / HOLD',
-      );
+    id: 'bumper_balls',
+    name: 'Bumper Balls',
+    minPlayers: 1,
+    maxPlayers: 4,
+    modes: [GameMode.ffa, GameMode.duel1v1],
+    inputHint: 'DRAG / HOLD',
+  );
 
   // ── Arena / sim tuning ──────────────────────────────────────────────────────
   // Device-tuned (matched to Sumo Smash) for a ~8-25s match: small bodies + big
@@ -58,20 +58,40 @@ class BumperBalls extends MiniGameBase {
   static const double _ringRestitution = 0.92; // lively caroms, not chaotic
   static const double _spawnRadiusFactor = 0.55;
 
-  // ── Aim + charge control tuning (mirrors Sumo) ──────────────────────────────
-  // No idle sweep: the aim always tracks the nearest opponent (see
-  // [_tickBallStates] / [_aimAtNearest]), so a tap/charge strikes straight at it.
+  // ── Aim + charge control tuning ─────────────────────────────────────────────
+  // The aim is owned by the player's DRAG (see [_applyDragAim]); a bot or a
+  // no-drag tap resolves it at fire time toward the nearest opponent.
   static const double _chargeTimeSec = 0.6; // hold time to full charge
   static const double _cooldownSec = 0.24; // snappy recovery between bumps
   static const double _dashBase = 1.4; // quick tap = a small nudge
   static const double _dashCharge = 3.8; // full hold = a strong launch
   static const double _selfPushback = 0.08; // recoil opposite the bump
   static const double _trailLifeSec = 0.2;
-  static const double _maxSpeedRef = 700.0; // speed mapped to full trail/stretch
+  static const double _maxSpeedRef =
+      700.0; // speed mapped to full trail/stretch
+  // Drag aim: the touch must move at least this far (fraction of the min screen
+  // side) from the ball before it counts as a deliberate aim; a smaller wiggle
+  // is treated as a no-drag tap (→ aim at nearest, a kid-safe default).
+  static const double _aimDragDeadzone = 0.018;
+
+  // ── Rocket dash (the bumper differentiator) ─────────────────────────────────
+  // A charged release tags the ball "launched": for [_launchSec] the game
+  // counteracts ring-friction on it so it keeps its momentum and caroms off
+  // rivals (elastic, restitution 0.92) — knocking them toward the edge while it
+  // ricochets on — instead of one dead-stop nudge. Only a real charge arms it.
+  static const double _launchSec =
+      1.0; // momentum-keep window after a charged bump
+  static const double _launchChargeMin = 0.35; // charge needed to arm a rocket
+  static const double _launchFrictionRetain =
+      0.992; // per-1/60s speed kept while launched
+  static const double _launchMaxSpeed =
+      1100.0; // cap so a rocket never runs away
 
   // ── Knockback (contact) tuning ──────────────────────────────────────────────
-  static const double _contactSpeedRef = 700.0; // speed mapped to full knockback
-  static const double _contactBonusScale = 0.28; // bonus impulse / attacker speed
+  static const double _contactSpeedRef =
+      700.0; // speed mapped to full knockback
+  static const double _contactBonusScale =
+      0.28; // bonus impulse / attacker speed
   static const double _headOnExtra = 0.85; // extra multiplier for a head-on hit
   static const double _heavyHitSpeed = 380.0; // above → heavy shake + hit-stop
   static const double _squashOnHit = 0.42; // squash amount stamped on impact
@@ -94,7 +114,8 @@ class BumperBalls extends MiniGameBase {
   // DEATH banner, so the round visibly ramps to a finish.
   static const double _suddenDeathFrac = 0.72; // enters at this share of time
   static const double _suddenDeathShrinkMul = 2.4; // shrink speed multiplier
-  static const double _suddenDeathFloorMul = 0.82; // tighter floor in sudden death
+  static const double _suddenDeathFloorMul =
+      0.82; // tighter floor in sudden death
 
   // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
   static const double _starRadiusFactor = 0.6; // star R / body R
@@ -115,13 +136,17 @@ class BumperBalls extends MiniGameBase {
   // ── Bot tuning (mirrors Sumo's fair model) ──────────────────────────────────
   static const double _botWarmupSec = 2.0; // grace before bots engage
   static const double _botCloseRangeFactor = 4.2; // approach vs shove threshold
-  static const double _botEdgeBackoff = 0.62; // dist/ring above → retreat inward
+  static const double _botEdgeBackoff =
+      0.62; // dist/ring above → retreat inward
   static const double _botAimErrorRad = 0.55; // max aim jitter at accuracy 0
   static const double _botCarrySpeed = 120.0; // skip bump while already fast
   static const double _botSaveCharge = 0.5; // charge used to save off the edge
-  static const double _botApproachCharge = 0.06; // light nudge to close distance
-  static const double _botShoveChargeMin = 0.25; // close-range charged shove min
-  static const double _botShoveChargeMax = 0.55; // close-range charged shove max
+  static const double _botApproachCharge =
+      0.06; // light nudge to close distance
+  static const double _botShoveChargeMin =
+      0.25; // close-range charged shove min
+  static const double _botShoveChargeMax =
+      0.55; // close-range charged shove max
 
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _accent = Color(0xFF5FE0FF); // neon platform rim accent
@@ -233,18 +258,45 @@ class BumperBalls extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        if (s.ready) s.charging = true; // lock aim, begin charging
+        if (s.ready) {
+          s.charging = true; // begin charging
+          s.hasDragAim = false; // no chosen direction until the thumb moves
+          _applyDragAim(input, body, s); // a press already away from us aims
+        }
+      case InputPhase.holdTick:
+        // A drag sample re-aims toward the thumb (the player owns the angle).
+        _applyDragAim(input, body, s);
       case InputPhase.up:
         if (s.charging) {
           s.charging = false;
-          // Fire straight at the nearest opponent (never a stale swept angle).
-          final aim = _aimAtNearest(input.playerId) ?? s.aim;
+          _applyDragAim(input, body, s); // final flick can still steer
+          // Player-chosen aim wins; with no drag, fall back to nearest (kids).
+          final aim = s.hasDragAim
+              ? s.aim
+              : (_aimAtNearest(input.playerId) ?? s.aim);
           _commitDash(input.playerId, body, aim, s.charge);
           s.charge = 0;
+          s.hasDragAim = false;
         }
-      case InputPhase.holdTick:
-        break; // charge accrues in update() for frame-rate independence
     }
+  }
+
+  /// Set the ball's aim from the drag vector (touch [input.normPos] relative to
+  /// the ball), in true screen pixels so the angle is not skewed by the portrait
+  /// aspect. A move shorter than [_aimDragDeadzone] (or a synthetic hold-tick
+  /// with no position) is ignored, leaving any prior chosen aim — or the
+  /// nearest-opponent fallback — intact.
+  void _applyDragAim(PlayerInput input, Body body, BallState s) {
+    if (!s.charging) return;
+    final touch = Offset(
+      input.normPos.dx * _size.width,
+      input.normPos.dy * _size.height,
+    );
+    final d = touch - body.pos;
+    final minSide = math.min(_size.width, _size.height);
+    if (d.distance < minSide * _aimDragDeadzone) return;
+    s.aim = math.atan2(d.dy, d.dx);
+    s.hasDragAim = true;
   }
 
   @override
@@ -261,15 +313,52 @@ class BumperBalls extends MiniGameBase {
     _tickImpacts(dt);
     _driveBots(dt);
     _shrinkRing(dt);
-    _stars.tick(dt, _arena.aliveBodies.length, ctx.rng, _center,
-        _currentRingRadius);
+    _stars.tick(
+      dt,
+      _arena.aliveBodies.length,
+      ctx.rng,
+      _center,
+      _currentRingRadius,
+    );
 
     _arena.update(sdt);
 
+    _driveLaunched(sdt);
     _collectStars();
     _resolveContacts();
     _detectRingOuts();
     _resolveOutcome();
+  }
+
+  /// ROCKET DASH momentum-keep: the arena applied its normal friction this frame
+  /// (it owns the shared [PushArena]); for any ball still inside its launch
+  /// window we counteract most of that decay so the rocket keeps its speed and
+  /// caroms off rivals (elastic) toward the edge while it ricochets on. Capped so a
+  /// rocket never runs away; the launch tag itself expires on its own timer in
+  /// [BallState.tick]. Frame-rate independent via [PushArena.friction].
+  void _driveLaunched(double sdt) {
+    if (sdt <= 0) return;
+    // How much speed the arena's friction removed this frame (a < 1 multiplier).
+    final applied = _arena.friction == 1.0
+        ? 1.0
+        : math.pow(_arena.friction, sdt * kFrictionReferenceFps).toDouble();
+    // The slower decay we *want* a launched ball to feel instead.
+    final wanted = math
+        .pow(_launchFrictionRetain, sdt * kFrictionReferenceFps)
+        .toDouble();
+    if (applied <= 0) return;
+    // Multiply velocity by (wanted/applied) to convert the steep friction the
+    // arena already applied into the gentle launch decay.
+    final boost = (wanted / applied).clamp(1.0, 4.0);
+    for (final b in _arena.aliveBodies) {
+      final s = _ball[b.id];
+      if (s == null || s.launch <= 0) continue;
+      var v = b.vel * boost;
+      if (v.distance > _launchMaxSpeed) {
+        v = v / v.distance * _launchMaxSpeed;
+      }
+      b.vel = v;
+    }
   }
 
   /// True once the match has entered its climax (sudden death) window.
@@ -277,17 +366,19 @@ class BumperBalls extends MiniGameBase {
 
   // ── Per-frame ball state ─────────────────────────────────────────────────────
 
-  /// Aim always tracks the nearest opponent (no idle sweep — a tap/charge
-  /// strikes straight at it), fill charge while held, relax squash, age trail
-  /// and recover cooldown — all frame-rate independent.
+  /// Fill charge while held, relax squash, age the trail + launch window and
+  /// recover cooldown — all frame-rate independent. The aim is NOT touched here:
+  /// it is owned by the player's drag (see [_applyDragAim]). While charging with
+  /// no drag yet, preview the nearest-opponent fallback so the telegraph the
+  /// player sees matches where a release would actually fire.
   void _tickBallStates(double dt) {
     for (final entry in _ball.entries) {
       final s = entry.value;
-      if (_isAlive(entry.key)) {
-        final a = _aimAtNearest(entry.key);
-        if (a != null) s.aim = a;
-        if (s.charging) {
-          s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
+      if (_isAlive(entry.key) && s.charging) {
+        s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
+        if (!s.hasDragAim) {
+          final a = _aimAtNearest(entry.key);
+          if (a != null) s.aim = a;
         }
       }
       s.tick(dt, _squashDecayPerSec);
@@ -335,11 +426,15 @@ class BumperBalls extends MiniGameBase {
     if (self == null || !self.alive || s == null || !s.ready) return;
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate / mistake
 
-    final err = (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
+    final err =
+        (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
 
     // Near the edge: save self with a moderate bump back toward the centre.
     if (_isNearEdge(self)) {
-      final aim = math.atan2(_center.dy - self.pos.dy, _center.dx - self.pos.dx);
+      final aim = math.atan2(
+        _center.dy - self.pos.dy,
+        _center.dx - self.pos.dx,
+      );
       s.aim = aim;
       _commitDash(playerId, self, aim, _botSaveCharge);
       return;
@@ -357,8 +452,8 @@ class BumperBalls extends MiniGameBase {
     final charge = to.distance > _bodyRadius * _botCloseRangeFactor
         ? _botApproachCharge
         : (ctx.botProfile.accuracy *
-                ctx.rng.range(_botShoveChargeMin, _botShoveChargeMax))
-            .clamp(0.0, 1.0);
+                  ctx.rng.range(_botShoveChargeMin, _botShoveChargeMax))
+              .clamp(0.0, 1.0);
     s.aim = aim;
     _commitDash(playerId, self, aim, charge);
   }
@@ -375,13 +470,17 @@ class BumperBalls extends MiniGameBase {
     // A collected star briefly amplifies every bump — the buffed ball hits
     // noticeably harder, the core of the chaos swing.
     final buffMul = s.buffed ? _buffDashMul : 1.0;
-    final magnitude = _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
+    final magnitude =
+        _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
     _arena.impulse(playerId, dir * magnitude);
     _arena.impulse(playerId, -dir * magnitude * _selfPushback);
 
     s.fire(_cooldownSec);
     s.trail = DashTrail(dir: dir, life: _trailLifeSec);
     s.stretchDir = dir;
+    // A charged release arms the ROCKET DASH: a momentum-keep window so the ball
+    // caroms off rivals toward the edge. A light tap (low charge) does not.
+    if (charge >= _launchChargeMin) s.launch = _launchSec;
 
     final intensity = 0.5 + 0.5 * charge;
     _juice.particles.burst(
@@ -472,7 +571,8 @@ class BumperBalls extends MiniGameBase {
     final headOn = (attackerDir.dx * toVictim.dx + attackerDir.dy * toVictim.dy)
         .clamp(0.0, 1.0);
     final speedFactor = (speed / _contactSpeedRef).clamp(0.0, 1.4);
-    final bonus = _ringRadius *
+    final bonus =
+        _ringRadius *
         _contactBonusScale *
         speedFactor *
         (1.0 + _headOnExtra * headOn);
@@ -509,8 +609,10 @@ class BumperBalls extends MiniGameBase {
         _ringRadius * _minRingFactor * (sudden ? _suddenDeathFloorMul : 1.0);
     if (_currentRingRadius <= floor) return;
     final rate = _shrinkPerSec * (sudden ? _suddenDeathShrinkMul : 1.0);
-    _currentRingRadius = (_currentRingRadius - _ringRadius * rate * dt)
-        .clamp(floor, _ringRadius);
+    _currentRingRadius = (_currentRingRadius - _ringRadius * rate * dt).clamp(
+      floor,
+      _ringRadius,
+    );
   }
 
   // ── Star pickup (chaos) ─────────────────────────────────────────────────────
@@ -536,8 +638,11 @@ class BumperBalls extends MiniGameBase {
       );
       _juice.hit(b.pos, _colorOf(b.id), sparks: 8);
       _juice.popup(
-          b.pos.translate(0, -_bodyRadius * 1.8), 'POWER!', _starColor,
-          size: 30);
+        b.pos.translate(0, -_bodyRadius * 1.8),
+        'POWER!',
+        _starColor,
+        size: 30,
+      );
       return;
     }
   }
@@ -592,9 +697,12 @@ class BumperBalls extends MiniGameBase {
     if (!_suddenDeathAnnounced && _isSuddenDeath && alive.length > 1) {
       _suddenDeathAnnounced = true;
       _juice.shake.medium();
-      _juice.popup(_center.translate(0, -_currentRingRadius * 0.2),
-          'SUDDEN DEATH', _popupColor,
-          size: 38);
+      _juice.popup(
+        _center.translate(0, -_currentRingRadius * 0.2),
+        'SUDDEN DEATH',
+        _popupColor,
+        size: 38,
+      );
     }
     if (alive.length <= 1) {
       _finishRanked(alive);
@@ -609,10 +717,9 @@ class BumperBalls extends MiniGameBase {
   void _finishRanked(List<Body> alive) {
     final ranked = alive.map((b) => b.id).toList()
       ..sort((a, b) => _distToCenter(a).compareTo(_distToCenter(b)));
-    finishByOrder(_dedupeAllPlayers([
-      ...ranked,
-      ..._eliminationOrder.reversed,
-    ]));
+    finishByOrder(
+      _dedupeAllPlayers([...ranked, ..._eliminationOrder.reversed]),
+    );
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -642,7 +749,11 @@ class BumperBalls extends MiniGameBase {
 
     if (_isSuddenDeath) {
       BumperFx.drawSuddenDeathBanner(
-          canvas, size, _arena.aliveBodies.length > 1 ? 1.0 : 0.0, _animClock);
+        canvas,
+        size,
+        _arena.aliveBodies.length > 1 ? 1.0 : 0.0,
+        _animClock,
+      );
     }
 
     _juice.render(canvas);
@@ -682,24 +793,54 @@ class BumperBalls extends MiniGameBase {
           Paint()
             ..style = PaintingStyle.stroke
             ..strokeWidth = b.radius * 0.16
-            ..color = _starColor
-                .withValues(alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0)),
+            ..color = _starColor.withValues(
+              alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0),
+            ),
         );
       }
 
-      // Motion trail behind a recent dash / fast drift.
+      // ROCKET DASH: a hot comet aura while the launch window is live so the
+      // table reads "this one is dangerous and caroming off rivals".
+      if (state != null && state.launched && heading != Offset.zero) {
+        BumperRenderer.drawLaunchAura(
+          canvas,
+          b.pos,
+          heading,
+          b.radius,
+          color,
+          speedFrac,
+        );
+      }
+
+      // Motion trail behind a recent dash / fast drift (longer while launched).
       final trail = state?.trail;
+      final launched = state?.launched ?? false;
       if (trail != null) {
         BumperRenderer.drawTrail(
-            canvas, b.pos, trail.dir, b.radius, color, trail.strength, speedFrac);
-      } else if (speedFrac > 0.25 && heading != Offset.zero) {
+          canvas,
+          b.pos,
+          trail.dir,
+          b.radius,
+          color,
+          launched ? 1.0 : trail.strength,
+          speedFrac,
+        );
+      } else if ((launched || speedFrac > 0.25) && heading != Offset.zero) {
         BumperRenderer.drawTrail(
-            canvas, b.pos, heading, b.radius, color, 0.6, speedFrac);
+          canvas,
+          b.pos,
+          heading,
+          b.radius,
+          color,
+          launched ? 1.0 : 0.6,
+          speedFrac,
+        );
       }
 
       // Speed-stretch combined with a relaxing impact squash.
       final stretch = speedFrac * 0.28 + (state?.squash ?? 0);
-      final stretchDir = state?.stretchDir ??
+      final stretchDir =
+          state?.stretchDir ??
           (heading == Offset.zero ? const Offset(1, 0) : heading);
       final lookDir = heading == Offset.zero ? const Offset(0, 1) : heading;
 
@@ -715,8 +856,8 @@ class BumperBalls extends MiniGameBase {
         displayNumber: b.id + 1,
       );
 
-      // No idle arrow. While charging, a telegraph points straight at the
-      // nearest opponent (where the bump will land) with a charge ground-arc.
+      // No idle arrow. While charging, a telegraph points the way the player is
+      // dragging (where the bump will fire) with a charge ground-arc.
       if (state != null && state.charging) {
         BumperRenderer.drawAim(
           canvas,

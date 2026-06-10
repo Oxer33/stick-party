@@ -17,14 +17,17 @@ import 'striker.dart';
 /// tall portrait screen) with a neutral ball (id -1) and one stick striker per
 /// seat.
 ///
-/// CONTROL (the heart of it — full player agency):
+/// CONTROL (the heart of it — full player agency, still one touch):
 ///  * MOVEMENT is a VIRTUAL JOYSTICK. Touch down anywhere in your zone to anchor
 ///    a joystick; drag from there — the vector from the anchor to your finger is
 ///    the direction you run and its length is your speed. Release to stop. You
-///    steer freely in 2-D: that is the whole game.
-///  * KICKS are AUTOMATIC. Run your striker into the ball and it is kicked for
-///    you — in your current run direction, biased toward the goal you attack —
-///    with a small cooldown so contact does not jitter. No aiming, no charging.
+///    steer freely in 2-D.
+///  * TRAP vs KICK is the per-touch DECISION. Reaching the ball WITHOUT a fresh
+///    tap TRAPS it: most of its speed is killed and it sticks to your feet so you
+///    carry / dribble it where you steer. Each TAP (the joystick press) arms a
+///    KICK for your next contact, which SHOOTS the ball goalward — and the longer
+///    the ball has been settled at your feet, the harder that shot flies. So a
+///    kid runs with the ball at their feet and taps to shoot.
 ///
 /// PACING: a real back-and-forth match — first to [_goalsToWin] goals or until
 /// the [_timeLimit] expires. The ball starts dead at center, there is a brief
@@ -71,12 +74,18 @@ class OneTouchSoccer extends MiniGameBase {
   static const double _accelPerSec = 9.0; // velocity lerp toward target /s
   static const double _releaseDragPerSec = 7.0; // decel rate after release /s
 
-  // ── Auto-kick tuning ────────────────────────────────────────────────────────
+  // ── Touch tuning: TRAP (default) vs KICK (tap-armed) ─────────────────────────
+  // Contact is a real decision. Untapped contact TRAPS the ball (kills most of
+  // its speed, keeps it at the feet to dribble); a tapped/armed contact SHOOTS.
   static const double _kickContactFactor = 1.18; // overlap = within this*radii
-  static const double _kickCooldownSec = 0.22; // anti-jitter recovery
-  static const double _kickPerSecond = 3.6; // base kick impulse = pitch.h * this
+  static const double _tapHoldSec = 0.22; // press held longer ⇒ dribble not shot
+  static const double _touchCooldownSec = 0.18; // anti-jitter recovery / touch
+  static const double _trapVelRetain = 0.12; // ball speed kept on a trap (0..1)
+  static const double _trapCarrySpeed = 0.34; // post-trap nudge = striker speed*
+  static const double _kickPerSecond = 3.6; // full-charge kick = pitch.h * this
+  static const double _kickMinPowerFrac = 0.5; // floor power on a 0-charge shot
+  static const double _kickChargeFullSec = 0.9; // time-since-touch → full power
   static const double _kickMoveBlend = 0.62; // weight of run dir vs goal dir
-  static const double _kickMinSpeedFactor = 0.45; // floor on a near-still tap-in
   static const double _spinPerSpeed = 0.012; // ball spin gain / speed
   static const double _spinDecayPerSec = 1.6;
   static const double _squashDecayPerSec = 4.5;
@@ -318,7 +327,7 @@ class OneTouchSoccer extends MiniGameBase {
     _juice.update(dt);
     _tickTimers(dt);
     for (final joy in _joysticks.values) {
-      joy.tick(dt);
+      joy.tick(dt, tapHoldSec: _tapHoldSec);
     }
 
     // During the kickoff pause the world is frozen (only juice + timers run).
@@ -332,7 +341,7 @@ class OneTouchSoccer extends MiniGameBase {
     _driveBots(dt);
     _steerStrikers(sdt);
     _arena.update(sdt);
-    _autoKick();
+    _resolveBallTouch();
 
     _pads.tick(sdt, ctx.rng, _pitch);
     _triggerSpeedPad();
@@ -417,13 +426,17 @@ class OneTouchSoccer extends MiniGameBase {
     _ballSquash = (_ballSquash - _squashDecayPerSec * dt).clamp(0.0, 1.0);
   }
 
-  // ── Auto-kick: contact with the ball launches it (no aim, no charge) ──────────
+  // ── Ball contact: TRAP (default) or KICK (tap-armed) ─────────────────────────
 
-  /// After the physics step, any striker overlapping the ball (and off its kick
-  /// cooldown) automatically kicks it: direction blends the striker's current
-  /// run with the heading toward the opponent goal, so contact drives the ball
-  /// up-field. A short cooldown stops a single touch re-firing every frame.
-  void _autoKick() {
+  /// After the physics step, resolve every striker that overlaps the ball (and
+  /// is off its short touch cooldown). The contact is a real DECISION:
+  ///  * if the striker has a KICK armed (the player tapped, or a bot was armed),
+  ///    SHOOT — direction blends the run with the goal heading, power scales with
+  ///    time-since-last-touch so a settled ball blasts and a fresh poke nudges;
+  ///  * otherwise TRAP — kill most of the ball's speed and leave it at the feet
+  ///    moving with the striker, so the ball stays close to carry / dribble.
+  /// A short cooldown stops one contact re-firing every frame.
+  void _resolveBallTouch() {
     final kickBase = _pitch.height * _kickPerSecond;
     for (final entry in _joysticks.entries) {
       final id = entry.key;
@@ -437,37 +450,62 @@ class OneTouchSoccer extends MiniGameBase {
       final contact = (_playerRadius + _ballRadius) * _kickContactFactor;
       if (dist > contact) continue;
 
-      final dir = _kickDirection(id, self, toBall);
-      if (dir == Offset.zero) continue;
-
-      // Strength scales with the striker's speed but never drops below a floor,
-      // so even a near-stationary touch nudges the ball off the spot.
-      final speedFrac = (self.vel.distance / (_pitch.height * _maxSpeedFactor))
-          .clamp(_kickMinSpeedFactor, 1.0);
-      final kickMag = kickBase * speedFrac;
-      _arena.impulse(_ballId, dir * kickMag);
-
-      joy.armKick(_kickCooldownSec);
-      joy.trail = DashTrail(from: self.pos, dir: dir, life: _trailLifeSec);
-      final fig = _figures[id];
-      if (fig != null) {
-        fig.facing = dir.dx >= 0 ? 1.0 : -1.0;
-        fig.dash();
+      if (joy.kickArmed) {
+        _kickBall(id, joy, self, toBall, kickBase);
+      } else {
+        _trapBall(joy, self);
       }
-      _ballSquash = SoccerFx.fireKickFeedback(
-        _juice,
-        ballPos: _ball.pos,
-        ballSpeed: _ball.vel.distance,
-        ballRadius: _ballRadius,
-        feet: self.pos.translate(0, _playerRadius),
-        hardKickSpeed: _hardKickSpeed,
-      );
     }
   }
 
+  /// SHOOT: launch the ball goalward at a power set by the shot charge (time
+  /// since this striker last touched the ball), then consume the armed kick.
+  void _kickBall(int id, Joystick joy, Body self, Offset toBall, double kickBase) {
+    final dir = _kickDirection(id, self, toBall);
+    if (dir == Offset.zero) return;
+
+    // Power = floor + charge ramp, so a settled ball blasts and a fresh poke
+    // only nudges — rewarding a clean trap-then-shoot.
+    final charge = joy.touchChargeFrac(_kickChargeFullSec);
+    final powerFrac = _kickMinPowerFrac + (1 - _kickMinPowerFrac) * charge;
+    // Replace the ball's drift with a clean shot so the kick reads crisply.
+    _ball.vel = dir * (kickBase * powerFrac);
+
+    joy.consumeKick();
+    joy.armKick(_touchCooldownSec);
+    joy.trail = DashTrail(from: self.pos, dir: dir, life: _trailLifeSec);
+    final fig = _figures[id];
+    if (fig != null) {
+      fig.facing = dir.dx >= 0 ? 1.0 : -1.0;
+      fig.dash();
+    }
+    _ballSquash = SoccerFx.fireKickFeedback(
+      _juice,
+      ballPos: _ball.pos,
+      ballSpeed: _ball.vel.distance,
+      ballRadius: _ballRadius,
+      feet: self.pos.translate(0, _playerRadius),
+      hardKickSpeed: _hardKickSpeed,
+    );
+  }
+
+  /// TRAP: kill most of the ball's speed and set it moving with the striker so
+  /// it settles at the feet to be carried. No goal bias — the player steers the
+  /// dribble themselves. Starts the touch cooldown (and charge reset) so the
+  /// next tapped contact builds power from this moment.
+  void _trapBall(Joystick joy, Body self) {
+    final carry = self.vel * _trapCarrySpeed;
+    _ball.vel = _ball.vel * _trapVelRetain + carry;
+    joy.armKick(_touchCooldownSec);
+    SoccerFx.fireTrapFeedback(
+      _juice,
+      feet: self.pos.translate(0, _playerRadius),
+    );
+  }
+
   /// Kick direction = blend of the striker's run direction and the direction
-  /// toward the goal it attacks (so contact biases the ball goalward). Falls
-  /// back to the contact normal when the striker is standing still.
+  /// toward the goal it attacks (so a shot biases the ball goalward). Falls back
+  /// to the contact normal when the striker is standing still.
   Offset _kickDirection(int id, Body self, Offset toBall) {
     var run = _moveDir[id] ?? Offset.zero;
     if (run == Offset.zero) run = _normalize(toBall); // contact push-off
@@ -488,18 +526,24 @@ class OneTouchSoccer extends MiniGameBase {
     }
   }
 
-  /// Pick a fresh heading for a bot (applied smoothly by [_steerStrikers]):
+  /// Pick a fresh heading for a bot (applied smoothly by [_steerStrikers]) and
+  /// decide whether it should SHOOT or DRIBBLE on its next ball contact:
   ///  * the rear player on a 2-player side guards its goal (tracks the ball's
-  ///    horizontal position in front of its own net);
-  ///  * otherwise it heads for the ball, and once close it aims its run at the
-  ///    opponent goal so the auto-kick drives the ball up-field.
-  /// [BotProfile] adds hesitation (errorRate) and heading jitter (accuracy) so
-  /// it reads as deliberate and is beatable on easy.
+  ///    horizontal position in front of its own net) and never arms a kick;
+  ///  * otherwise it heads for the ball; once inside the push range it aims at
+  ///    the opponent goal AND arms a KICK so contact shoots goalward, while a
+  ///    far approach leaves the kick disarmed so first contact TRAPS the ball
+  ///    and it carries it up-field before lining up the shot.
+  /// Bots never tap, so this is the only place their kick gets armed — which is
+  /// what keeps them scoring. [BotProfile] adds hesitation (errorRate) and
+  /// heading jitter (accuracy) so it reads as deliberate and is beatable.
   void _botDecide(int playerId) {
     final self = _bodyOf(playerId);
     if (self == null) return;
+    final joy = _joysticks[playerId];
     if (ctx.rng.chance(ctx.botProfile.errorRate)) {
       _botHeading[playerId] = Offset.zero; // deliberate hesitation: coast
+      joy?.consumeKick(); // hold the dribble during the hesitation
       return;
     }
 
@@ -513,6 +557,7 @@ class OneTouchSoccer extends MiniGameBase {
         depthFactor: _botGuardDepthFactor,
         laneGain: _botGuardLaneGain,
       );
+      joy?.consumeKick(); // a keeper clears by trapping, never a wild shot
       return;
     }
 
@@ -521,12 +566,16 @@ class OneTouchSoccer extends MiniGameBase {
     final err =
         (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botSteerErrorRad;
 
-    // Close to the ball: steer through it toward the opponent goal.
+    // Inside the push range: aim through the ball at the opponent goal and arm
+    // a shot. Farther out: head for the ball and trap-dribble it on arrival.
+    final inAttackRange = dist <= _playerRadius * _botGoalPushRangeFactor;
     Offset aim;
-    if (dist <= _playerRadius * _botGoalPushRangeFactor) {
+    if (inAttackRange) {
       aim = _normalize(_opponentGoalTarget(playerId) - self.pos);
+      joy?.armNextKick();
     } else {
       aim = _normalize(toBall);
+      joy?.consumeKick();
     }
     if (aim == Offset.zero) aim = const Offset(0, -1);
 
@@ -715,6 +764,7 @@ class OneTouchSoccer extends MiniGameBase {
         thumb: _toPixels(joy.current),
         maxRadius: _joyMaxRadius * _size.height,
         color: Color(_colorOf(id)),
+        armed: joy.kickArmed,
       );
     }
   }

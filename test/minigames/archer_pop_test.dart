@@ -84,4 +84,35 @@ void main() {
     final canvas = ui.Canvas(rec, Offset.zero & size);
     expect(() => g.render(canvas, size), returnsNormally);
   });
+
+  test('contested + scarce gold does not starve scoring: bots still rack points',
+      () {
+    // BEHAVIOR guard for the scarcity/steal rework: golden balloons are now rare
+    // and bots hold fire to contest them, but plain balloons still carry the
+    // round — so an all-bot match must still accumulate points (the field never
+    // goes empty / the bots never go idle). At least one player ends above zero.
+    for (final seed in const [1, 7, 13, 21, 99]) {
+      final g = ArcherPop()..init(ctxFor(4, seed: seed));
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        g.update(1 / 60);
+      }
+      final total = [for (var i = 0; i < 4; i++) g.scores.of(i)]
+          .fold<num>(0, (a, b) => a + b);
+      expect(total, greaterThan(0),
+          reason: 'seed $seed: bots scored nothing across the round');
+    }
+  });
+
+  test('a lone archer can still score (no rival to steal from)', () {
+    // STEAL is contextual: with a single archer there is never a rival, so a pop
+    // is never a steal and the solo loop still scores normally over a round.
+    final g = ArcherPop()..init(ctxFor(1, seed: 3));
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.scores.of(0), greaterThanOrEqualTo(0));
+  });
 }

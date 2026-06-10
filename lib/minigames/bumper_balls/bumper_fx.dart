@@ -8,16 +8,19 @@ import '../../core/rng.dart';
 /// controller, plus the pure-Canvas neon SUDDEN DEATH banner and star drawing.
 /// Holds only its own pickup state; the game owns the balls.
 
-/// Per-player ball control + bookkeeping: nearest-tracking aim, charge while
-/// held, cooldown, impact squash, stretch heading, the star buff and the active
-/// trail. Mutable round-scoped state (allowed for one round).
+/// Per-player ball control + bookkeeping: player-chosen drag aim, charge while
+/// held, cooldown, impact squash, stretch heading, the star buff, the active
+/// trail and the rocket-dash launch window. Mutable round-scoped state (allowed
+/// for one round).
 class BallState {
-  double aim; // current aim angle (radians)
+  double aim; // current aim angle (radians) — set by the player's drag
   bool charging = false;
+  bool hasDragAim = false; // true once this charge has a thumb-chosen angle
   double charge = 0; // 0..1 while held
   double _cooldown = 0; // seconds remaining until ready
   double squash = 0; // current squash amount (relaxes toward 0)
   double buff = 0; // seconds of star bump-buff remaining
+  double launch = 0; // seconds of rocket-dash momentum-keep remaining
   Offset stretchDir = const Offset(1, 0); // axis the squash/stretch acts along
   DashTrail? trail;
 
@@ -26,9 +29,14 @@ class BallState {
   bool get ready => _cooldown <= 0;
   bool get buffed => buff > 0;
 
+  /// True while the ball is in its rocket-dash window (keeps momentum, caroms
+  /// off rivals) — drives a hotter trail/aura so the table sees the launch.
+  bool get launched => launch > 0;
+
   void tick(double dt, double squashDecayPerSec) {
     if (_cooldown > 0) _cooldown = math.max(0, _cooldown - dt);
     if (buff > 0) buff = math.max(0, buff - dt);
+    if (launch > 0) launch = math.max(0, launch - dt);
     if (squash != 0) {
       final relax = squashDecayPerSec * dt;
       squash = squash > 0
@@ -71,10 +79,11 @@ class ImpactRing {
   double life;
   final double maxLife;
   ImpactRing({required this.at, required this.color, required this.life})
-      : maxLife = life;
+    : maxLife = life;
 
   /// 0..1 animation progress (0 = just spawned, 1 = done).
-  double get progress => maxLife <= 0 ? 1 : (1 - life / maxLife).clamp(0.0, 1.0);
+  double get progress =>
+      maxLife <= 0 ? 1 : (1 - life / maxLife).clamp(0.0, 1.0);
 }
 
 /// A collectible star floating on the platform. Any ball that touches it gets a
@@ -128,8 +137,13 @@ class StarController {
 
   /// Spawn / age the star. A star only exists while [aliveCount] >= 2 (so a solo
   /// practice round stays calm); it despawns if untouched past its life.
-  void tick(double dt, int aliveCount, SeededRng rng, Offset center,
-      double currentRingRadius) {
+  void tick(
+    double dt,
+    int aliveCount,
+    SeededRng rng,
+    Offset center,
+    double currentRingRadius,
+  ) {
     final s = _star;
     if (s != null) {
       s.spin += dt * spinPerSec;
@@ -146,7 +160,8 @@ class StarController {
     if (_timer > 0) return;
     final spread = currentRingRadius * spawnSpreadFactor;
     final angle = rng.range(0, math.pi * 2);
-    final pos = center +
+    final pos =
+        center +
         Offset(math.cos(angle), math.sin(angle)) * rng.range(0, spread);
     _star = StarPickup(pos: pos, radius: radius);
     _timer = lifeSec;
@@ -226,7 +241,11 @@ class BumperFx {
   /// A bold pulsing "SUDDEN DEATH" banner across the top, shown once the
   /// platform starts collapsing fast. [pulse] 0..1 drives the throb.
   static void drawSuddenDeathBanner(
-      Canvas canvas, Size size, double pulse, double t) {
+    Canvas canvas,
+    Size size,
+    double pulse,
+    double t,
+  ) {
     final p = pulse.clamp(0.0, 1.0);
     if (p <= 0.01) return;
     final throb = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(t * 7.0));
@@ -247,26 +266,44 @@ class BumperFx {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(2.0, h * 0.09)
-        ..color =
-            _bannerColor.withValues(alpha: (0.9 * p * throb).clamp(0.0, 1.0)),
+        ..color = _bannerColor.withValues(
+          alpha: (0.9 * p * throb).clamp(0.0, 1.0),
+        ),
     );
-    _drawCenteredText(canvas, 'SUDDEN DEATH', rect.center,
-        _white.withValues(alpha: p), h * 0.5 * throb, size.width);
+    _drawCenteredText(
+      canvas,
+      'SUDDEN DEATH',
+      rect.center,
+      _white.withValues(alpha: p),
+      h * 0.5 * throb,
+      size.width,
+    );
   }
 
-  static void _drawCenteredText(Canvas canvas, String text, Offset center,
-      Color color, double fontSize, double maxWidth) {
+  static void _drawCenteredText(
+    Canvas canvas,
+    String text,
+    Offset center,
+    Color color,
+    double fontSize,
+    double maxWidth,
+  ) {
     if (fontSize <= 1) return;
-    final builder = ParagraphBuilder(ParagraphStyle(
-      textAlign: TextAlign.center,
-      fontSize: fontSize,
-      fontWeight: FontWeight.w900,
-    ))
-      ..pushStyle(TextStyle(color: color))
-      ..addText(text);
+    final builder =
+        ParagraphBuilder(
+            ParagraphStyle(
+              textAlign: TextAlign.center,
+              fontSize: fontSize,
+              fontWeight: FontWeight.w900,
+            ),
+          )
+          ..pushStyle(TextStyle(color: color))
+          ..addText(text);
     final paragraph = builder.build()
       ..layout(ParagraphConstraints(width: maxWidth));
-    canvas.drawParagraph(paragraph,
-        Offset(center.dx - maxWidth / 2, center.dy - fontSize * 0.62));
+    canvas.drawParagraph(
+      paragraph,
+      Offset(center.dx - maxWidth / 2, center.dy - fontSize * 0.62),
+    );
   }
 }

@@ -5,7 +5,6 @@ import '../../art/fx/juice.dart';
 import '../../art/fx/particles.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/area_fill_grid.dart';
-import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'paint_render.dart';
@@ -57,6 +56,14 @@ class _Tuning {
   // Bots stay passive for a beat so they never out-paint an idle human at the
   // gun; then they engage on a beatable cadence governed by [BotProfile].
   static const double botWarmupSec = 1.5;
+
+  // Shared-canvas raiding: when a bot is trailing the current leader it is
+  // biased to hunt cells the LEADER owns (paint over them to steal turf) instead
+  // of just filling empty space, so bots fight for the contested board rather
+  // than politely staying home. The chance ramps with how far behind they are.
+  static const double botRaidChanceMax = 0.7; // max odds a goal targets leader
+  static const double botRaidRefGap = 0.18; // coverage gap (frac) for full odds
+  static const double botLeaderCellWeight = 1.4; // pull toward a leader's cell
 
   // Visual stamp budget: only the most recent stamps are drawn crisply on top
   // of the baked coverage tint, which protects render cost in long games.
@@ -111,13 +118,19 @@ class _Cursor {
 
   bool get isBot => clock != null;
 
-  /// Clamp a normalized point into this cursor's zone (with a tiny inset so the
-  /// brush centre never sits exactly on a zone seam).
+  /// Clamp a normalized point into the SHARED arena `[inset, 1-inset]^2`.
+  ///
+  /// This is the structural heart of the redesign: brushes are NO LONGER walled
+  /// into their own [zone] — every cursor roams the whole canvas, so painting
+  /// over a rival's cells (last-writer-wins in [AreaFillGrid.paintCircle]) STEALS
+  /// them, turning coverage into a live tug-of-war. Each player still STARTS in
+  /// their own corner (see [_spawnCursors]); [zone] is now only a starting/ home
+  /// hint for bots and a faint render label, not a barrier.
   Offset clampToZone(Offset p) {
     const inset = 0.005;
     return Offset(
-      p.dx.clamp(zone.left + inset, zone.right - inset),
-      p.dy.clamp(zone.top + inset, zone.bottom - inset),
+      p.dx.clamp(inset, 1 - inset),
+      p.dy.clamp(inset, 1 - inset),
     );
   }
 
@@ -171,26 +184,28 @@ class _Stamp {
   });
 }
 
-/// Paint Splash — a splatter-paint turf war on an [AreaFillGrid].
+/// Paint Splash — a splatter-paint turf war on ONE SHARED [AreaFillGrid].
 ///
-/// CONTROL (the heart of it — full player agency, one touch):
-///  * Each player owns a paint cursor confined to their slice of the screen
-///    (their [PlayerZone]). The cursor STEERS to wherever the player touches:
-///    drag to move the brush around your zone.
-///  * HOLDING sprays paint continuously at the cursor, so you paint exactly
-///    where you choose by guiding the brush over fresh canvas. A quick tap lays
-///    a single splat.
+/// CONTROL (the heart of it — full player agency, one touch, ONE canvas):
+///  * Every player drives a paint cursor over the WHOLE arena (not a walled-off
+///    slice). The cursor STEERS to wherever the player touches: drag to move the
+///    brush anywhere on the shared canvas. Players START in their own corner so
+///    setup still reads, then the board is open.
+///  * HOLDING sprays paint continuously at the cursor. Because paint is
+///    last-writer-wins, sweeping your brush OVER a rival's color FLIPS those
+///    cells to you — you steal their turf, and they can steal it right back. A
+///    quick tap lays a single splat.
 ///  * Lingering briefly fattens the splat (a dwell bonus), so a sweep-then-dwell
-///    rhythm covers ground fastest — but re-painting the same spot wastes paint
-///    (last writer wins, but it's already yours). The player covering the most
-///    cells when [_Tuning.timeLimit] elapses wins; score is the owned-cell
-///    count, resolved via [finishByScore].
+///    rhythm covers ground fastest. The player owning the most cells when
+///    [_Tuning.timeLimit] elapses wins; score is the live owned-cell count
+///    (a real tug-of-war), resolved via [finishByScore].
 ///
-/// Bots STEER toward the largest unpainted pocket inside their own zone and
-/// spray as they sweep across it, re-picking a goal on a [ReactionClock]. Their
-/// [BotProfile] accuracy decides how tightly they hit the target and
-/// [errorRate] makes them occasionally drift, so easy bots leave gaps a human
-/// can out-cover. A short warmup keeps them passive at the gun.
+/// Bots roam the shared canvas: they head for the largest pocket they don't own
+/// and, when behind, are biased to RAID the current leader's territory (painting
+/// over it to steal cells), re-picking a goal on a [ReactionClock]. Their
+/// [BotProfile] accuracy decides how tightly they hit the target and [errorRate]
+/// makes them occasionally drift, so easy bots leave gaps a human can out-cover.
+/// A short warmup keeps them passive at the gun.
 class PaintSplash extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -273,9 +288,9 @@ class PaintSplash extends MiniGameBase {
     }
   }
 
-  /// Point the cursor's steering target at [normPos] (full-screen), clamped into
-  /// the player's zone so they can only paint their own slice. Resets the
-  /// idle-touch timer so the continuous spray keeps running.
+  /// Point the cursor's steering target at [normPos] (full-screen), clamped only
+  /// to the shared arena bounds so the brush can roam (and steal) anywhere.
+  /// Resets the idle-touch timer so the continuous spray keeps running.
   void _steerTo(_Cursor c, Offset normPos) {
     if (!normPos.dx.isFinite || !normPos.dy.isFinite) return;
     c.target = c.clampToZone(normPos);
@@ -435,20 +450,18 @@ class PaintSplash extends MiniGameBase {
     }
   }
 
-  /// Choose a fresh coverage goal for a bot: usually the centre of the largest
-  /// unpainted pocket in its zone (so it fills gaps), occasionally a random spot
-  /// on a deliberate error. Aim jitter (scaled by 1 - accuracy) keeps weak bots
-  /// from nailing the optimum.
+  /// Choose a fresh coverage goal for a bot on the SHARED canvas. Usually the
+  /// centre of the best target cell ([_bestTargetSpot]); occasionally a random
+  /// spot anywhere on the board on a deliberate error. Aim jitter (scaled by
+  /// 1 - accuracy) keeps weak bots from nailing the optimum.
   void _repickBotGoal(_Cursor c) {
     final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
     Offset goal;
     if (ctx.rng.chance(ctx.botProfile.errorRate)) {
-      goal = Offset(
-        ctx.rng.range(c.zone.left, c.zone.right),
-        ctx.rng.range(c.zone.top, c.zone.bottom),
-      );
+      // Drift to a random point anywhere on the shared arena (not just home).
+      goal = Offset(ctx.rng.next(), ctx.rng.next());
     } else {
-      goal = _largestUnpaintedSpot(c) ?? c.zone.center;
+      goal = _bestTargetSpot(c) ?? c.zone.center;
       final jitter = _Tuning.botAimJitter * (1.0 - acc);
       if (jitter > 0) {
         goal = goal.translate(ctx.rng.jitter(jitter), ctx.rng.jitter(jitter));
@@ -457,25 +470,37 @@ class PaintSplash extends MiniGameBase {
     c.botGoal = goal;
   }
 
-  /// Find the normalized centre of an unpainted (or rival-owned) cell pocket in
-  /// the bot's zone, biased toward the cell furthest from the bot so it keeps
-  /// sweeping rather than dithering in place. Returns null if the zone is full.
-  Offset? _largestUnpaintedSpot(_Cursor c) {
-    final zone = c.zone;
+  /// Pick the best cell on the WHOLE shared grid for bot [c] to head toward.
+  ///
+  /// Cells the bot already owns are skipped. Empty cells are the staple target;
+  /// rival cells are worth taking too (stealing). When the bot is BEHIND the
+  /// leader it rolls (odds scaling with the gap, up to [_Tuning.botRaidChanceMax])
+  /// to go on a raid: in raid mode the LEADER's cells get an extra pull
+  /// ([_Tuning.botLeaderCellWeight]) so the bot drives into the leader's turf and
+  /// paints over it. A mild distance term keeps it sweeping outward rather than
+  /// dithering. Returns null only if the bot already owns every cell.
+  Offset? _bestTargetSpot(_Cursor c) {
+    final leaderId = _leaderId();
+    final behind = _coverageGapBehindLeader(c.playerId, leaderId);
+    final raidT = (behind / _Tuning.botRaidRefGap).clamp(0.0, 1.0);
+    final raiding = leaderId != null &&
+        leaderId != c.playerId &&
+        ctx.rng.chance(_Tuning.botRaidChanceMax * raidT);
+
     Offset? best;
     var bestScore = -1.0;
     for (var row = 0; row < _Tuning.rows; row += _Tuning.botSampleStride) {
       final cy = (row + 0.5) / _Tuning.rows;
-      if (cy < zone.top || cy > zone.bottom) continue;
       for (var col = 0; col < _Tuning.cols; col += _Tuning.botSampleStride) {
-        final cx = (col + 0.5) / _Tuning.cols;
-        if (cx < zone.left || cx > zone.right) continue;
         final owner = _grid.ownerAt(col, row);
         if (owner == c.playerId) continue; // already mine — skip
-        // Prefer empty cells, then far cells, so the bot heads for open canvas.
-        final emptyWeight = owner == kEmptyCell ? 1.0 : 0.45;
+        // Empty cells are the baseline target; rival cells are worth stealing.
+        var weight = owner == kEmptyCell ? 1.0 : 0.6;
+        // On a raid, the leader's cells are the juiciest steal.
+        if (raiding && owner == leaderId) weight *= _Tuning.botLeaderCellWeight;
+        final cx = (col + 0.5) / _Tuning.cols;
         final dist = (Offset(cx, cy) - c.pos).distance;
-        final score = emptyWeight * (0.4 + dist);
+        final score = weight * (0.4 + dist);
         if (score > bestScore) {
           bestScore = score;
           best = Offset(cx, cy);
@@ -483,6 +508,30 @@ class PaintSplash extends MiniGameBase {
       }
     }
     return best;
+  }
+
+  /// Id of the player currently owning the most cells, or null if nobody has
+  /// painted yet (used to pick a raid target).
+  int? _leaderId() {
+    int? leader;
+    var bestCount = 0;
+    for (final c in _cursors) {
+      final n = _grid.coverageOf(c.playerId);
+      if (n > bestCount) {
+        bestCount = n;
+        leader = c.playerId;
+      }
+    }
+    return leader;
+  }
+
+  /// How far (coverage fraction) [playerId] trails [leaderId]; 0 if they ARE the
+  /// leader or there is no leader yet.
+  double _coverageGapBehindLeader(int playerId, int? leaderId) {
+    if (leaderId == null || leaderId == playerId) return 0;
+    final gap =
+        _grid.fractionOf(leaderId) - _grid.fractionOf(playerId);
+    return gap < 0 ? 0 : gap;
   }
 
   /// Move a bot's steering target toward its goal at a capped speed, then snap a
@@ -518,7 +567,7 @@ class PaintSplash extends MiniGameBase {
     canvas.translate(o.dx, o.dy);
 
     PaintRenderer.drawBackground(canvas, size);
-    _drawZoneDividers(canvas, size);
+    _drawHomeCorners(canvas, size);
     _drawCoverage(canvas, size);
     _drawStamps(canvas, size);
     _drawCursors(canvas, size);
@@ -528,9 +577,9 @@ class PaintSplash extends MiniGameBase {
     canvas.restore();
   }
 
-  /// Faint player-tinted borders around each zone so players instantly see the
-  /// slice of canvas that is theirs to paint.
-  void _drawZoneDividers(Canvas canvas, Size size) {
+  /// Faint player-tinted "home corner" washes (NOT walls): the canvas is shared
+  /// and every brush roams it freely, so we only hint where each player starts.
+  void _drawHomeCorners(Canvas canvas, Size size) {
     PaintRenderer.drawZoneBorders(canvas, size, [
       for (final c in _cursors) (rect: c.zone, color: c.color),
     ]);

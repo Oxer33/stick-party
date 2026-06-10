@@ -15,13 +15,17 @@ import 'tank_render.dart';
 /// that auto-sweeps a firing arc. One tap FIRES a gravity-arced shell down the
 /// barrel.
 ///
-/// CONTROL (the heart of it — full agency, still one touch):
+/// CONTROL (the heart of it — a real per-shot DECISION, still one touch):
 ///  * The turret AIM sweeps a firing arc continuously and at a learnable speed.
-///  * Quick TAP → fire immediately at the angle the barrel is showing.
-///  * HOLD → the sweep slows to a crawl so you can fine-tune the angle; the
-///    shell looses the moment you RELEASE. So a tap is a snap shot and a hold is
-///    a precision shot — the player always chooses WHEN and WHERE, nothing is
-///    auto-aimed. (A one-frame down→up still fires, so tap-to-fire is intact.)
+///  * Quick TAP → an instant, FLAT, fast SNAP shot at base speed — great for a
+///    foe out in the open, but it sails straight so cover stops it.
+///  * HOLD → CHARGE the shot: a power gauge fills (and the sweep eases off so
+///    you can fine-tune), then the shell looses the instant you RELEASE. A LOW
+///    charge lobs a slow, high ARC that drops over a near crate onto a guarded
+///    foe; a FULL charge is a flat long-range SNIPE. So every shell is an
+///    arc-vs-direct choice — and charging keeps your finger down while enemies
+///    keep firing, so a big lob EXPOSES you. (A one-frame down→up still fires a
+///    snap shot, so tap-to-fire is intact.)
 ///
 /// Feel / depth:
 ///  * Each tank has 3 HP with on-tank health pips, a white hit-flash and a
@@ -39,6 +43,10 @@ import 'tank_render.dart';
 /// angle that drops a shell onto the nearest reachable opponent — but only after
 /// a warm-up grace, and with a [BotProfile] accuracy error plus a per-shot
 /// flinch so easy bots genuinely MISS often and are beatable, not snipers.
+/// Each shot a bot also picks a CHARGE: it usually snap-fires flat at base
+/// speed, but a stronger (more accurate) bot will sometimes wind up a charged
+/// shot — and it solves the arc at the SAME charged speed it will fire at, so a
+/// charged bot shell still lands instead of overshooting.
 class TankDuel extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -60,7 +68,13 @@ class TankDuel extends MiniGameBase {
 
   // ── Ballistics tuning ───────────────────────────────────────────────────────
   static const double _gravity = 360; // px/s^2 on shells
-  static const double _shellSpeed = 720; // launch px/s
+  // A shot's launch speed scales with charge: a snap TAP fires at the base
+  // (tap) speed for a flat fast shot; a FULL charge fires at the max speed for a
+  // long flat snipe. A LOW charge sits near the base speed but, because the
+  // shell is slow, gravity bends it into a high lob that clears near cover.
+  static const double _shellSpeed = 720; // base (tap / zero-charge) launch px/s
+  static const double _shellSpeedMin = 440; // slowest charged launch (high lob)
+  static const double _shellSpeedMax = 1180; // full-charge launch (flat snipe)
   static const double _shellLife = 4.5; // seconds before a shell fizzles
   static const double _shellRadius = 7;
   static const int _trailSamples = 16; // trail points kept per shell (long streak)
@@ -74,8 +88,15 @@ class TankDuel extends MiniGameBase {
   static const double _edgeInsetFactor = 0.085; // edge inset / min(arena side)
   static const double _sweepHalfBand = 0.62; // half sweep arc (radians)
   static const double _sweepSpeed = 1.35; // sweep angular speed (rad/s) — learnable
-  static const double _holdAimScale = 0.28; // sweep slows to this while held
+  static const double _holdAimScale = 0.4; // sweep eases to this while charging
+
+  // ── Charge tuning (the per-shot power/range decision) ───────────────────────
+  // While the finger is down, holdPower ramps 0→1 over [_chargeFullSec]. A
+  // release under [_tapMaxSec] is a pure TAP (flat snap at base speed); any
+  // longer hold looses a CHARGED shell whose speed is lerp(min,max,holdPower) —
+  // low = slow high lob over near cover, full = flat long snipe.
   static const double _tapMaxSec = 0.12; // down→up faster than this = a pure tap
+  static const double _chargeFullSec = 0.9; // hold this long to reach full power
 
   // ── Feel timers ─────────────────────────────────────────────────────────────
   static const double _flashSec = 0.2;
@@ -100,6 +121,12 @@ class TankDuel extends MiniGameBase {
   static const int _botArcSteps = 26; // integration steps per probed arc
   static const double _botArcDt = 0.05; // arc-probe timestep (seconds)
   static const double _botWildChance = 0.4; // share of errorRate → wild shots
+  // A bot picks a charge per shot: mostly a flat snap (zero charge), but a more
+  // accurate bot sometimes winds up. It then solves the arc at the SAME charged
+  // speed it will fire at, so the charged shell still lands.
+  static const double _botChargeChance = 0.55; // accuracy × this = P(charge)
+  static const double _botChargeMin = 0.45; // floor of a chosen bot charge
+  static const double _botChargeMax = 1.0; // ceiling of a chosen bot charge
 
   // ── Climax (frenzy) tuning ──────────────────────────────────────────────────
   // The final ~30% of the match: bots fire faster (shorter re-arm) and a FRENZY
@@ -267,44 +294,61 @@ class TankDuel extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        // Begin a hold: the sweep slows so the player can fine-tune. A quick
-        // release fires a snap shot; a longer hold fires a precision shot.
+        // Begin a hold: power starts charging and the sweep eases so the player
+        // can fine-tune. A quick release snap-fires flat; a longer hold looses a
+        // charged shell whose speed (and thus arc) scales with the charge.
         tank.holding = true;
         tank.holdSec = 0;
+        tank.holdPower = 0;
       case InputPhase.up:
         if (tank.holding) {
+          final power = tank.holdSec <= _tapMaxSec ? 0.0 : tank.holdPower;
           tank.holding = false;
-          _fire(input.playerId); // release always looses — a tap still fires
+          tank.holdSec = 0;
+          tank.holdPower = 0;
+          // Release always looses — a tap (power 0) still fires a flat snap.
+          _fire(input.playerId, power);
         }
       case InputPhase.holdTick:
         break; // hold time accrues in update() for frame-rate independence
     }
   }
 
-  void _fire(int id) {
+  /// Launch speed for a shot of the given [power] (0..1). A pure tap (power 0)
+  /// fires flat at the base speed; any charge lerps from a slow high-lob speed
+  /// up to a fast flat-snipe speed.
+  double _launchSpeedFor(double power) {
+    if (power <= 0) return _shellSpeed;
+    return lerpD(_shellSpeedMin, _shellSpeedMax, power.clamp(0.0, 1.0));
+  }
+
+  void _fire(int id, [double power = 0]) {
     final tank = _tankOf(id);
     if (tank == null) return;
     final dir = tank.barrel.direction;
     final muzzle = _muzzleOf(tank);
+    final speed = _launchSpeedFor(power);
     _shells.add(_Shell(
       pos: muzzle,
-      vel: dir * _shellSpeed,
+      vel: dir * speed,
       ownerId: id,
       color: tank.color,
     ));
     tank.recoil = _recoilSec;
     tank.muzzle = _muzzleSec;
     // Muzzle blast: a hot forward cone of sparks + a backward smoke kick, so a
-    // shot reads as powerful even when it sails into open field.
+    // shot reads as powerful even when it sails into open field. A charged shot
+    // throws a fatter, faster cone so its extra power reads at a glance.
+    final p = power.clamp(0.0, 1.0);
     final baseAngle = math.atan2(dir.dy, dir.dx);
     _juice.particles.burst(
       at: muzzle,
-      count: 10,
+      count: 10 + (8 * p).round(),
       color: const Color(0xFFFFE6A0),
-      speed: 280,
+      speed: 280 + 200 * p,
       baseAngle: baseAngle,
       spread: math.pi * 0.45,
-      size: 6,
+      size: 6 + 2 * p,
       gravity: 120,
       life: 0.32,
     );
@@ -336,10 +380,13 @@ class TankDuel extends MiniGameBase {
     _juice.update(dt);
 
     for (final t in _tanks) {
-      // Holding slows the sweep to a crawl for precision; release fires.
+      // Holding eases the sweep for fine-tuning AND charges power; release fires.
       final aimDt = t.holding ? sdt * _holdAimScale : sdt;
       t.barrel.update(aimDt);
-      if (t.holding) t.holdSec += dt;
+      if (t.holding) {
+        t.holdSec += dt;
+        t.holdPower = (t.holdPower + dt / _chargeFullSec).clamp(0.0, 1.0);
+      }
       t.tickTimers(dt, _flashSec, _recoilSec, _muzzleSec, _invulnSec);
       t.tickOvercharge(dt);
     }
@@ -382,23 +429,37 @@ class TankDuel extends MiniGameBase {
       final clock = t.clock;
       if (clock == null) continue;
       if (!clock.tick(clockDt)) continue;
-      if (_botShouldFire(t)) _fire(t.playerId);
+      // Pick this shot's charge: mostly a flat snap, but a more accurate bot
+      // sometimes winds up a charged lob/snipe. The arc is then SOLVED at this
+      // charge's speed so the shell lands rather than overshooting.
+      final charge = _botChargeForShot();
+      if (_botShouldFire(t, _launchSpeedFor(charge))) _fire(t.playerId, charge);
       clock.arm(ctx.botProfile, ctx.rng);
     }
   }
 
+  /// The charge a bot commits to this shot. Accuracy gates how often it bothers
+  /// to wind up (weaker bots almost always snap-fire flat); when it does charge
+  /// it picks a random power in the usable band. Deterministic via [ctx.rng].
+  double _botChargeForShot() {
+    final accuracy = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    if (!ctx.rng.chance(accuracy * _botChargeChance)) return 0;
+    return ctx.rng.range(_botChargeMin, _botChargeMax);
+  }
+
   /// A bot fires when its live sweep angle is within an accuracy-scaled cone of
-  /// the launch angle that would land a shell on the nearest reachable target.
+  /// the launch angle that would land a shell — fired at [shellSpeed] — on the
+  /// nearest reachable target.
   ///
   /// Fairness: the "wanted" angle is corrupted by a steady accuracy error PLUS a
   /// fresh per-shot flinch. At low accuracy these are large versus the firing
   /// cone, so an easy bot commits the trigger while badly off-aim — it fires
   /// and *misses* often rather than waiting for a perfect line-up. A small
   /// chance of an extra wild shot keeps it from ever stalling.
-  bool _botShouldFire(_Tank shooter) {
+  bool _botShouldFire(_Tank shooter, double shellSpeed) {
     final accuracy = ctx.botProfile.accuracy.clamp(0.2, 1.0);
     final tol = _botBaseTolerance / accuracy;
-    final best = _bestLaunchAngle(shooter);
+    final best = _bestLaunchAngle(shooter, shellSpeed);
     if (best != null) {
       final miss = 1 - accuracy;
       // Steady bias + a fresh flinch each shot; both shrink as accuracy rises.
@@ -411,9 +472,11 @@ class TankDuel extends MiniGameBase {
     return ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance);
   }
 
-  /// Best lead angle for [shooter] (see [TankFx.bestLaunchAngle]); builds the
-  /// live opponent-pivot list and delegates the arc search.
-  double? _bestLaunchAngle(_Tank shooter) {
+  /// Best lead angle for [shooter] firing at [shellSpeed] (see
+  /// [TankFx.bestLaunchAngle]); builds the live opponent-pivot list and
+  /// delegates the arc search. A faster (charged) shell flies flatter, so the
+  /// solved angle differs — keeping a charged bot shot honest.
+  double? _bestLaunchAngle(_Tank shooter, double shellSpeed) {
     final targets = <Offset>[
       for (final t in _tanks)
         if (t.playerId != shooter.playerId) _turretPivotOf(t),
@@ -423,7 +486,7 @@ class TankDuel extends MiniGameBase {
       hi: shooter.barrel.maxAngle,
       muzzle: _muzzleOf(shooter),
       targets: targets,
-      shellSpeed: _shellSpeed,
+      shellSpeed: shellSpeed,
       gravity: _gravity,
       candidates: _botArcCandidates,
       steps: _botArcSteps,
@@ -679,9 +742,10 @@ class TankDuel extends MiniGameBase {
     // strobe the body without us mutating anything during render.
     final blinkPhase =
         t.invuln > 0 ? (_animClock * _invulnBlinkHz) % 2 + 1 : 0.0;
-    // Precision flag once a hold passes the tap threshold, so the slowed-aim
-    // reticle only lights up for a deliberate hold (a quick tap stays clean).
-    final precision = t.holding && t.holdSec > _tapMaxSec;
+    // Precision/charge lights up only once a hold passes the tap threshold, so a
+    // quick snap tap stays clean; [charge] then drives a power gauge + a reticle
+    // that creeps out along the barrel toward the predicted range.
+    final charging = t.holding && t.holdSec > _tapMaxSec;
     return TankView(
       base: t.base,
       color: t.color,
@@ -694,7 +758,8 @@ class TankDuel extends MiniGameBase {
       muzzle: (t.muzzle / _muzzleSec).clamp(0.0, 1.0),
       invuln: blinkPhase,
       scale: _scale,
-      precision: precision,
+      precision: charging,
+      charge: charging ? t.holdPower : 0.0,
     );
   }
 }
@@ -712,8 +777,9 @@ class _Tank {
   double recoil = 0; // recoil timer
   double muzzle = 0; // muzzle-flash timer
   double invuln = 0; // invulnerability timer
-  bool holding = false; // finger down → sweep slows for precision
+  bool holding = false; // finger down → charging power + sweep eased
   double holdSec = 0; // how long the current hold has lasted
+  double holdPower = 0; // 0..1 charge accrued while holding (scales launch speed)
   double overcharge = 0; // seconds of airdrop double-damage buff remaining
 
   _Tank({

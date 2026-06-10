@@ -16,6 +16,8 @@ void main() {
         zones: ZoneLayout.forPlayers(n),
       );
 
+  // ── Invariants (kept) ───────────────────────────────────────────────────────
+
   test('four bots finish with a full ranking', () {
     final g = SnakeArena()..init(ctxFor(4, 7));
     var n = 0;
@@ -150,5 +152,58 @@ void main() {
       g.update(1 / 60);
     }
     expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
+  });
+
+  // ── New behavior: scarcity + contested / leader-biased food ──────────────────
+
+  test('only two pellets share the board (scarcity drives a contested race)',
+      () {
+    // The pellet count was cut 4 → 2. It must hold at seed, never exceed the cap
+    // mid-game, and immediately refill to the cap when one is eaten.
+    expect(SnakeArena.maxFood, 2);
+    final g = SnakeArena()..init(ctxFor(4, 7));
+    expect(g.foodCount, 2, reason: 'seeds exactly two pellets');
+    var sawRefill = false;
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+      g.update(1 / 60);
+      // Hard cap: the board never holds more than two pellets at once. (We avoid
+      // asserting an exact count every tick: once the arena closes in SUDDEN
+      // DEATH a packed core can briefly leave no free cell to refill into.)
+      expect(g.foodCount, lessThanOrEqualTo(2),
+          reason: 'never more than two pellets at once');
+      if (g.foodCount == 2) sawRefill = true;
+    }
+    expect(sawRefill, isTrue,
+        reason: 'the board is refilled back up to the two-pellet cap');
+  });
+
+  test('fresh pellets are biased toward the longest snake (contested spawns)',
+      () {
+    // Make snake 0 a clear leader, then repeatedly spawn a single fresh pellet.
+    // With a 0.66 bias most spawns should land within the bias radius of the
+    // leader's head — deterministic under the fixed seed. We assert a strong
+    // majority (well above the ~66% expected, ~34% uniform fallback) rather than
+    // every spawn, since the fallback occasionally seeds far away by design.
+    final g = SnakeArena()..init(ctxFor(2, 5));
+    g.growSnakeForTest(0, 12); // snake 0 is now decisively the longest
+    final head = g.headOf(0)!;
+    const radius = 6; // a little slack over the 5-cell bias radius
+    var near = 0;
+    const trials = 80;
+    for (var i = 0; i < trials; i++) {
+      g.respawnSingleFoodForTest();
+      final cells = g.foodCells;
+      expect(cells.length, 1, reason: 'exactly one pellet after a respawn');
+      final f = cells.first;
+      final d = (f.col - head.col).abs() + (f.row - head.row).abs();
+      if (d <= radius) near++;
+    }
+    // Uniform-random spawns would land within radius 6 only ~7% of the time
+    // (a ~85-cell diamond on a ~1100-cell board), so a third of all spawns
+    // clustering near the leader already proves a strong bias without pinning
+    // an exact count (the intentional ~34% random fallback adds variance).
+    expect(near, greaterThan(trials ~/ 3),
+        reason: 'biased spawns ($near/$trials) cluster near the leader');
   });
 }

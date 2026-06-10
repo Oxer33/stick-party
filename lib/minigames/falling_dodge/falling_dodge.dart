@@ -72,9 +72,21 @@ class _Tuning {
   static const double figureScaleHiBand = 1300; // band px at max scale
 
   static const double hitPadFactor = 0.42; // collision slack / hazard size
-  static const double nearMissBand = 0.85; // |Δlane| window for a near-miss
-  static const double nearMissScore = 5; // points per stylish dodge
-  static const double survivePerSec = 2; // passive survival score / second
+
+  // ── GRAZE CHAIN (the heart of the rework) ──────────────────────────────────
+  // A hazard that crosses the runner line ONE lane away is a GRAZE — the only
+  // real way to score. Consecutive grazes stack a multiplier, so hugging danger
+  // pays exponentially. Over-fleeing — being 2+ lanes from a passing hazard —
+  // is cowardice: it banks nothing AND snaps the chain back to zero. So the
+  // close dodge is the whole game; bolting to a far safe lane throws away points.
+  static const double grazeBaseScore = 6; // points for the 1st graze in a chain
+  static const double grazeStep = 0.85; // extra multiplier per chained graze
+  static const int grazeMaxMult = 6; // multiplier cap (keeps scores sane)
+
+  // Survival is now only a gentle tiebreaker so a daredevil's banked grazes
+  // dominate the ranking: a chicken who survives but never grazes still loses to
+  // a bold runner who racked up a chain (even one who got crushed a bit early).
+  static const double survivePerSec = 0.4; // small passive survival score / sec
 
   // Near-miss reward feel.
   static const double nearMissSlowMo = 0.22; // hitStop duration
@@ -134,7 +146,6 @@ class FallingDodge extends MiniGameBase {
 
   late Juice _juice;
   final List<TrackFx> _tracks = <TrackFx>[];
-  final List<int> _eliminationOrder = <int>[]; // worst→best as they fall
   double _elapsed = 0;
   double _animClock = 0; // real-time clock for spin/scroll (never scaled)
   double _fallSpeed = _Tuning.fallSpeedStart;
@@ -273,34 +284,19 @@ class FallingDodge extends MiniGameBase {
     );
   }
 
-  /// A bot's chosen dodge direction: a REAL decision toward the safer adjacent
-  /// lane (away from the most imminent threat), kept inside the lane range. This
-  /// is what the bot "decides" — [_driveBots] may then flip it on a mistake so a
-  /// fallible bot can dive the wrong way.
+  /// A bot's dodge: step exactly ONE lane off the threatened (current) lane so
+  /// it lands ADJACENT to the passing hazard — i.e. it goes for the GRAZE, not a
+  /// far safe lane, which is how it banks (and spreads) points. It only hops a
+  /// single lane, so it never over-flees itself out of the chain. [_driveBots]
+  /// may flip this on a mistake so a fallible bot can step the wrong way.
   int _botDodgeDir(TrackFx t) {
     final lane = t.hopper.lane;
-    final threatLane = _nearestThreatLane(t);
-    var dir = t.hopDir;
-    if (threatLane != null) {
-      if (threatLane == lane) {
-        dir = lane <= 0 ? 1 : -1; // step off the threatened lane
-      } else {
-        dir = threatLane > lane ? -1 : 1; // move opposite the threat
-      }
-    }
-    if (lane + dir < 0) dir = 1; // bounce off the ends
+    // Prefer keeping its lean direction; bounce when it would hit a wall so the
+    // single step always stays in-bounds (and thus adjacent, not off the edge).
+    var dir = t.hopDir != 0 ? t.hopDir : 1;
+    if (lane + dir < 0) dir = 1;
     if (lane + dir > _Tuning.laneCount - 1) dir = -1;
     return dir;
-  }
-
-  /// The lane of the closest hazard still above the runner line.
-  int? _nearestThreatLane(TrackFx t) {
-    HazardFx? nearest;
-    for (final h in t.hazards) {
-      if (h.y > t.runnerY) continue; // already passed the line
-      if (nearest == null || h.y > nearest.y) nearest = h;
-    }
-    return nearest?.lane;
   }
 
   // ── Update ──────────────────────────────────────────────────────────────────
@@ -484,27 +480,43 @@ class FallingDodge extends MiniGameBase {
     return (runnerX - hazardX).abs() <= pad;
   }
 
-  /// Reward a stylish dodge: a hazard that crossed the runner line in a lane
-  /// directly adjacent to the runner → slow-mo + spark + "NICE!" popup.
+  /// Resolve a hazard that just crossed the runner line WITHOUT crushing the
+  /// runner — the moment the graze chain lives or dies:
+  ///  * EXACTLY one lane away → a clean GRAZE: bump the chain and bank
+  ///    base × the (capped) chain multiplier, so each link is worth more than
+  ///    the last. Slow-mo + spark + a "x2/x3…" popup sell the building streak.
+  ///  * Two or more lanes away → the player bolted to safety: bank nothing and
+  ///    RESET the chain to zero. Fleeing is the only thing that breaks a streak.
+  ///  * Same lane but slipped through (a mid-hop horizontal miss) → neutral:
+  ///    keep the chain, score nothing.
   void _registerNearMiss(TrackFx t, HazardFx h) {
-    if ((h.lane - t.hopper.lane).abs() != 1) return;
-    final laneDist = (h.lane - t.hopper.visualLane).abs();
-    if (laneDist > _Tuning.nearMissBand) return;
+    final laneGap = (h.lane - t.hopper.lane).abs();
+    if (laneGap >= 2) {
+      t.grazeChain = 0; // over-fled — cowardice snaps the streak
+      return;
+    }
+    if (laneGap != 1) return; // dead-on slip-through: neutral, keep the chain
 
-    addScore(t.playerId, _Tuning.nearMissScore);
+    t.grazeChain += 1;
+    final mult = t.grazeChain.clamp(1, _Tuning.grazeMaxMult);
+    final award =
+        _Tuning.grazeBaseScore * (1 + (mult - 1) * _Tuning.grazeStep);
+    addScore(t.playerId, award);
+
     _juice.hitStop
         .trigger(_Tuning.nearMissSlowMo, scale: _Tuning.nearMissTimeScale);
     _juice.particles.burst(
       at: Offset(t.lanes.coordOf(h.lane), t.runnerY),
-      count: 8,
+      count: 8 + mult,
       color: const Color(0xFF35E0FF),
       speed: 260,
       size: 5 * t.figureScale,
       life: 0.4,
     );
+    // Popup shows the live multiplier so the streak is unmistakable to kids.
     _juice.popup(
       Offset(t.lanes.coordOfVisual(t.hopper.visualLane), t.runnerY - 28),
-      'NICE!',
+      mult >= 2 ? 'x$mult!' : 'NICE!',
       const Color(0xFF8DEBFF),
       size: 22 + 8 * t.figureScale,
     );
@@ -573,8 +585,9 @@ class FallingDodge extends MiniGameBase {
 
   void _eliminate(TrackFx t, HazardFx h) {
     t.alive = false;
+    t.eliminatedAt = _elapsed; // banked for the survival-time tiebreaker
     t.hazards.clear();
-    _eliminationOrder.add(t.playerId);
+    t.grazeChain = 0; // a crush ends the streak (no posthumous links)
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final at = Offset(runnerX, t.runnerY);
     // Crush: fling away from the impact lane, with an upward stomp component.
@@ -598,25 +611,28 @@ class FallingDodge extends MiniGameBase {
       if (t.alive) aliveCount++;
     }
     if (aliveCount > 1 && !timeUp) return;
-    _finish(_tracks.where((t) => t.alive).toList());
+    _finish();
   }
 
-  void _finish(List<TrackFx> alive) {
-    // Survival bonus first, so a survivor always outranks the eliminated on
-    // score as well as on placement.
-    for (final t in alive) {
-      addScore(t.playerId, _Tuning.timeLimit * _Tuning.survivePerSec);
+  void _finish() {
+    // Banked GRAZE points are the whole story; survival is only a gentle
+    // tiebreaker (time alive × a small rate) added on top. A survivor banks the
+    // full round's worth, an eliminated runner banks up to when they fell — but
+    // either bonus is tiny next to a real graze chain, so a bold daredevil who
+    // racked up a streak outranks a timid runner who only ran away.
+    for (final t in _tracks) {
+      final timeAlive = t.alive ? _elapsed : t.eliminatedAt;
+      addScore(t.playerId, timeAlive * _Tuning.survivePerSec);
     }
-    // Survivors (most score first) rank above the eliminated; eliminated are
-    // ordered most-recent-first (they lasted longest).
-    final survivors = alive.toList()
-      ..sort((a, b) => scoreOf(b.playerId).compareTo(scoreOf(a.playerId)));
-    final ranking = <int>[
-      for (final t in survivors) t.playerId,
-      ..._eliminationOrder.reversed,
-    ];
+    // Rank everyone by total score (graze-dominated), highest first; ties break
+    // by player id so the order is always stable and the full set is preserved.
+    final ranked = _tracks.map((t) => t.playerId).toList()
+      ..sort((a, b) {
+        final byScore = scoreOf(b).compareTo(scoreOf(a));
+        return byScore != 0 ? byScore : a.compareTo(b);
+      });
     _juice.confetti(ctx.arena);
-    finishByOrder(_dedupe(ranking));
+    finishByOrder(_dedupe(ranked));
   }
 
   /// Ensure every player id appears exactly once, preserving [order] first.
