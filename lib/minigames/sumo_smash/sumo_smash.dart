@@ -14,6 +14,15 @@ import 'sumo_render.dart';
 
 /// Sumo Smash — every player is a sumo wrestler in a circular dohyo.
 ///
+/// SCORED BRAWL (not last-one-standing): the round runs the FULL [_timeLimit]
+/// and your SCORE is the number of ring-outs you CAUSE. A knocked-out wrestler
+/// does NOT end the round — it RESPAWNS ~[_respawnSec] later, flung back in from
+/// its spawn edge with a brief spawn-invuln, so a 1v1 becomes a sustained
+/// shoving match: KO the rival, it comes back, most KOs in [_timeLimit] wins.
+/// A ring-out credits the LAST wrestler who shoved the victim; ringing YOURSELF
+/// out (no recent attacker) scores nobody and costs you a small penalty, so
+/// blind shove-spam that launches you into the void loses ground.
+///
 /// CONTROL (the heart of it — full player agency, one touch; the player owns
 /// the aim, nothing auto-targets):
 ///  * DRAG from your wrestler in the direction you want to shove — the AIM
@@ -26,12 +35,15 @@ import 'sumo_render.dart';
 ///  So a clever player drags a charged shove into a rival near the edge to
 ///  ring them out, or drags inward to save themselves.
 ///
-/// RISK: while charging you are slowed to a near-root, so a whiffed charge
-/// leaves you a sitting duck — committing to a big shove is a real decision.
+/// RISK (why spam loses): while charging you are slowed to a near-root, so a
+/// whiffed charge leaves you a sitting duck — committing to a big shove is a
+/// real decision. A mis-aimed lunge sails into open clay (or off the edge,
+/// self-ringing you for a penalty); a paced, aimed shove into a rival near the
+/// rim scores. The bot dodges/charges, so shoving into air just cedes position.
 ///
 /// Feel: low-friction clay so shoves carry; collisions transfer momentum so a
 /// well-aimed charge launches the victim (ragdoll) off the ring. The dohyo
-/// shrinks after a grace period (sudden death) so matches always resolve.
+/// shrinks after a grace period (sudden death) so the late brawl tightens.
 ///
 /// Bots cannot drag, so they aim at the nearest opponent (via [_aimAtNearest])
 /// and retreat from the edge; [BotProfile] governs timing, charge and aim error.
@@ -47,10 +59,11 @@ class SumoSmash extends MiniGameBase {
   );
 
   // ── Arena / sim tuning ──────────────────────────────────────────────────────
-  // Tuned on-device for a ~15-25s match: smaller bodies + bigger ring + grippier
-  // clay + weaker base shoves so a single hit never instantly ejects an idle
-  // player; ring-outs come from positioning + charged shoves near the edge.
-  static const double _timeLimit = 35;
+  // Tuned on-device for a sustained ~28s brawl: smaller bodies + bigger ring +
+  // grippier clay + weaker base shoves so a single hit never instantly ejects an
+  // idle player; ring-outs come from positioning + charged shoves near the edge.
+  // Because KO'd wrestlers respawn, the round always plays the FULL limit.
+  static const double _timeLimit = 28;
   static const double _ringRadiusFactor = 0.46;
   static const double _bodyRadiusFactor = 0.05;
   static const double _ringFriction = 0.96; // settles faster, less slide-off
@@ -116,6 +129,20 @@ class SumoSmash extends MiniGameBase {
   static const double _flingBaseFactor = 0.5;
   static const double _flingSpeedFactor = 0.55;
 
+  // ── Scored brawl: KO credit + respawn ───────────────────────────────────────
+  // The round is a SCORED BRAWL, not last-standing: a ring-out scores the last
+  // wrestler who shoved the victim (within [_attackerCreditSec] of the eject),
+  // and the victim RESPAWNS [_respawnSec] later, flung in from its spawn edge
+  // with [_spawnInvulnSec] of invulnerability (cannot be re-ejected or shove,
+  // and a brief idle so a kid can re-orient). Self-ring-out — no fresh attacker —
+  // scores nobody and docks the victim [_selfRingPenalty], so blind shove-spam
+  // that launches you off the edge loses ground to paced, aimed play.
+  static const double _respawnSec = 1.2; // delay before a KO'd wrestler returns
+  static const double _spawnInvulnSec = 0.9; // post-respawn grace (no KO either way)
+  static const double _attackerCreditSec =
+      1.1; // a hit credits a KO only this recently
+  static const double _selfRingPenalty = 1.0; // score docked for a self-ring-out
+
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botWarmupSec = 2.0; // grace before bots engage
   static const double _botCloseRangeFactor = 4.2; // approach vs shove threshold
@@ -151,14 +178,19 @@ class SumoSmash extends MiniGameBase {
   final Map<int, StickFigure> _figures = <int, StickFigure>{};
   final Map<int, ReactionClock> _botClocks = <int, ReactionClock>{};
   final Map<int, _Fighter> _fighters = <int, _Fighter>{};
-  final List<int> _eliminationOrder = <int>[];
-  final Set<int> _ragdolled = <int>{};
+  final Set<int> _ragdolled = <int>{}; // bodies currently flung out (visual)
   final Set<int> _contactPairs = <int>{};
   final List<Offset> _dust = <Offset>[];
 
+  /// Spawn position per player, reused to fling a respawn back in from its edge.
+  final Map<int, Offset> _spawnPos = <int, Offset>{};
+
+  /// KO'd wrestlers waiting to respawn (id → seconds remaining).
+  final Map<int, double> _respawnTimers = <int, double>{};
+
   late StarController _stars;
   bool _suddenDeathAnnounced = false;
-  bool _winnerCheered = false; // one-shot: the survivor cheers atop the ring
+  bool _winnerCheered = false; // one-shot: the leader cheers when time expires
 
   @override
   void init(MiniGameContext ctx) {
@@ -210,6 +242,7 @@ class SumoSmash extends MiniGameBase {
       final angle = (i / count) * math.pi * 2 + math.pi / 2;
       final pos =
           _center + Offset(math.cos(angle), math.sin(angle)) * spawnRadius;
+      _spawnPos[p.id] = pos;
       _arena.add(Body(id: p.id, pos: pos, radius: _bodyRadius));
 
       final facing = pos.dx <= _center.dx ? 1.0 : -1.0;
@@ -272,7 +305,7 @@ class SumoSmash extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        if (f.ready) {
+        if (f.ready && !f.invulnerable) {
           f.charging = true; // begin charging
           f.hasDragAim = false; // until the thumb moves, no chosen direction
           _applyDragAim(input, body, f); // a press already away from us aims
@@ -324,6 +357,7 @@ class SumoSmash extends MiniGameBase {
     _juice.update(dt);
 
     _tickFighters(dt);
+    _tickRespawns(dt);
     _driveBots(dt);
     _shrinkRing(dt);
     _stars.tick(
@@ -406,6 +440,7 @@ class SumoSmash extends MiniGameBase {
     final self = _bodyOf(playerId);
     final f = _fighters[playerId];
     if (self == null || !self.alive || f == null || !f.ready) return;
+    if (f.invulnerable) return; // just respawned — settle before engaging
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate / mistake
 
     final err =
@@ -439,7 +474,7 @@ class SumoSmash extends MiniGameBase {
   /// Apply an aimed shove of the given [charge] (0..1) in [aimAngle].
   void _commitDash(int playerId, Body self, double aimAngle, double charge) {
     final f = _fighters[playerId];
-    if (f == null || !f.ready) return;
+    if (f == null || !f.ready || f.invulnerable) return;
 
     final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
     // A collected star briefly amplifies every shove — the buffed wrestler hits
@@ -525,6 +560,13 @@ class SumoSmash extends MiniGameBase {
 
     final speed = attacker.vel.distance;
     if (speed < 1) return;
+
+    // SCORED BRAWL: remember who shoved the victim so a follow-up ring-out
+    // credits them. An invulnerable (just-respawned) attacker's hit does not
+    // count, so they cannot farm KOs during their grace.
+    if (!(_fighters[attacker.id]?.invulnerable ?? false)) {
+      _fighters[victim.id]?.markHitBy(attacker.id);
+    }
 
     final attackerDir = attacker.vel / speed;
     final headOn = (attackerDir.dx * toVictim.dx + attackerDir.dy * toVictim.dy)
@@ -645,13 +687,19 @@ class SumoSmash extends MiniGameBase {
     var firedBig = false; // one cinematic ring-out beat per frame (kid-tasteful)
     for (final b in _arena.bodies) {
       if (!b.alive || _ragdolled.contains(b.id)) continue;
+      // A just-respawned wrestler cannot be rung out during its spawn grace, so
+      // it is never ejected the instant it lands back in the (shrunk) ring.
+      if (_fighters[b.id]?.invulnerable ?? false) continue;
       if ((b.pos - _center).distance <= _currentRingRadius) continue;
 
       final outVel = b.vel;
       b.alive = false;
       b.vel = Offset.zero;
       _ragdolled.add(b.id);
-      _eliminationOrder.add(b.id);
+      // SCORED BRAWL: credit the KO + queue the victim's respawn (never a
+      // permanent elimination), so the round keeps going for the full limit.
+      _scoreRingOut(b.id);
+      _respawnTimers[b.id] = _respawnSec;
 
       // The decisive ring-out is the signature beat: a single big-moment
       // (burst + heavy shake + slow-mo + zoom toward the victim + flash +
@@ -690,14 +738,118 @@ class SumoSmash extends MiniGameBase {
     }
   }
 
+  /// Award a ring-out: credit the wrestler who last shoved [victimId] (if the
+  /// hit was recent enough), bumping their [koScore]. A self-ring-out — no fresh
+  /// attacker — scores nobody and docks the victim [_selfRingPenalty], so blind
+  /// shove-spam off the edge actively loses ground. Live scores are mirrored to
+  /// the engine so the on-field HUD shows the KO race.
+  void _scoreRingOut(int victimId) {
+    final victim = _fighters[victimId];
+    final attackerId = victim?.lastAttacker ?? -1;
+    final recent = (victim?.attackerAge ?? double.infinity) <=
+        _attackerCreditSec;
+    if (victim != null) {
+      victim.lastAttacker = -1; // consumed — a later eject must be re-earned
+    }
+    if (attackerId >= 0 && attackerId != victimId && recent) {
+      final attacker = _fighters[attackerId];
+      if (attacker != null) {
+        attacker.koScore += 1;
+        setScore(attackerId, attacker.koScore);
+        final pos = _bodyOf(attackerId)?.pos;
+        if (pos != null) {
+          _juice.popup(
+            pos.translate(0, -_bodyRadius * 1.9),
+            'KO!',
+            _colorOf(attackerId),
+            size: 28,
+          );
+        }
+      }
+      return;
+    }
+    // Self-ring-out (or stale attacker): no credit, small penalty.
+    if (victim != null) {
+      victim.koScore -= _selfRingPenalty;
+      setScore(victimId, victim.koScore);
+    }
+  }
+
+  /// Count down each KO'd wrestler's respawn timer; when it elapses, fling the
+  /// wrestler back in from its spawn edge at rest, clear its ragdoll, and grant
+  /// [_spawnInvulnSec] of grace so it cannot be re-ejected the instant it lands.
+  void _tickRespawns(double dt) {
+    if (_respawnTimers.isEmpty) return;
+    final ready = <int>[];
+    _respawnTimers.updateAll((id, t) => t - dt);
+    _respawnTimers.forEach((id, t) {
+      if (t <= 0) ready.add(id);
+    });
+    for (final id in ready) {
+      _respawnTimers.remove(id);
+      _respawn(id);
+    }
+  }
+
+  /// Bring [id] back into the dohyo from its spawn edge (clamped inside the
+  /// current shrunk ring), upright and invulnerable for a beat.
+  void _respawn(int id) {
+    final body = _bodyOf(id);
+    if (body == null) return;
+    final spawn = _spawnPos[id] ?? _center;
+    // Pull the spawn point inside the live ring so a tight sudden-death ring
+    // never drops the respawn straight back into the void.
+    final fromCenter = spawn - _center;
+    final maxR = _currentRingRadius * 0.7;
+    final pos = fromCenter.distance > maxR
+        ? _center + _normalize(fromCenter) * maxR
+        : spawn;
+    body.pos = pos;
+    body.vel = Offset.zero; // flung back in at rest; the player re-aims
+    body.alive = true;
+    _ragdolled.remove(id);
+    _contactPairs.removeWhere((key) => key ~/ 8 == id || key % 8 == id);
+    final f = _fighters[id];
+    if (f != null) {
+      f
+        ..charging = false
+        ..hasDragAim = false
+        ..charge = 0
+        ..invuln = _spawnInvulnSec
+        ..lastAttacker = -1
+        ..trail = null;
+    }
+    final fig = _figures[id];
+    if (fig != null) {
+      fig.exitRagdoll();
+      fig.facing = pos.dx <= _center.dx ? 1.0 : -1.0;
+      fig.setLoco(LocoState.idle);
+    }
+    _juice.particles.burst(
+      at: pos,
+      count: 12,
+      color: _colorOf(id),
+      speed: 220,
+      size: 6,
+      gravity: 120,
+      life: 0.5,
+    );
+    _juice.popup(
+      pos.translate(0, -_bodyRadius * 1.9),
+      'BACK!',
+      _colorOf(id),
+      size: 24,
+    );
+  }
+
   // ── Outcome ─────────────────────────────────────────────────────────────────
 
   void _resolveOutcome() {
     // Announce the climax exactly once with a screen shake + center popup, then
-    // the fast-shrink ring + banner carry the moment.
+    // the fast-shrink ring + banner carry the moment. (≥2 wrestlers in play.)
     if (!_suddenDeathAnnounced &&
         _isSuddenDeath &&
-        _arena.aliveBodies.length > 1) {
+        ctx.players.length > 1) {
       _suddenDeathAnnounced = true;
       _juice.shake.medium();
       _juice.popup(
@@ -707,27 +859,39 @@ class SumoSmash extends MiniGameBase {
         size: 38,
       );
     }
-    final alive = _arena.aliveBodies;
-    if (alive.length <= 1 || _elapsed >= _timeLimit) _finishRanked(alive);
+    // SCORED BRAWL: the round runs the FULL limit (KO'd wrestlers respawn), so it
+    // NEVER ends early just because only one is on the ring. Most ring-outs wins.
+    if (_elapsed >= _timeLimit) _finishScored();
   }
 
-  void _finishRanked(List<Body> alive) {
-    final ranked = alive.map((b) => b.id).toList()
-      ..sort((a, b) => _distToCenter(a).compareTo(_distToCenter(b)));
-    // Charm: the SURVIVING winner reacts instead of freezing — settle to idle
-    // then throw an arms-up cheer atop the dohyo. Fires once (losers already
-    // ragdoll on KO, so only an alive, non-ragdoll survivor celebrates).
-    if (!_winnerCheered && ranked.isNotEmpty) {
+  void _finishScored() {
+    // Charm: the leader (most KOs, ties broken by lowest id) celebrates once if
+    // they are upright when the bell rings; a wrestler mid-fling just stays a
+    // ragdoll. Score ties resolve in [finishByScore]'s stable order.
+    if (!_winnerCheered) {
       _winnerCheered = true;
-      final fig = _figures[ranked.first];
+      final leader = _leaderId();
+      final fig = leader == null ? null : _figures[leader];
       if (fig != null && !fig.isRagdoll) {
         fig.setLoco(LocoState.idle);
         fig.victory();
       }
     }
-    finishByOrder(
-      _dedupeAllPlayers([...ranked, ..._eliminationOrder.reversed]),
-    );
+    finishByScore();
+  }
+
+  /// The id with the highest [koScore] (ties → lowest id), or null if empty.
+  int? _leaderId() {
+    int? best;
+    double bestScore = double.negativeInfinity;
+    for (final p in ctx.players) {
+      final s = _fighters[p.id]?.koScore ?? 0;
+      if (s > bestScore) {
+        bestScore = s;
+        best = p.id;
+      }
+    }
+    return best;
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -769,8 +933,9 @@ class SumoSmash extends MiniGameBase {
     _juice.renderOverlay(canvas, size);
   }
 
-  /// Banner intensity: full once in sudden death (held up while ≥2 alive).
-  double _suddenDeathBannerPulse() => _arena.aliveBodies.length > 1 ? 1.0 : 0.0;
+  /// Banner intensity: full once in sudden death for a multi-player brawl (held
+  /// up through the whole climax; a lone respawn window must not blink it off).
+  double _suddenDeathBannerPulse() => ctx.players.length > 1 ? 1.0 : 0.0;
 
   double _dangerPulse() {
     final shrink =
@@ -864,11 +1029,6 @@ class SumoSmash extends MiniGameBase {
 
   bool _isAlive(int id) => _bodyOf(id)?.alive ?? false;
 
-  double _distToCenter(int id) {
-    final b = _bodyOf(id);
-    return b == null ? double.infinity : (b.pos - _center).distance;
-  }
-
   Color _colorOf(int id) {
     for (final p in ctx.players) {
       if (p.id == id) return Color(p.colorArgb);
@@ -877,18 +1037,6 @@ class SumoSmash extends MiniGameBase {
   }
 
   static int _pairKey(int a, int b) => a < b ? a * 8 + b : b * 8 + a;
-
-  List<int> _dedupeAllPlayers(List<int> order) {
-    final seen = <int>{};
-    final result = <int>[];
-    for (final id in order) {
-      if (seen.add(id)) result.add(id);
-    }
-    for (final p in ctx.players) {
-      if (seen.add(p.id)) result.add(p.id);
-    }
-    return result;
-  }
 
   static Color _brighten(Color c, double t) =>
       Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
@@ -900,8 +1048,10 @@ class SumoSmash extends MiniGameBase {
   }
 }
 
-/// Per-player control state: player-chosen drag aim, charge while held,
-/// cooldown, trail. Mutable round-scoped state (allowed for one round).
+/// Per-player control + brawl state: player-chosen drag aim, charge while held,
+/// cooldown, trail, plus the SCORED-BRAWL bookkeeping — ring-outs caused
+/// ([koScore]), spawn-invuln after a respawn, and who last shoved this wrestler
+/// (for KO credit). Mutable round-scoped state (allowed for one round).
 class _Fighter {
   double aim; // current aim angle (radians) — set by the player's drag
   bool charging = false;
@@ -912,14 +1062,31 @@ class _Fighter {
   bool nearFallReacted = false; // latched while teetering slowly near the edge
   _DashTrail? trail;
 
+  // ── Scored brawl ──
+  double koScore = 0; // ring-outs this wrestler has CAUSED (the score)
+  double invuln = 0; // post-respawn grace, seconds (no KO either way)
+  int lastAttacker = -1; // id of the wrestler who last shoved this one (-1 none)
+  double attackerAge = 0; // seconds since [lastAttacker] was recorded
+
   _Fighter({required this.aim});
 
   bool get ready => _cooldown <= 0;
   bool get buffed => buff > 0;
+  bool get invulnerable => invuln > 0;
+
+  /// Record [attackerId] as the most recent shover of this wrestler (for KO
+  /// credit). Self-hits never overwrite a real attacker.
+  void markHitBy(int attackerId) {
+    if (attackerId < 0) return;
+    lastAttacker = attackerId;
+    attackerAge = 0;
+  }
 
   void tick(double dt) {
     if (_cooldown > 0) _cooldown = math.max(0, _cooldown - dt);
     if (buff > 0) buff = math.max(0, buff - dt);
+    if (invuln > 0) invuln = math.max(0, invuln - dt);
+    attackerAge += dt;
     if (trail != null) {
       trail!.life -= dt;
       if (trail!.life <= 0) trail = null;

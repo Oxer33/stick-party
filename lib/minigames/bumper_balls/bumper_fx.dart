@@ -24,19 +24,36 @@ class BallState {
   Offset stretchDir = const Offset(1, 0); // axis the squash/stretch acts along
   DashTrail? trail;
 
+  // ── Scored brawl ──
+  double koScore = 0; // ring-outs this ball has CAUSED (the score)
+  double invuln = 0; // post-respawn grace, seconds (no KO either way)
+  int lastAttacker = -1; // id of the ball that last bumped this one (-1 none)
+  double attackerAge = 0; // seconds since [lastAttacker] was recorded
+
   BallState({required this.aim});
 
   bool get ready => _cooldown <= 0;
   bool get buffed => buff > 0;
+  bool get invulnerable => invuln > 0;
 
   /// True while the ball is in its rocket-dash window (keeps momentum, caroms
   /// off rivals) — drives a hotter trail/aura so the table sees the launch.
   bool get launched => launch > 0;
 
+  /// Record [attackerId] as the most recent bumper of this ball (for KO
+  /// credit). Self-hits never overwrite a real attacker.
+  void markHitBy(int attackerId) {
+    if (attackerId < 0) return;
+    lastAttacker = attackerId;
+    attackerAge = 0;
+  }
+
   void tick(double dt, double squashDecayPerSec) {
     if (_cooldown > 0) _cooldown = math.max(0, _cooldown - dt);
     if (buff > 0) buff = math.max(0, buff - dt);
     if (launch > 0) launch = math.max(0, launch - dt);
+    if (invuln > 0) invuln = math.max(0, invuln - dt);
+    attackerAge += dt;
     if (squash != 0) {
       final relax = squashDecayPerSec * dt;
       squash = squash > 0

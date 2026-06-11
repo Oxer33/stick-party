@@ -12,6 +12,15 @@ import 'bumper_render.dart';
 /// Bumper Balls — neon knockout. Every player is a glowing bumper ball on a
 /// circular platform and shoves rivals off the edge.
 ///
+/// SCORED BRAWL (not last-one-standing): the round runs the FULL [_timeLimit]
+/// and your SCORE is the number of ring-outs you CAUSE. A knocked-off ball does
+/// NOT end the round — it RESPAWNS ~[_respawnSec] later from its spawn edge with
+/// a brief spawn-invuln, so a 1v1 becomes a sustained bumper match: knock the
+/// rival off, it comes back, most ring-outs in [_timeLimit] wins. A ring-out
+/// credits the LAST ball that bumped the victim; bumping YOURSELF off (no recent
+/// attacker) scores nobody and docks a small penalty, so blind mash that rockets
+/// you off the edge loses ground to paced, aimed caroms.
+///
 /// CONTROL (the heart of it — full player agency, one touch; the player owns
 /// the aim, nothing auto-targets):
 ///  * DRAG from your ball in the direction you want to fire — the telegraph
@@ -47,11 +56,12 @@ class BumperBalls extends MiniGameBase {
   );
 
   // ── Arena / sim tuning ──────────────────────────────────────────────────────
-  // Device-tuned (matched to Sumo Smash) for a ~8-25s match: small bodies + big
-  // ring + grippy floor + a weak base bump so a single hit never instantly
-  // ejects an idle ball; ring-outs come from positioning + charged bumps near
-  // the edge.
-  static const double _timeLimit = 35;
+  // Device-tuned (matched to Sumo Smash) for a sustained ~28s match: small
+  // bodies + big ring + grippy floor + a weak base bump so a single hit never
+  // instantly ejects an idle ball; ring-outs come from positioning + charged
+  // bumps near the edge. KO'd balls respawn, so the round always plays the FULL
+  // limit instead of ending on the first knockout.
+  static const double _timeLimit = 28;
   static const double _ringRadiusFactor = 0.46;
   static const double _bodyRadiusFactor = 0.05; // glossy bumper footprint
   static const double _ringFriction = 0.95; // grippy so bumps don't slide off
@@ -138,6 +148,19 @@ class BumperBalls extends MiniGameBase {
   static const double _flingLifeSec = 0.4;
   static const double _flingMinOutSpeed = 260.0; // floor outward fling speed
 
+  // ── Scored brawl: KO credit + respawn ───────────────────────────────────────
+  // The round is a SCORED BRAWL, not last-standing: a ring-out scores the last
+  // ball that bumped the victim (within [_attackerCreditSec] of the eject), and
+  // the victim RESPAWNS [_respawnSec] later from its spawn edge with
+  // [_spawnInvulnSec] of invulnerability (cannot be re-ejected or bump). A
+  // self-ring-out — no fresh attacker — scores nobody and docks the victim
+  // [_selfRingPenalty], so blind mash that rockets you off the edge loses ground.
+  static const double _respawnSec = 1.2; // delay before a KO'd ball returns
+  static const double _spawnInvulnSec = 0.9; // post-respawn grace (no KO either way)
+  static const double _attackerCreditSec =
+      1.1; // a bump credits a KO only this recently
+  static const double _selfRingPenalty = 1.0; // score docked for a self-ring-out
+
   // ── Expression tuning ────────────────────────────────────────────────────────
   static const double _scaredEdgeFactor = 0.78; // dist/ring above → looks scared
 
@@ -174,12 +197,18 @@ class BumperBalls extends MiniGameBase {
 
   final Map<int, ReactionClock> _botClocks = <int, ReactionClock>{};
   final Map<int, BallState> _ball = <int, BallState>{};
-  final List<int> _eliminationOrder = <int>[];
-  final Set<int> _eliminated = <int>{};
+  final Set<int> _ragdolled = <int>{}; // bodies currently knocked off (respawning)
   final List<ImpactRing> _impacts = <ImpactRing>[];
 
+  /// Spawn position per player, reused to fling a respawn back in from its edge.
+  final Map<int, Offset> _spawnPos = <int, Offset>{};
+
+  /// Knocked-off balls waiting to respawn (id → seconds remaining).
+  final Map<int, double> _respawnTimers = <int, double>{};
+
   /// Knocked-off balls still spinning + shrinking off-screen (visual only; the
-  /// matching bodies are already eliminated). Drained as each fling finishes.
+  /// matching bodies are eliminated until they respawn). Drained as each fling
+  /// finishes.
   final List<FlungBall> _flung = <FlungBall>[];
 
   late StarController _stars;
@@ -242,6 +271,7 @@ class BumperBalls extends MiniGameBase {
       final angle = (i / count) * math.pi * 2 + math.pi / 2;
       final pos =
           _center + Offset(math.cos(angle), math.sin(angle)) * spawnRadius;
+      _spawnPos[p.id] = pos;
       _arena.add(Body(id: p.id, pos: pos, radius: _bodyRadius));
 
       final towardCenter = math.atan2(_center.dy - pos.dy, _center.dx - pos.dx);
@@ -270,7 +300,7 @@ class BumperBalls extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        if (s.ready) {
+        if (s.ready && !s.invulnerable) {
           s.charging = true; // begin charging
           s.hasDragAim = false; // no chosen direction until the thumb moves
           _applyDragAim(input, body, s); // a press already away from us aims
@@ -324,6 +354,7 @@ class BumperBalls extends MiniGameBase {
     _tickBallStates(dt);
     _tickImpacts(dt);
     _tickFlung(dt);
+    _tickRespawns(dt);
     _driveBots(dt);
     _shrinkRing(dt);
     _stars.tick(
@@ -437,6 +468,7 @@ class BumperBalls extends MiniGameBase {
     final self = _bodyOf(playerId);
     final s = _ball[playerId];
     if (self == null || !self.alive || s == null || !s.ready) return;
+    if (s.invulnerable) return; // just respawned — settle before engaging
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate / mistake
 
     final err =
@@ -477,7 +509,7 @@ class BumperBalls extends MiniGameBase {
   /// matches exactly.
   void _commitDash(int playerId, Body self, double aimAngle, double charge) {
     final s = _ball[playerId];
-    if (s == null || !s.ready) return;
+    if (s == null || !s.ready || s.invulnerable) return;
 
     final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
     // A collected star briefly amplifies every bump — the buffed ball hits
@@ -569,6 +601,13 @@ class BumperBalls extends MiniGameBase {
 
     final speed = attacker.vel.distance;
     final at = Offset.lerp(a.pos, b.pos, 0.5) ?? a.pos;
+
+    // SCORED BRAWL: remember who bumped the victim so a follow-up ring-out
+    // credits them. An invulnerable (just-respawned) attacker's bump does not
+    // count, so they cannot farm KOs during their grace.
+    if (!(_ball[attacker.id]?.invulnerable ?? false)) {
+      _ball[victim.id]?.markHitBy(attacker.id);
+    }
 
     // Always stamp an impact spark + squash, even on gentle taps.
     _spawnImpact(at, _colorOf(attacker.id));
@@ -663,25 +702,32 @@ class BumperBalls extends MiniGameBase {
   // ── Ring-out detection (uses the shrinking radius) ──────────────────────────
 
   /// Mark any ball whose center has left the *current* (shrinking) platform as
-  /// eliminated and fire the KO sequence (pop + slow-mo + shake + popup) once
-  /// each. The arena only culls at its own larger radius, so we own this.
+  /// knocked off, credit the ring-out and queue a respawn (never a permanent
+  /// elimination), then fire the KO sequence once each. The arena only culls at
+  /// its own larger radius, so we own this.
   void _detectRingOuts() {
     final edge = _currentRingRadius * _ringOutGraceFactor;
     var firedBig = false; // one cinematic knock-off beat per frame (kid-tasteful)
     for (final b in _arena.bodies) {
-      if (!b.alive || _eliminated.contains(b.id)) continue;
+      if (!b.alive || _ragdolled.contains(b.id)) continue;
+      // A just-respawned ball cannot be knocked off during its spawn grace, so
+      // it is never re-ejected the instant it lands back in the (shrunk) ring.
+      if (_ball[b.id]?.invulnerable ?? false) continue;
       if ((b.pos - _center).distance <= edge) continue;
 
-      // CHARM (visual only): before the body is zeroed/retired, snapshot a
-      // spinning, shrinking fling that keeps the ball's knock-off velocity and
-      // sails off-platform — so a KO is funny instead of an instant pop. A small
+      // CHARM (visual only): before the body is zeroed, snapshot a spinning,
+      // shrinking fling that keeps the ball's knock-off velocity and sails
+      // off-platform — so a KO is funny instead of an instant pop. A small
       // outward floor guarantees it clears the edge even on a slow ring-out.
       _spawnFling(b);
 
       b.alive = false;
       b.vel = Offset.zero;
-      _eliminated.add(b.id);
-      _eliminationOrder.add(b.id);
+      _ragdolled.add(b.id);
+      // SCORED BRAWL: credit the KO + queue the victim's respawn, so the round
+      // keeps going for the full limit instead of ending on the knockout.
+      _scoreRingOut(b.id);
+      _respawnTimers[b.id] = _respawnSec;
 
       // The knock-off is the signature beat: a single big-moment (burst + heavy
       // shake + slow-mo + zoom toward the victim + flash + 'OUT!' banner +
@@ -740,13 +786,112 @@ class BumperBalls extends MiniGameBase {
     _flung.removeWhere((f) => f.done);
   }
 
+  /// Award a ring-out: credit the ball that last bumped [victimId] (if recent
+  /// enough), bumping their [BallState.koScore]. A self-ring-out — no fresh
+  /// attacker — scores nobody and docks the victim [_selfRingPenalty], so blind
+  /// mash off the edge actively loses ground. Live scores are mirrored to the
+  /// engine so the on-field HUD shows the KO race.
+  void _scoreRingOut(int victimId) {
+    final victim = _ball[victimId];
+    final attackerId = victim?.lastAttacker ?? -1;
+    final recent =
+        (victim?.attackerAge ?? double.infinity) <= _attackerCreditSec;
+    if (victim != null) {
+      victim.lastAttacker = -1; // consumed — a later eject must be re-earned
+    }
+    if (attackerId >= 0 && attackerId != victimId && recent) {
+      final attacker = _ball[attackerId];
+      if (attacker != null) {
+        attacker.koScore += 1;
+        setScore(attackerId, attacker.koScore);
+        final pos = _bodyOf(attackerId)?.pos;
+        if (pos != null) {
+          _juice.popup(
+            pos.translate(0, -_bodyRadius * 1.9),
+            'KO!',
+            _colorOf(attackerId),
+            size: 28,
+          );
+        }
+      }
+      return;
+    }
+    // Self-ring-out (or stale attacker): no credit, small penalty.
+    if (victim != null) {
+      victim.koScore -= _selfRingPenalty;
+      setScore(victimId, victim.koScore);
+    }
+  }
+
+  /// Count down each knocked-off ball's respawn timer; when it elapses, bring
+  /// the ball back from its spawn edge at rest with [_spawnInvulnSec] of grace.
+  void _tickRespawns(double dt) {
+    if (_respawnTimers.isEmpty) return;
+    final ready = <int>[];
+    _respawnTimers.updateAll((id, t) => t - dt);
+    _respawnTimers.forEach((id, t) {
+      if (t <= 0) ready.add(id);
+    });
+    for (final id in ready) {
+      _respawnTimers.remove(id);
+      _respawn(id);
+    }
+  }
+
+  /// Bring [id] back onto the platform from its spawn edge (clamped inside the
+  /// current shrunk ring), at rest and invulnerable for a beat.
+  void _respawn(int id) {
+    final body = _bodyOf(id);
+    if (body == null) return;
+    final spawn = _spawnPos[id] ?? _center;
+    // Pull the spawn point inside the live ring so a tight sudden-death ring
+    // never drops the respawn straight back off the edge.
+    final fromCenter = spawn - _center;
+    final maxR = _currentRingRadius * 0.7;
+    final pos = fromCenter.distance > maxR
+        ? _center + _normalize(fromCenter) * maxR
+        : spawn;
+    body.pos = pos;
+    body.vel = Offset.zero; // dropped back in at rest; the player re-aims
+    body.alive = true;
+    _ragdolled.remove(id);
+    _contactPairs.removeWhere((key) => key ~/ 8 == id || key % 8 == id);
+    final s = _ball[id];
+    if (s != null) {
+      s
+        ..charging = false
+        ..hasDragAim = false
+        ..charge = 0
+        ..launch = 0
+        ..squash = 0
+        ..invuln = _spawnInvulnSec
+        ..lastAttacker = -1
+        ..trail = null;
+    }
+    _spawnImpact(pos, _colorOf(id));
+    _juice.particles.burst(
+      at: pos,
+      count: 12,
+      color: _colorOf(id),
+      speed: 220,
+      size: 6,
+      gravity: 120,
+      life: 0.5,
+    );
+    _juice.popup(
+      pos.translate(0, -_bodyRadius * 1.9),
+      'BACK!',
+      _colorOf(id),
+      size: 24,
+    );
+  }
+
   // ── Outcome ──────────────────────────────────────────────────────────────────
 
   void _resolveOutcome() {
-    final alive = _arena.aliveBodies;
     // Announce the climax exactly once with a shake + center popup; the
-    // fast-shrink platform + banner then carry the moment.
-    if (!_suddenDeathAnnounced && _isSuddenDeath && alive.length > 1) {
+    // fast-shrink platform + banner then carry the moment. (≥2 balls in play.)
+    if (!_suddenDeathAnnounced && _isSuddenDeath && ctx.players.length > 1) {
       _suddenDeathAnnounced = true;
       _juice.shake.medium();
       _juice.popup(
@@ -756,22 +901,10 @@ class BumperBalls extends MiniGameBase {
         size: 38,
       );
     }
-    if (alive.length <= 1) {
-      _finishRanked(alive);
-      return;
-    }
-    if (_elapsed >= _timeLimit) {
-      _finishRanked(alive);
-    }
-  }
-
-  /// Survivors first (closest-to-center best), then reverse elimination order.
-  void _finishRanked(List<Body> alive) {
-    final ranked = alive.map((b) => b.id).toList()
-      ..sort((a, b) => _distToCenter(a).compareTo(_distToCenter(b)));
-    finishByOrder(
-      _dedupeAllPlayers([...ranked, ..._eliminationOrder.reversed]),
-    );
+    // SCORED BRAWL: the round runs the FULL limit (KO'd balls respawn), so it
+    // NEVER ends early just because only one is on the platform. Most ring-outs
+    // wins (ties broken by the engine's stable order).
+    if (_elapsed >= _timeLimit) finishByScore();
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -806,10 +939,12 @@ class BumperBalls extends MiniGameBase {
     // never shaken or zoomed by the camera punch): the SUDDEN DEATH banner +
     // the cinematic flash/banner from bigMoment.
     if (_isSuddenDeath) {
+      // Hold the banner up through the whole climax for a multi-player brawl
+      // (a lone respawn window must not blink it off).
       BumperFx.drawSuddenDeathBanner(
         canvas,
         size,
-        _arena.aliveBodies.length > 1 ? 1.0 : 0.0,
+        ctx.players.length > 1 ? 1.0 : 0.0,
         _animClock,
       );
     }
@@ -986,11 +1121,6 @@ class BumperBalls extends MiniGameBase {
 
   bool _isAlive(int id) => _bodyOf(id)?.alive ?? false;
 
-  double _distToCenter(int id) {
-    final b = _bodyOf(id);
-    return b == null ? double.infinity : (b.pos - _center).distance;
-  }
-
   Color _colorOf(int id) {
     for (final p in ctx.players) {
       if (p.id == id) return Color(p.colorArgb);
@@ -1000,19 +1130,6 @@ class BumperBalls extends MiniGameBase {
 
   /// Stable order-independent key for a pair of player ids (0..3).
   static int _pairKey(int a, int b) => a < b ? a * 8 + b : b * 8 + a;
-
-  /// Ensure every player id appears exactly once, preserving [order] first.
-  List<int> _dedupeAllPlayers(List<int> order) {
-    final seen = <int>{};
-    final result = <int>[];
-    for (final id in order) {
-      if (seen.add(id)) result.add(id);
-    }
-    for (final p in ctx.players) {
-      if (seen.add(p.id)) result.add(p.id);
-    }
-    return result;
-  }
 
   static Offset _normalize(Offset v) {
     final d = v.distance;

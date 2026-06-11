@@ -29,25 +29,14 @@ import 'package:stick_party/minigames/sumo_smash/sumo_smash.dart';
 }
 
 SumoSmash _run(int count, int seed) {
-  final players = [
-    for (var i = 0; i < count; i++) PlayerSlot.defaults(i, isBot: true),
-  ];
-  final ctx = MiniGameContext(
-    players: players,
-    arena: const Size(800, 1200),
-    rng: SeededRng(seed),
-    zones: ZoneLayout.forPlayers(count),
-  );
-  final g = SumoSmash()..init(ctx);
-  var n = 0;
-  while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
-    g.update(1 / 60);
-  }
+  final (g, _) = _runCounted(count, seed);
   return g;
 }
 
 void main() {
-  test('sumo finishes with all bots', () {
+  // ── Win model: SCORED BRAWL (most ring-outs), full ranking ──────────────────
+
+  test('sumo finishes with all bots and ranks everyone', () {
     final g = _run(4, 7);
     expect(g.status, MiniGameStatus.finished);
     expect(g.winResult, isNotNull);
@@ -63,6 +52,54 @@ void main() {
         for (var i = 0; i < count; i++) i,
       }, reason: '$count players');
     }
+  });
+
+  test('NO INSTANT WIN: a 1v1 never ends just because one fighter is KO\'d — '
+      'the round runs the full ~28s brawl', () {
+    // The whole point of the rework: KO\'d wrestlers respawn, so a single fast
+    // knockout must NOT end the round. A 1v1 (human + bot) with the human idle
+    // (the bot scores freely) must still play a sustained brawl, not ~2s.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1, isBot: true)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(4),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = SumoSmash()..init(ctx);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+    }
+    final seconds = n / 60.0;
+    expect(g.status, MiniGameStatus.finished);
+    // A meaningful, engaging round — never an instant ~2s knockout win.
+    expect(seconds, greaterThan(8.0),
+        reason: '1v1 ended in ${seconds.toStringAsFixed(2)}s (instant-win regression)');
+    expect(g.winResult!.ranking.toSet(), {0, 1});
+  });
+
+  test('score equals ring-outs caused (KO count): ranking follows score and a '
+      'real brawl banks credited KOs', () {
+    // The final scores are KO counts (a self-ring penalty can dip a passive
+    // idler negative). For EVERY seed the ranking must be ordered by score
+    // (winner highest). ACROSS seeds, at least one all-bot board must produce a
+    // credited ring-out (a positive score) — proving the last-attacker credit
+    // path fires, while tolerating the odd board that resolves only on self-
+    // rings (squeezed out by the closing ring) so the suite is not flaky.
+    var sawCreditedKo = false;
+    for (final seed in const [1, 7, 13, 21, 99]) {
+      final (g, _) = _runCounted(4, seed);
+      final scores = g.winResult!.finalScores;
+      final winner = g.winResult!.ranking.first;
+      final winnerScore = (scores[winner] ?? 0).toDouble();
+      for (final id in g.winResult!.ranking) {
+        expect((scores[id] ?? 0).toDouble(), lessThanOrEqualTo(winnerScore),
+            reason: 'seed $seed ranking not ordered by KO score: $scores');
+      }
+      if (winnerScore > 0) sawCreditedKo = true;
+    }
+    expect(sawCreditedKo, isTrue,
+        reason: 'no all-bot brawl ever banked a credited ring-out');
   });
 
   test('tap and drag/hold inputs never throw and the round still resolves', () {
@@ -127,7 +164,7 @@ void main() {
       'with a full ranking and never throws', () {
     // P0 (human, bottom) repeatedly presses, drags the thumb to the far bottom
     // edge (a deliberate chosen aim that exercises [_applyDragAim] + the
-    // charge-root), then releases — every frame across the whole round. The new
+    // charge-root), then releases — every frame across the whole round. The
     // drag path must accept this sustained input without throwing and the match
     // must still converge to a full ranking. (Position is not observable through
     // the public surface, so this guards the contract end-to-end, not the exact
@@ -199,22 +236,24 @@ void main() {
     expect(() => g.render(canvas, size), returnsNormally);
   });
 
-  test('PACING: all-bot 4p round lasts > 1.5s and finishes within the limit', () {
-    // Climax/star/rescue must not let a round end instantly nor overrun: across
-    // seeds it must play a real beat (> 1.5s) yet always resolve by the 35s
-    // limit (~2100 frames; allow slack for hit-stop slow-mo).
+  test('PACING: an all-bot round plays the full brawl (a real minimum, never '
+      'instant) and resolves on the time limit', () {
+    // The scored brawl runs to the time limit (~28s) since KO\'d wrestlers
+    // respawn: across seeds it must always last well past an instant knockout
+    // (> 8s) yet still resolve within the limit (_elapsed tracks real dt, so it
+    // lands right around 28s — a small ceiling slack guards any rounding).
     for (final seed in const [1, 7, 13, 21, 99]) {
       final (g, frames) = _runCounted(4, seed);
       final seconds = frames / 60;
       expect(
         seconds,
-        greaterThan(1.5),
+        greaterThan(8.0),
         reason: 'seed $seed ended too fast (${seconds.toStringAsFixed(2)}s)',
       );
       expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
       expect(
         frames,
-        lessThan(60 * 50),
+        lessThan(60 * 32),
         reason: 'seed $seed overran (${seconds.toStringAsFixed(1)}s)',
       );
     }
