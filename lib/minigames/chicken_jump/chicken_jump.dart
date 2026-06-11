@@ -350,6 +350,9 @@ class ChickenJump extends MiniGameBase {
   /// miss so a fizzle is never worse than a plain hop.
   void _springDoubleLeap(_Climber c) {
     c.leapPending = false;
+    // Was the lava bearing down on the rung this leap launched from? A leap
+    // sprung from a near-catch is the "clutch escape" beat.
+    final clutch = (c.lavaY - c.visualRungY()) <= _Tuning.nearCatchGapPx;
     final missed = ctx.rng.chance(_Tuning.leapMissChance);
     if (missed) {
       _juice.popup(
@@ -361,6 +364,15 @@ class ChickenJump extends MiniGameBase {
       return;
     }
     _hopOnce(c, cracked: true);
+    // Signature beat: a successful, clutch double-leap out of the lava's reach
+    // earns a one-shot flash + zoom-punch toward the climber. Fires per leap
+    // event (not per-frame); the clutch gate keeps it to genuine escapes.
+    if (clutch && c.alive) {
+      final climberPos =
+          Offset(c.columnX, c.visualRungY() - c.figureLift);
+      _juice.flashScreen(c.color, strength: 0.35);
+      _juice.cameraPunch(climberPos);
+    }
   }
 
   _Climber? _climberOf(int id) {
@@ -663,8 +675,7 @@ class ChickenJump extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     ChickenRenderer.drawBackground(canvas, size, _escalation());
 
@@ -674,6 +685,8 @@ class ChickenJump extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    _juice.renderOverlay(canvas, size);
   }
 
   /// 0..1 escalation, used for ambient heat — ramps with the lava speed and

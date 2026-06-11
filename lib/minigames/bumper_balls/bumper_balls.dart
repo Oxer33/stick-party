@@ -130,7 +130,6 @@ class BumperBalls extends MiniGameBase {
   static const Color _starColor = Color(0xFFFFE45C);
 
   // ── Ring-out tuning ─────────────────────────────────────────────────────────
-  static const double _koPopLift = 0.06; // extra popup lift / body R
   static const double _ringOutGraceFactor = 1.02; // detect just past current R
 
   // ── Bot tuning (mirrors Sumo's fair model) ──────────────────────────────────
@@ -654,6 +653,7 @@ class BumperBalls extends MiniGameBase {
   /// each. The arena only culls at its own larger radius, so we own this.
   void _detectRingOuts() {
     final edge = _currentRingRadius * _ringOutGraceFactor;
+    var firedBig = false; // one cinematic knock-off beat per frame (kid-tasteful)
     for (final b in _arena.bodies) {
       if (!b.alive || _eliminated.contains(b.id)) continue;
       if ((b.pos - _center).distance <= edge) continue;
@@ -663,10 +663,19 @@ class BumperBalls extends MiniGameBase {
       _eliminated.add(b.id);
       _eliminationOrder.add(b.id);
 
-      _juice.ko(b.pos, _colorOf(b.id));
+      // The knock-off is the signature beat: a single big-moment (burst + heavy
+      // shake + slow-mo + zoom toward the victim + flash + 'OUT!' banner +
+      // haptic). A rare same-frame second eject keeps the lighter KO.
+      if (!firedBig) {
+        firedBig = true;
+        _juice.bigMoment(b.pos, _colorOf(b.id), banner: 'OUT!');
+      } else {
+        _juice.ko(b.pos, _colorOf(b.id));
+      }
       _spawnImpact(b.pos, _colorOf(b.id));
-      // A fatter eject flourish: an extra outward spark fan + a punchier popup
-      // so the knockout reads as a big moment kids cheer for.
+      // A fatter eject flourish: an extra outward spark fan so the knockout
+      // reads as a big moment kids cheer for. The 'OUT!' callout is now the
+      // cinematic banner from bigMoment above (no duplicate world popup).
       final outDir = _normalize(b.pos - _center);
       _juice.particles.burst(
         at: b.pos,
@@ -678,12 +687,6 @@ class BumperBalls extends MiniGameBase {
         size: 7,
         gravity: 220,
         life: 0.7,
-      );
-      _juice.popup(
-        b.pos.translate(0, -_bodyRadius * (1.6 + _koPopLift)),
-        'RING OUT!',
-        _popupColor,
-        size: 40,
       );
     }
   }
@@ -727,8 +730,7 @@ class BumperBalls extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     BumperRenderer.drawBackground(canvas, size, _center, _ringRadius);
     BumperRenderer.drawAmbientMotes(canvas, _motes, _animClock);
@@ -758,6 +760,10 @@ class BumperBalls extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + banner) — drawn after the world
+    // transform is restored so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   /// Danger band pulse: brighter as the platform shrinks + a steady throb.

@@ -287,6 +287,8 @@ class ReactionDuel extends MiniGameBase {
     _strikeWord = 1.0;
     _juice.shake.medium();
     _juice.hitStop.trigger(0.06);
+    // A bright GREEN screen flash on the real GO — the unmistakable "now!" cue.
+    _juice.flashScreen(_zoneGreen, strength: 0.5);
     for (final r in _reactors.values) {
       if (!_gate.penalized.contains(r.slot.id)) r.figure.setLoco(LocoState.run);
     }
@@ -397,7 +399,9 @@ class ReactionDuel extends MiniGameBase {
       ..attack(0);
 
     _juice.hitStop.trigger(_hitStopSec, scale: _hitStopScale);
-    _juice.shake.heavy();
+    // Signature FASTEST! cinematic: burst + shake + slow-mo + zoom toward the
+    // winning duelist + flash + banner + haptic. Fired once per decisive draw.
+    _juice.bigMoment(_chestOf(winner), color, banner: 'FASTEST!');
     _juice.popup(
         _chestOf(winner).translate(0, -_scaleUnit * 3.4), 'STRIKE!', color,
         size: 44);
@@ -602,8 +606,7 @@ class ReactionDuel extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     ReactionRenderer.drawBackground(canvas, size, _animClock);
     ReactionRenderer.drawGround(canvas, size);
@@ -644,6 +647,10 @@ class ReactionDuel extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (GO flash + FASTEST! banner) after the
+    // world transform is restored, so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   /// Vignette pulse: dark + throbbing during WAIT (rising tension), calm after.

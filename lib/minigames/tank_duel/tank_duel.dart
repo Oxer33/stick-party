@@ -565,10 +565,13 @@ class TankDuel extends MiniGameBase {
     TankFx.explode(_juice, at, shooter.color, heavy: true);
     _scorches.add(_Scorch(at: at));
 
-    // A knock-out blow (victim's last pip, or the shooter clinching the win)
-    // gets a bigger flourish; ordinary chip-hits keep the snappy HIT! popup.
-    final isKo = victim.hp <= 0 || scoreOf(shooterId) >= _hitsToWin;
-    if (isKo) {
+    // The signature beat is a DIRECT HIT that DOWNS a tank (its last pip): a
+    // single big-moment (burst + heavy shake + slow-mo + zoom toward the hit +
+    // flash + 'DIRECT HIT!' banner + haptic). A non-downing clinch keeps the KO
+    // flourish; ordinary chip-hits keep the snappy HIT! popup.
+    if (victim.hp <= 0) {
+      _juice.bigMoment(at, shooter.color, banner: 'DIRECT HIT!');
+    } else if (scoreOf(shooterId) >= _hitsToWin) {
       _juice.ko(at, shooter.color);
     } else {
       _juice.popup(at.translate(0, -_baseR * _scale), 'HIT!', shooter.color,
@@ -674,8 +677,7 @@ class TankDuel extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     TankRenderer.drawBattlefield(
       canvas,
@@ -719,6 +721,10 @@ class TankDuel extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + banner) — drawn after the world
+    // transform is restored so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   /// A pulsing gold ring under an overcharged tank so the table sees who is

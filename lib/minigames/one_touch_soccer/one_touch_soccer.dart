@@ -96,8 +96,7 @@ class OneTouchSoccer extends MiniGameBase {
   // ── Goal / celebration tuning ───────────────────────────────────────────────
   static const double _kickoffPauseSec = 1.25; // sim frozen after a goal
   static const double _bulgeDurationSec = 0.9; // net ripple length
-  static const double _goalHitStopSec = 0.5; // slow-mo on a goal
-  static const double _goalHitStopScale = 0.18;
+  // The goal slow-mo is now supplied by Juice.bigMoment (the signature beat).
 
   // ── Climax (double goals) tuning ────────────────────────────────────────────
   // The final ~30% of the clock: every goal is worth 2 and a DOUBLE GOALS banner
@@ -648,16 +647,15 @@ class OneTouchSoccer extends MiniGameBase {
       _topBulge = _bulgeDurationSec;
     }
 
-    // Celebration: explosion + GOAL popup + crowd roar + confetti + slow-mo.
-    _juice.ko(_ball.pos, color);
-    _juice.popup(
-        _pitch.center, 'GOAL!', color, size: _pitch.shortestSide * 0.12);
+    // Celebration: the GOAL is the signature beat — a single big-moment (burst +
+    // heavy shake + slow-mo + zoom toward the ball + flash + 'GOAL!' banner +
+    // haptic). The crowd-roar popup + confetti pile on the flavor; the cinematic
+    // banner now carries the 'GOAL!' callout (no duplicate world popup).
+    _juice.bigMoment(_ball.pos, color, banner: 'GOAL!');
     _juice.popup(_pitch.center.translate(0, _pitch.shortestSide * 0.12),
         'CROWD ROARS!', const Color(0xFFFFE08A),
         size: _pitch.shortestSide * 0.04);
     _juice.confetti(_size, colors: [color, _confettiA, _confettiB]);
-    _juice.hitStop.trigger(_goalHitStopSec, scale: _goalHitStopScale);
-    _juice.shake.heavy();
 
     _kickoffPause = _kickoffPauseSec;
     _resetBall();
@@ -689,8 +687,7 @@ class OneTouchSoccer extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     SoccerRenderer.drawBackground(canvas, size);
     SoccerRenderer.drawPitch(canvas, _pitch);
@@ -727,6 +724,10 @@ class OneTouchSoccer extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + banner) — drawn after the world
+    // transform is restored so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   void _drawPlayers(Canvas canvas) {

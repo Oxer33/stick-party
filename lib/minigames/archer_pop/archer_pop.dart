@@ -599,9 +599,16 @@ class ArcherPop extends MiniGameBase {
       gravity: 420,
       life: target.golden ? 0.6 : 0.45,
     );
-    _juice.shake.light();
-    if (target.golden || stole || archer.combo >= 3) {
-      _juice.hitStop.trigger(0.05, scale: 0.2);
+    if (target.golden) {
+      // Popping the scarce GOLDEN prize is the signature beat: a single
+      // big-moment (heavy shake + slow-mo + zoom toward the gold + flash +
+      // 'GOLD!' banner + haptic). Plain pops stay light (just a small shake).
+      _juice.bigMoment(target.pos, archer.color, banner: 'GOLD!');
+    } else {
+      _juice.shake.light();
+      if (stole || archer.combo >= 3) {
+        _juice.hitStop.trigger(0.05, scale: 0.2);
+      }
     }
     // Label the pop: a steal shouts STEAL!, else the gained points (× combo).
     final label = stole
@@ -687,8 +694,7 @@ class ArcherPop extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     ArcherRenderer.drawRange(
       canvas,
@@ -726,6 +732,10 @@ class ArcherPop extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + banner) — drawn after the world
+    // transform is restored so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   ArcherView _viewOf(_Archer a) => ArcherView(

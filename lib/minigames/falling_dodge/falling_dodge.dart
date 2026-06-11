@@ -82,6 +82,7 @@ class _Tuning {
   static const double grazeBaseScore = 6; // points for the 1st graze in a chain
   static const double grazeStep = 0.85; // extra multiplier per chained graze
   static const int grazeMaxMult = 6; // multiplier cap (keeps scores sane)
+  static const int grazeStreakMilestone = 4; // chain length that earns a banner
 
   // Survival is now only a gentle tiebreaker so a daredevil's banked grazes
   // dominate the ranking: a chicken who survives but never grazes still loses to
@@ -150,6 +151,7 @@ class FallingDodge extends MiniGameBase {
   double _animClock = 0; // real-time clock for spin/scroll (never scaled)
   double _fallSpeed = _Tuning.fallSpeedStart;
   bool _dangerFired = false; // one-shot sudden-death "DANGER!" climax cue latch
+  bool _winnerFired = false; // one-shot final-survivor bigMoment latch
 
   @override
   void init(MiniGameContext ctx) {
@@ -493,6 +495,7 @@ class FallingDodge extends MiniGameBase {
     final laneGap = (h.lane - t.hopper.lane).abs();
     if (laneGap >= 2) {
       t.grazeChain = 0; // over-fled — cowardice snaps the streak
+      t.grazeBannerAt = 0; // re-arm the streak banner for a fresh chain
       return;
     }
     if (laneGap != 1) return; // dead-on slip-through: neutral, keep the chain
@@ -521,6 +524,18 @@ class FallingDodge extends MiniGameBase {
       size: 22 + 8 * t.figureScale,
     );
     t.flashes.add(FlashFx(lane: h.lane, life: _Tuning.nearMissFlashSec));
+
+    // Signature beat: crossing a big streak milestone earns a one-shot banner +
+    // zoom-punch toward this runner. Latched per-track so it fires once per
+    // milestone reached (and re-arms only after a fresh chain climbs back up).
+    if (t.grazeChain >= _Tuning.grazeStreakMilestone &&
+        t.grazeChain > t.grazeBannerAt) {
+      t.grazeBannerAt = t.grazeChain;
+      final runnerPos = Offset(
+          t.lanes.coordOfVisual(t.hopper.visualLane), t.runnerY - t.figureLift);
+      _juice.bigBanner('STREAK x${t.grazeChain}', color: t.color);
+      _juice.cameraPunch(runnerPos);
+    }
   }
 
   void _tickFigure(TrackFx t, double dt, double sdt) {
@@ -588,6 +603,7 @@ class FallingDodge extends MiniGameBase {
     t.eliminatedAt = _elapsed; // banked for the survival-time tiebreaker
     t.hazards.clear();
     t.grazeChain = 0; // a crush ends the streak (no posthumous links)
+    t.grazeBannerAt = 0; // re-arm (moot post-crush, but keeps state consistent)
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final at = Offset(runnerX, t.runnerY);
     // Crush: fling away from the impact lane, with an upward stomp component.
@@ -631,6 +647,18 @@ class FallingDodge extends MiniGameBase {
         final byScore = scoreOf(b).compareTo(scoreOf(a));
         return byScore != 0 ? byScore : a.compareTo(b);
       });
+    // Signature climax: crown the winner with a single big cinematic beat,
+    // aimed at their runner. Latched so it never re-fires if _finish is reached
+    // again on a later frame.
+    if (!_winnerFired && ranked.isNotEmpty) {
+      _winnerFired = true;
+      final winnerId = ranked.first;
+      final w = _tracks.firstWhere((t) => t.playerId == winnerId,
+          orElse: () => _tracks.first);
+      final winnerPos = Offset(
+          w.lanes.coordOfVisual(w.hopper.visualLane), w.runnerY - w.figureLift);
+      _juice.bigMoment(winnerPos, w.color, banner: 'SURVIVOR!');
+    }
     _juice.confetti(ctx.arena);
     finishByOrder(_dedupe(ranked));
   }
@@ -653,8 +681,7 @@ class FallingDodge extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     FallingRenderer.drawBackground(canvas, size, _escalation());
 
@@ -671,6 +698,8 @@ class FallingDodge extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    _juice.renderOverlay(canvas, size);
   }
 
   /// 0..1 escalation, used for ambient heat — ramps with fall speed and pins to

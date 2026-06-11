@@ -5,7 +5,6 @@ import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
-import '../../core/constants.dart';
 import '../../core/math2.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
@@ -347,8 +346,10 @@ class ButtonMasher extends MiniGameBase {
     );
   }
 
-  /// The first time a puck tops out, ring the bell: golden burst + DING popup +
-  /// hit-stop + shake. Fires once per striker per round.
+  /// The first time a puck tops out, ring the bell: a full cinematic SMASH!
+  /// beat — golden burst + DING popup + the signature [Juice.bigMoment]
+  /// (burst+shake+slow-mo+zoom toward the bell+flash+banner+haptic). Fires once
+  /// per striker per round (guarded by [_Striker.belled]).
   void _maybeRingBell(_Striker s) {
     if (s.belled || s.targetHeight < 1.0) return;
     s.belled = true;
@@ -378,8 +379,8 @@ class ButtonMasher extends MiniGameBase {
       MasherRenderer.bellGold,
       size: 38,
     );
-    _juice.shake.medium();
-    _juice.hitStop.trigger(Feel.hitStopDefaultSec);
+    // Signature SMASH! cinematic: zoom-punch toward the bell that just rang.
+    _juice.bigMoment(bell, color, banner: 'SMASH!');
   }
 
   /// Bots mash on a cadence clock with [BotProfile]-driven interval + jitter, and
@@ -420,8 +421,7 @@ class ButtonMasher extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     MasherRenderer.drawBackground(canvas, size, _animClock);
 
@@ -434,6 +434,10 @@ class ButtonMasher extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + banner) after the world
+    // transform is restored, so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   void _drawStriker(Canvas canvas, _Striker s, _Lane lane) {

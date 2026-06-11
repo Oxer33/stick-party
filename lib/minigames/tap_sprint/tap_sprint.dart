@@ -88,6 +88,7 @@ class TapSprint extends MiniGameBase {
   static const double _photoFinishProgress = 0.93; // leader past this → arm it
   static const double _photoFinishSlowScale = 0.32; // slow-mo time scale
   static const double _photoFinishSec = 0.55; // slow-mo duration
+  static const double _photoFinishGap = 0.06; // runner-up within this = "tight"
 
   // ── Final-stretch climax ─────────────────────────────────────────────────────
   // When the leader passes [_finalStretchProgress] a one-shot "FINAL STRETCH!"
@@ -366,8 +367,17 @@ class TapSprint extends MiniGameBase {
       _juice.confetti(_size, colors: [_colorOf(r.slot.id)]);
     }
     if (place == 1) {
-      _juice.shake.heavy();
-      _juice.hitStop.trigger(Feel.hitStopHeavySec, scale: 0.12);
+      // Signature climax for the winner. A tight finish already played the
+      // PHOTO FINISH slow-mo + banner as the tape neared, so keep that crossing
+      // punchy but don't double up; a runaway leader gets the full WINNER! beat
+      // (burst + heavy shake + slow-mo + zoom + flash + banner + haptic) here.
+      if (_photoFinishFired) {
+        _juice.shake.heavy();
+        _juice.hitStop.trigger(Feel.hitStopHeavySec, scale: 0.12);
+      } else {
+        final winnerPos = _runnerRoot(r).translate(0, -_footReach * 0.62);
+        _juice.bigMoment(winnerPos, _colorOf(r.slot.id), banner: 'WINNER!');
+      }
     } else {
       _juice.shake.light();
     }
@@ -402,16 +412,20 @@ class TapSprint extends MiniGameBase {
 
   // ── Photo finish ─────────────────────────────────────────────────────────────
 
-  /// Arm a single slow-mo when the leader is about to break the tape and nobody
-  /// has crossed yet — a brief, dramatic photo-finish beat.
+  /// Arm a single slow-mo when the leader is about to break the tape, nobody has
+  /// crossed yet, AND the race is tight (runner-up within [_photoFinishGap]) — a
+  /// brief, dramatic photo-finish beat with a banner. A runaway leader skips this
+  /// so the climax lands as a clean WINNER! beat at the crossing instead.
   void _maybePhotoFinish() {
     if (_photoFinishFired || _finishOrder.isNotEmpty) return;
     final lead = _leadProgress();
-    if (lead >= _photoFinishProgress && lead < 1.0) {
-      _photoFinishFired = true;
-      _juice.hitStop.trigger(_photoFinishSec, scale: _photoFinishSlowScale);
-      _juice.shake.medium();
-    }
+    if (lead < _photoFinishProgress || lead >= 1.0) return;
+    final tight = (lead - _runnerUpProgress()) <= _photoFinishGap;
+    if (!tight) return;
+    _photoFinishFired = true;
+    _juice.slowMo(dur: _photoFinishSec, scale: _photoFinishSlowScale);
+    _juice.shake.medium();
+    _juice.bigBanner('PHOTO FINISH!', color: _accent);
   }
 
   double _leadProgress() {
@@ -420,6 +434,22 @@ class TapSprint extends MiniGameBase {
       if (r.progress > best) best = r.progress;
     }
     return best;
+  }
+
+  /// Best progress among everyone except the single front-runner — used to judge
+  /// how tight the finish is (small gap to the leader → a photo finish).
+  double _runnerUpProgress() {
+    var best = -1.0;
+    var second = -1.0;
+    for (final r in _runners.values) {
+      if (r.progress > best) {
+        second = best;
+        best = r.progress;
+      } else if (r.progress > second) {
+        second = r.progress;
+      }
+    }
+    return second < 0 ? 0.0 : second;
   }
 
   // ── Resolution ──────────────────────────────────────────────────────────────
@@ -442,8 +472,7 @@ class TapSprint extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     SprintRenderer.drawBackground(canvas, size, _trackTop, _animClock);
     SprintRenderer.drawTrack(canvas, size, _trackTop);
@@ -460,6 +489,8 @@ class TapSprint extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    _juice.renderOverlay(canvas, size);
   }
 
   /// Distance markers drift with the leader for a sense of forward motion.

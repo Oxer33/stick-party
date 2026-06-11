@@ -337,12 +337,19 @@ class ColorMemory extends MiniGameBase {
         // First player to clear the whole pattern WINS the round and earns the
         // right to append the next color (call-and-response). Latched once.
         final justWon = _appenderId == null;
-        if (justWon) _appenderId = pad.playerId;
-        _juice.popup(
-            _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
-            justWon ? 'WIN!' : 'NICE!',
-            pad.accent,
-            size: justWon ? 30 : 26);
+        if (justWon) {
+          _appenderId = pad.playerId;
+          // Signature GENIUS! cinematic: burst + shake + slow-mo + zoom toward
+          // the winner's pad + flash + banner + haptic. Fired once per round.
+          _juice.bigMoment(_padCenter(pad.playerId), pad.accent,
+              banner: 'GENIUS!');
+        } else {
+          _juice.popup(
+              _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
+              'NICE!',
+              pad.accent,
+              size: 26);
+        }
       }
       return;
     }
@@ -625,8 +632,7 @@ class ColorMemory extends MiniGameBase {
   void render(Canvas canvas, Size size) {
     _lastSize = size;
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     MemoryRenderer.drawBackground(canvas, size);
     MemoryRenderer.drawVignette(canvas, size);
@@ -640,6 +646,10 @@ class ColorMemory extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + GENIUS! banner) after the world
+    // transform is restored, so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   void _drawHud(Canvas canvas, Size size, bool watching) {

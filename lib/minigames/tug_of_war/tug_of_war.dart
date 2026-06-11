@@ -424,6 +424,8 @@ class TugOfWar extends MiniGameBase {
       size: 34,
     );
     _juice.shake.medium();
+    // A soft gold screen wash marks the start of the frantic finale.
+    _juice.flashScreen(_accent, strength: 0.3);
   }
 
   void _fireHeave(_Puller pl, double precision) {
@@ -581,7 +583,9 @@ class TugOfWar extends MiniGameBase {
     }
 
     _splashAndPopups(winner);
-    _juice.shake.heavy();
+    // Signature WIN! cinematic: burst + shake + slow-mo + zoom toward the rope
+    // knot (the marker that just crossed) + flash + banner + haptic.
+    _juice.bigMoment(_knotPos(), _colorOf(_anyWinnerId(winner)), banner: 'WIN!');
     _juice.hitStop.trigger(Feel.hitStopHeavySec, scale: 0.1);
     _juice.confetti(_size, colors: [_colorOf(_anyWinnerId(winner))]);
     _publishScores();
@@ -639,8 +643,7 @@ class TugOfWar extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     TugRenderer.drawBackground(canvas, size);
     TugRenderer.drawCrowdBands(canvas, size, _crowdBandFrac);
@@ -657,6 +660,10 @@ class TugOfWar extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + WIN! banner) after the world
+    // transform is restored, so they are not shaken or zoomed.
+    _juice.renderOverlay(canvas, size);
   }
 
   /// 0 at center, →1 as the marker approaches either goal (drives tension cues).

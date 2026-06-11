@@ -553,8 +553,19 @@ class PaintSplash extends MiniGameBase {
     for (final p in ctx.players) {
       setScore(p.id, _grid.coverageOf(p.id));
     }
-    _juice.confetti(_lastSize);
+    // Signature coverage-reveal beat: a big WINNER! banner in the leader's color
+    // plus winner-tinted confetti. The leader owns the most cells at the buzzer.
+    final winnerColor = _leaderColor();
+    _juice.bigBanner('WINNER!', color: winnerColor);
+    _juice.confetti(_lastSize, colors: [winnerColor]);
     finishByScore();
+  }
+
+  /// The current leader's color for the win reveal, or white if nobody painted.
+  Color _leaderColor() {
+    final id = _leaderId();
+    if (id == null) return const Color(0xFFFFFFFF);
+    return _cursorOf(id)?.color ?? const Color(0xFFFFFFFF);
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -563,8 +574,7 @@ class PaintSplash extends MiniGameBase {
   void render(Canvas canvas, Size size) {
     _lastSize = size;
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     PaintRenderer.drawBackground(canvas, size);
     _drawHomeCorners(canvas, size);
@@ -575,6 +585,11 @@ class PaintSplash extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Screen-space cinematic overlays (flash + WINNER! banner) after the world
+    // transform is restored, so they are not shaken or zoomed. This is a
+    // top-down board with no single focal point, so no zoom-punch is used.
+    _juice.renderOverlay(canvas, size);
   }
 
   /// Faint player-tinted "home corner" washes (NOT walls): the canvas is shared

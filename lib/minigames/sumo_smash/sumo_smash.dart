@@ -620,6 +620,7 @@ class SumoSmash extends MiniGameBase {
   // ── Ring-out ────────────────────────────────────────────────────────────────
 
   void _detectRingOuts() {
+    var firedBig = false; // one cinematic ring-out beat per frame (kid-tasteful)
     for (final b in _arena.bodies) {
       if (!b.alive || _ragdolled.contains(b.id)) continue;
       if ((b.pos - _center).distance <= _currentRingRadius) continue;
@@ -630,9 +631,18 @@ class SumoSmash extends MiniGameBase {
       _ragdolled.add(b.id);
       _eliminationOrder.add(b.id);
 
-      _juice.ko(b.pos, _colorOf(b.id));
-      // A fatter ring-out flourish: an extra outward spark fan + a punchier
-      // popup so the eject reads as a big moment kids cheer for.
+      // The decisive ring-out is the signature beat: a single big-moment
+      // (burst + heavy shake + slow-mo + zoom toward the victim + flash +
+      // banner + haptic). A rare same-frame second eject keeps the lighter KO.
+      if (!firedBig) {
+        firedBig = true;
+        _juice.bigMoment(b.pos, _colorOf(b.id), banner: 'RING OUT!');
+      } else {
+        _juice.ko(b.pos, _colorOf(b.id));
+      }
+      // A fatter ring-out flourish: an extra outward spark fan so the eject
+      // reads as a big moment kids cheer for. The 'RING OUT!' callout is now the
+      // cinematic banner from bigMoment above (no duplicate world popup).
       final outDir = _normalize(b.pos - _center);
       _juice.particles.burst(
         at: b.pos,
@@ -644,12 +654,6 @@ class SumoSmash extends MiniGameBase {
         size: 7,
         gravity: 260,
         life: 0.7,
-      );
-      _juice.popup(
-        b.pos.translate(0, -_bodyRadius * 1.7),
-        'RING OUT!',
-        _accent,
-        size: 40,
       );
 
       final fig = _figures[b.id];
@@ -698,8 +702,7 @@ class SumoSmash extends MiniGameBase {
   @override
   void render(Canvas canvas, Size size) {
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     SumoRenderer.drawBackground(canvas, size, _center, _ringRadius);
     SumoRenderer.drawAmbientDust(canvas, _dust, _animClock);
@@ -727,6 +730,8 @@ class SumoSmash extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    _juice.renderOverlay(canvas, size);
   }
 
   /// Banner intensity: full once in sudden death (held up while ≥2 alive).

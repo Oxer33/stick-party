@@ -423,28 +423,20 @@ class SnakeArena extends MiniGameBase {
     return null;
   }
 
-  /// Credit [blocker] a takedown: bump its score + pop a celebratory burst and a
-  /// "TAKEDOWN!" cue so forcing a rival crash reads as a deliberate win.
-  void _awardTakedown(Snake blocker) {
+  /// Credit [blocker] a takedown: bump its score + growth, then fire the
+  /// signature cinematic beat at [crashCell] — where the rival ran into the
+  /// blocker's body. One `bigMoment` per crash (burst + shake + slow-mo + zoom +
+  /// flash + "TAKEDOWN!" banner + haptic) so forcing a rival crash reads as a
+  /// deliberate, celebrated win.
+  void _awardTakedown(Snake blocker, Cell crashCell) {
     blocker.score += _takedownScore;
     // Bonus growth feeds the length-based ranking too, so a takedown is a real
     // edge (longer snake) rather than a cosmetic counter.
     blocker.pendingGrowth += _takedownGrow;
     setScore(blocker.playerId, blocker.score);
-    final at = _cellCenter(blocker.head, _lastSize);
-    _juice.particles.burst(
-      at: at,
-      count: _takedownSparks,
-      color: Color.lerp(blocker.color, const Color(0xFFFFFFFF), 0.3) ??
-          blocker.color,
-      speed: 260,
-      size: 6,
-      gravity: 80,
-      life: 0.5,
-    );
-    _juice.popup(at.translate(0, -_cell() * 0.9), 'TAKEDOWN!', blocker.color,
-        size: 24);
-    _juice.shake.medium();
+    final at = _cellCenter(crashCell, _lastSize);
+    _juice.bigMoment(at, blocker.color, banner: 'TAKEDOWN!',
+        sparks: _takedownSparks);
   }
 
   // ── Step resolution ──────────────────────────────────────────────────────────
@@ -517,8 +509,12 @@ class SnakeArena extends MiniGameBase {
     // Phase 3b: pay out takedowns — a snake that blocked a rival (and survived
     // the step itself) banks the bonus, so cutting another snake off is worth
     // playing for, not just incidental.
-    for (final blocker in killer.values) {
-      if (blocker.alive) _awardTakedown(blocker);
+    for (final entry in killer.entries) {
+      final victim = entry.key;
+      final blocker = entry.value;
+      // The crash cell is where the victim tried to move — i.e. into the
+      // blocker's body. Aim the cinematic beat there.
+      if (blocker.alive) _awardTakedown(blocker, nextHeads[victim]!);
     }
 
     // Phase 4: near-miss feedback — a survivor whose head is now one cell from a
@@ -702,8 +698,7 @@ class SnakeArena extends MiniGameBase {
     SnakeRenderer.drawBackground(canvas, size);
 
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     SnakeRenderer.drawGrid(canvas, field, _cols, _rows, _gridPulse());
     SnakeRenderer.drawWalls(canvas, field, _wallFlare);
@@ -747,6 +742,8 @@ class SnakeArena extends MiniGameBase {
 
     // Speed-up tint sits above everything (including shake) as an ambient wash.
     SnakeRenderer.drawSpeedTint(canvas, size, _speedHeat());
+
+    _juice.renderOverlay(canvas, size);
   }
 
   void _drawSnake(Canvas canvas, Snake s, Size size) {

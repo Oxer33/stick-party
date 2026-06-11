@@ -51,6 +51,7 @@ class CatchTheStar extends MiniGameBase {
   // ── Round tuning (no magic numbers inline) ─────────────────────────────────
   static const double _timeLimit = 30;
   static const double _snatchRadius = 0.17; // normalized snatch distance
+  static const double _contestRadius = 0.27; // rival this close = contested grab
 
   // ── Climax: the GOLD RUSH flurry (the unmistakable peak near the end) ───────
   // In the last [_flurrySec] every fresh star is (almost) always golden, bigger
@@ -136,6 +137,7 @@ class CatchTheStar extends MiniGameBase {
   double _trailAcc = 0;
   double _spawnPop = 0; // 1 right after a teleport, decays to 0
   bool _flurryAnnounced = false; // the GOLD RUSH cue fired once
+  bool _finishFired = false; // one-shot winner banner latch
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -247,16 +249,29 @@ class CatchTheStar extends MiniGameBase {
     if ((_star - c.pos).distance > _snatchRadiusFor(c)) return false;
 
     final wasGolden = _golden;
+    final wasContested = _starWasContested(c);
     final combo = c.registerCatch(_comboWindowSec, _comboMax);
     final award = (wasGolden ? _bonusPoints : _basePoints) * combo;
     addScore(id, award);
 
-    _emitCatchJuice(c, award, combo, wasGolden);
+    _emitCatchJuice(c, award, combo, wasGolden, wasContested);
     _respawnStar();
     return true;
   }
 
-  void _emitCatchJuice(_Catcher c, int award, int combo, bool golden) {
+  /// True when at least one rival net was also closing on the star (within
+  /// [_contestRadius]) at the moment [winner] snatched it — i.e. a genuinely
+  /// contested grab worth a cinematic punch, not a lone routine pickup.
+  bool _starWasContested(_Catcher winner) {
+    for (final c in _catchers) {
+      if (identical(c, winner)) continue;
+      if ((_star - c.pos).distance <= _contestRadius) return true;
+    }
+    return false;
+  }
+
+  void _emitCatchJuice(
+      _Catcher c, int award, int combo, bool golden, bool contested) {
     final at = _toPixels(_star);
     c.flash = _catcherFlashSec;
 
@@ -283,6 +298,14 @@ class CatchTheStar extends MiniGameBase {
     if (golden || combo >= _greatComboThreshold) {
       _juice.hitStop.trigger(_slowMoSec, scale: _slowMoScale);
       _juice.shake.medium();
+    }
+
+    // Signature beat: snatching a CONTESTED star (a rival was right there) earns
+    // a one-shot zoom-punch toward the star + a quick color flash, so winning a
+    // 50/50 scramble feels earned. Fires per snatch event, gated by contention.
+    if (contested) {
+      _juice.cameraPunch(at);
+      _juice.flashScreen(c.color, strength: 0.4);
     }
   }
 
@@ -520,6 +543,12 @@ class CatchTheStar extends MiniGameBase {
 
   void _finish() {
     if (status == MiniGameStatus.finished) return;
+    // Signature climax: a one-shot celebratory banner in the winner's color as
+    // the round resolves. Latched so it fires exactly once.
+    if (!_finishFired) {
+      _finishFired = true;
+      _juice.bigBanner('WINNER!', color: _leaderColor() ?? _goldenBody);
+    }
     finishByScore();
   }
 
@@ -529,8 +558,7 @@ class CatchTheStar extends MiniGameBase {
   void render(Canvas canvas, Size size) {
     _lastSize = size;
     canvas.save();
-    final o = _juice.shake.offset;
-    canvas.translate(o.dx, o.dy);
+    _juice.applyWorldTransform(canvas);
 
     CatchRenderer.drawBackground(canvas, size);
     CatchRenderer.drawBackgroundStars(
@@ -546,6 +574,8 @@ class CatchTheStar extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    _juice.renderOverlay(canvas, size);
   }
 
   void _drawCatchers(Canvas canvas) {
