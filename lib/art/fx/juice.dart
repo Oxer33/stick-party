@@ -3,6 +3,8 @@ import 'dart:ui';
 
 import '../../core/constants.dart';
 import '../../core/rng.dart';
+import 'director.dart';
+import 'haptics.dart';
 import 'particles.dart';
 
 /// Stacking camera-shake pulses with ease-out decay. Per-axis randomization.
@@ -94,18 +96,29 @@ class ScorePopup {
   bool get dead => life <= 0;
 }
 
-/// One-stop game-feel facade: particles + shake + hit-stop + score popups.
-/// Pure dart:ui (no Flutter widgets) so it works inside any MiniGame.render.
+/// One-stop game-feel facade: particles + shake + hit-stop + score popups, plus
+/// a cinematic "director" layer (camera zoom-punch + screen flash + big banner)
+/// for KOs and signature moments. Pure dart:ui (no Flutter widgets) so it works
+/// inside any MiniGame.render.
 class Juice {
   final ParticleSystem particles;
   final ScreenShake shake;
   final HitStop hitStop;
+
+  /// Cinematic layer — owned here, ticked in [update].
+  final CameraFx camera;
+  final ScreenFlash flash;
+  final Banner banner;
+
   final List<ScorePopup> _popups = <ScorePopup>[];
 
   Juice({SeededRng? rng})
       : particles = ParticleSystem(rng),
         shake = ScreenShake(rng: rng),
-        hitStop = HitStop();
+        hitStop = HitStop(),
+        camera = CameraFx(),
+        flash = ScreenFlash(),
+        banner = Banner();
 
   /// Standard hit: sparks + light shake + tiny hit-stop.
   void hit(Offset at, Color color, {int sparks = 8}) {
@@ -114,14 +127,48 @@ class Juice {
     hitStop.trigger(Feel.hitStopDefaultSec);
   }
 
-  /// KO: big burst + heavy shake + longer hit-stop + popup.
+  /// KO: big burst + heavy shake + cinematic freeze + camera punch + flash +
+  /// popup + a heavy haptic. The standard "someone got eliminated" beat.
   void ko(Offset at, Color color) {
     particles.burst(
-        at: at, count: 22, color: color, speed: 360, size: 8, life: 0.8);
+        at: at, count: 24, color: color, speed: 360, size: 8, life: 0.8);
     shake.heavy();
-    hitStop.trigger(Feel.hitStopHeavySec, scale: 0.08);
+    hitStop.trigger(Feel.koHitStopSec, scale: Feel.koHitStopScale);
+    camera.punch(at);
+    flash.flash(color, strength: 0.5);
     popup(at, 'KO!', color, size: 40);
+    Haptics.heavy();
   }
+
+  /// The biggest beat: a signature climax (goal, final blow, photo-finish).
+  /// Burst + heavy shake + slow-mo + zoom-punch + flash + optional [banner] +
+  /// heavy haptic. One call to make a moment feel huge.
+  void bigMoment(Offset at, Color color, {String? banner, int sparks = 28}) {
+    particles.burst(
+        at: at, count: sparks, color: color, speed: 400, size: 9, life: 0.9);
+    shake.heavy();
+    hitStop.trigger(Feel.slowMoSec, scale: Feel.slowMoScale);
+    camera.punch(at, scale: Feel.cameraPunchScale + 0.06);
+    flash.flash(color, strength: 0.6);
+    if (banner != null) this.banner.show(banner, color: color);
+    Haptics.heavy();
+  }
+
+  /// Soft, lingering time dip for a tense climax (no hit/burst of its own).
+  void slowMo({double? dur, double? scale}) =>
+      hitStop.trigger(dur ?? Feel.slowMoSec, scale: scale ?? Feel.slowMoScale);
+
+  /// Full-screen color flash (screen space; appears via [renderOverlay]).
+  void flashScreen(Color color, {double? dur, double strength = 1}) =>
+      flash.flash(color, dur: dur, strength: strength);
+
+  /// Big celebratory center banner (screen space; appears via [renderOverlay]).
+  void bigBanner(String text, {Color color = const Color(0xFFFFFFFF)}) =>
+      banner.show(text, color: color);
+
+  /// Zoom-punch the camera toward [at] (applied via [applyWorldTransform]).
+  void cameraPunch(Offset at, {double scale = Feel.cameraPunchScale}) =>
+      camera.punch(at, scale: scale);
 
   void popup(Offset at, String text, Color color, {double size = 28}) {
     _popups.add(ScorePopup(pos: at, text: text, color: color, size: size));
@@ -134,6 +181,9 @@ class Juice {
     particles.update(dt);
     shake.update(dt);
     hitStop.update(dt);
+    camera.update(dt);
+    flash.update(dt);
+    banner.update(dt);
     for (final p in _popups) {
       p.life -= dt;
       p.pos = Offset(p.pos.dx, p.pos.dy - 60 * dt);
@@ -141,12 +191,30 @@ class Juice {
     _popups.removeWhere((p) => p.dead);
   }
 
+  /// Apply the world-space camera transform (shake offset + zoom-punch). Call
+  /// inside a `canvas.save()` block before drawing the field; pair with the
+  /// matching `canvas.restore()`. Replaces a manual `canvas.translate(shake)`.
+  void applyWorldTransform(Canvas canvas) {
+    final Offset o = shake.offset;
+    canvas.translate(o.dx, o.dy);
+    camera.apply(canvas);
+  }
+
+  /// World-space effects (particles + popups). Draw while the world transform
+  /// is still applied.
   void render(Canvas canvas) {
     particles.render(canvas);
     for (final p in _popups) {
       final a = (p.life / p.maxLife).clamp(0.0, 1.0);
       _drawText(canvas, p.text, p.pos, p.color.withValues(alpha: a), p.size);
     }
+  }
+
+  /// Screen-space cinematic overlays (flash + banner). Draw AFTER the world
+  /// transform is restored, so they are not shaken or zoomed.
+  void renderOverlay(Canvas canvas, Size size) {
+    flash.render(canvas, size);
+    banner.render(canvas, size);
   }
 
   void _drawText(Canvas canvas, String text, Offset center, Color color,
@@ -167,6 +235,9 @@ class Juice {
   void clear() {
     particles.clear();
     shake.reset();
+    camera.reset();
+    flash.reset();
+    banner.reset();
     _popups.clear();
   }
 }

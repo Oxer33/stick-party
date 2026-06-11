@@ -8,6 +8,26 @@ class Feel {
   static const double hitStopHeavySec = 0.14;
   static const int particleSoftCap = 90;
   static const double scorePopupRiseSec = 0.8;
+
+  // ── Cinematic layer (KO / signature moments) ────────────────────────────────
+  /// KO freeze: a punchy dip that lingers just long enough to read the hit.
+  static const double koHitStopSec = 0.34;
+  static const double koHitStopScale = 0.16;
+
+  /// Generic slow-mo for photo-finishes / climaxes (softer, longer than a KO).
+  static const double slowMoSec = 0.55;
+  static const double slowMoScale = 0.32;
+
+  /// Camera zoom-punch toward the action (1 = no zoom). Snaps in, glides out.
+  static const double cameraPunchScale = 1.16;
+  static const double cameraPunchSec = 0.55;
+  static const double cameraPunchMax = 1.6; // safety clamp
+
+  /// Full-screen color flash on a big event.
+  static const double screenFlashSec = 0.22;
+
+  /// Big celebratory center banner ("GOAL!", "FINAL HEAVE!").
+  static const double bannerSec = 1.15;
 }
 
 /// Cup / tournament tuning.
