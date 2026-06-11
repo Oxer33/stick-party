@@ -506,6 +506,14 @@ class FallingDodge extends MiniGameBase {
         _Tuning.grazeBaseScore * (1 + (mult - 1) * _Tuning.grazeStep);
     addScore(t.playerId, award);
 
+    // Charm: lean AWAY from the hazard that just whistled past and throw a quick
+    // [hurt] flinch — a readable "that was close!" beat. The hazard sits one lane
+    // off; face opposite it. Upper-body flinch, so the run loco keeps going.
+    if (!t.figure.isRagdoll) {
+      t.figure.facing = h.lane > t.hopper.lane ? -1.0 : 1.0;
+      t.figure.hurt();
+    }
+
     _juice.hitStop
         .trigger(_Tuning.nearMissSlowMo, scale: _Tuning.nearMissTimeScale);
     _juice.particles.burst(
@@ -658,6 +666,13 @@ class FallingDodge extends MiniGameBase {
       final winnerPos = Offset(
           w.lanes.coordOfVisual(w.hopper.visualLane), w.runnerY - w.figureLift);
       _juice.bigMoment(winnerPos, w.color, banner: 'SURVIVOR!');
+      // Charm: a surviving winner reacts under the banner instead of freezing —
+      // settle out of the run into a full-body cheer. An eliminated top-ranker
+      // is already a ragdoll, so only a live survivor celebrates.
+      if (w.alive && !w.figure.isRagdoll) {
+        w.figure.setLoco(LocoState.idle);
+        w.figure.victory();
+      }
     }
     _juice.confetti(ctx.arena);
     finishByOrder(_dedupe(ranked));

@@ -75,6 +75,10 @@ class StickFigure {
   void dash() => _anim.playAction(StickClips.dash, upperOnly: false);
   void land() => _anim.playAction(StickClips.land, upperOnly: false);
 
+  /// Full-body celebration (arms-up cheer). Play on the match winner so the
+  /// round ends on a reaction instead of an idle freeze.
+  void victory() => _anim.playAction(StickClips.victory, upperOnly: false);
+
   /// Switch into ragdoll mode (death / heavy knockback). [root] is the current
   /// render anchor used to seed the ragdoll in the same space; [groundY] is the
   /// floor in that space; [impulse] flings the body.

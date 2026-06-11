@@ -158,6 +158,7 @@ class SumoSmash extends MiniGameBase {
 
   late StarController _stars;
   bool _suddenDeathAnnounced = false;
+  bool _winnerCheered = false; // one-shot: the survivor cheers atop the ring
 
   @override
   void init(MiniGameContext ctx) {
@@ -612,8 +613,29 @@ class SumoSmash extends MiniGameBase {
         fig.setLoco(
           body.vel.distance > _runSpeed ? LocoState.run : LocoState.idle,
         );
+        _reactNearFall(entry.key, body, fig);
       }
       fig.update(dt);
+    }
+  }
+
+  /// Charm: a wrestler teetering in the rescue band while moving SLOWLY (the
+  /// same about-to-fall case the rescue assist saves) flails an arms-up [hurt]
+  /// flinch ONCE so the near-fall reads, re-arming only after they recover back
+  /// inside the band. A fast launch sails out (ejected) and never flails.
+  void _reactNearFall(int id, Body body, StickFigure fig) {
+    final f = _fighters[id];
+    if (f == null) return;
+    final dist = (body.pos - _center).distance;
+    final teetering = dist >= _currentRingRadius * _rescueBandFactor &&
+        body.vel.distance <= _rescueMaxSpeed;
+    if (teetering) {
+      if (!f.nearFallReacted) {
+        f.nearFallReacted = true;
+        if (!fig.actionPlaying) fig.hurt();
+      }
+    } else {
+      f.nearFallReacted = false; // recovered — re-arm for the next teeter
     }
   }
 
@@ -692,6 +714,17 @@ class SumoSmash extends MiniGameBase {
   void _finishRanked(List<Body> alive) {
     final ranked = alive.map((b) => b.id).toList()
       ..sort((a, b) => _distToCenter(a).compareTo(_distToCenter(b)));
+    // Charm: the SURVIVING winner reacts instead of freezing — settle to idle
+    // then throw an arms-up cheer atop the dohyo. Fires once (losers already
+    // ragdoll on KO, so only an alive, non-ragdoll survivor celebrates).
+    if (!_winnerCheered && ranked.isNotEmpty) {
+      _winnerCheered = true;
+      final fig = _figures[ranked.first];
+      if (fig != null && !fig.isRagdoll) {
+        fig.setLoco(LocoState.idle);
+        fig.victory();
+      }
+    }
     finishByOrder(
       _dedupeAllPlayers([...ranked, ..._eliminationOrder.reversed]),
     );
@@ -876,6 +909,7 @@ class _Fighter {
   double charge = 0; // 0..1 while held
   double _cooldown = 0;
   double buff = 0; // seconds of star shove-buff remaining
+  bool nearFallReacted = false; // latched while teetering slowly near the edge
   _DashTrail? trail;
 
   _Fighter({required this.aim});

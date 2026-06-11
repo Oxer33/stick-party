@@ -74,9 +74,22 @@ class ButtonMasher extends MiniGameBase {
   // ── Hammer swing (per tap) ──────────────────────────────────────────────────
   static const double _swingSec = 0.18; // one hammer down-stroke duration
 
+  // ── Overheat recoil (body tell) ─────────────────────────────────────────────
+  // While boiled over, the striker flinches on a throttle so the boil-over reads
+  // on the BODY (not just the gauge) without restarting the hurt clip every frame.
+  static const double _overheatRecoilSec = 0.42; // gap between recoil flinches
+
   // ── Tap feedback ────────────────────────────────────────────────────────────
   static const double _flashLifeSec = 0.22; // tap flash ring life
   static const int _maxFlashes = 6; // flashes kept per striker
+
+  // ── Heat-gauge sizing (render-only crowding fix) ────────────────────────────
+  // The HEAT gauge is centered under each lane. With few lanes it can be wide and
+  // bold; once 4 towers pack the width the wide gauge would bleed into the
+  // neighbouring lane (and crowd the striker), so its width factor lerps down as
+  // the field fills. RENDER-only — lane count, layout and scoring are untouched.
+  static const double _heatGaugeWidthFew = 1.7; // gauge width / towerW at ≤2 lanes
+  static const double _heatGaugeWidthFull = 1.15; // gauge width / towerW at 4 lanes
 
   // ── FRENZY climax ─────────────────────────────────────────────────────────
   // In the final stretch a green tap kicks the puck harder (a finale climb
@@ -111,6 +124,7 @@ class ButtonMasher extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for bg shimmer
   bool _frenzyFired = false; // one-shot "FRENZY!" climax cue latch
+  bool _resultReacted = false; // one-shot end-of-round body reactions latch
 
   final Map<int, _Striker> _strikers = <int, _Striker>{};
   // Lane layout depends only on the (fixed) arena + roster, so build it once at
@@ -216,7 +230,33 @@ class ButtonMasher extends MiniGameBase {
     }
 
     if (_elapsed >= _timeLimit) {
+      _reactToResult(); // winner cheers, the rest slump — once, on the body
       finishByScore(); // most height (≡ best heat management) wins
+    }
+  }
+
+  /// One-shot end-of-round body reactions: the striker with the highest peak
+  /// (the scored quantity) throws a VICTORY cheer, everyone else slumps with a
+  /// hurt. Guarded by [_resultReacted] so it fires exactly once at the buzzer.
+  void _reactToResult() {
+    if (_resultReacted || _strikers.isEmpty) return;
+    _resultReacted = true;
+    var winnerId = _strikers.values.first.slot.id;
+    var best = -1.0;
+    for (final s in _strikers.values) {
+      if (s.peakHeight > best) {
+        best = s.peakHeight;
+        winnerId = s.slot.id;
+      }
+    }
+    for (final s in _strikers.values) {
+      if (s.slot.id == winnerId) {
+        s.figure
+          ..setLoco(LocoState.idle)
+          ..victory();
+      } else {
+        s.figure.hurt();
+      }
     }
   }
 
@@ -260,7 +300,25 @@ class ButtonMasher extends MiniGameBase {
     s.flashes.removeWhere((f) => f.life <= 0);
     s.sinceTap += dt;
 
+    _tickOverheatRecoil(s, dt);
+
     s.figure.update(dt);
+  }
+
+  /// While the striker is boiled over (and hasn't already rung its bell), throw a
+  /// throttled hurt flinch so the overheat shows on the BODY, not just the gauge.
+  /// The throttle keeps the 0.3s hurt clip from restarting every frame; easing
+  /// back into the green re-arms an immediate flinch on the next boil-over.
+  void _tickOverheatRecoil(_Striker s, double dt) {
+    if (s.belled || !_isOverheated(s.heat)) {
+      s.recoilTimer = 0; // re-arm so a fresh boil-over flinches at once
+      return;
+    }
+    s.recoilTimer -= dt;
+    if (s.recoilTimer <= 0) {
+      s.figure.hurt();
+      s.recoilTimer = _overheatRecoilSec;
+    }
   }
 
   /// True when heat has crossed the redline into the overheat (RED) zone.
@@ -353,6 +411,7 @@ class ButtonMasher extends MiniGameBase {
   void _maybeRingBell(_Striker s) {
     if (s.belled || s.targetHeight < 1.0) return;
     s.belled = true;
+    s.figure.special(); // a triumphant fist-pump the instant the bell rings
     final bell = _bellAnchor(s);
     final color = _colorOf(s.slot.id);
     _juice.particles.burst(
@@ -491,17 +550,27 @@ class ButtonMasher extends MiniGameBase {
 
     // HEAT gauge at the lane base: the green sweet-zone band, the red overheat
     // zone, and the live heat fill. This is the player's decision readout — keep
-    // the fill in the green, off the red.
+    // the fill in the green, off the red. Its width slims as lanes fill so a
+    // 4-tower field stops the gauges colliding with neighbours (render-only).
     MasherRenderer.drawHeatGauge(
       canvas,
       Offset(lane.center, lane.feet.dy + tower.width * 0.55),
-      tower.width * 1.7,
+      tower.width * _heatGaugeWidthFactor(),
       heat: s.heat,
       greenLo: _heatGreenLo,
       greenHi: _heatGreenHi,
       color: color,
       pulse: 0.5 + 0.5 * math.sin(_animClock * 12.0 + s.slot.id),
     );
+  }
+
+  /// Render-only HEAT-gauge width factor for the current field size: wide at ≤2
+  /// lanes, lerping down to [_heatGaugeWidthFull] by 4 lanes so the gauges never
+  /// collide once the towers pack the width. Does not affect layout or scoring.
+  double _heatGaugeWidthFactor() {
+    final n = ctx.players.length;
+    final t = ((n - 2) / 2.0).clamp(0.0, 1.0); // 0 at ≤2 lanes, 1 at 4 lanes
+    return lerpD(_heatGaugeWidthFew, _heatGaugeWidthFull, t);
   }
 
   /// 0 (rest) → 1 (hammer slammed onto the plate) → 0 over a swing, eased so the
@@ -622,6 +691,7 @@ class _Striker {
   double swing = 0; // seconds of hammer down-stroke remaining
   bool belled = false; // rang the bell at least once
   double sinceTap = 1e9; // seconds since this striker's last tap
+  double recoilTimer = 0; // throttle between overheat hurt flinches
 
   // Bot cadence clock + cooling beat.
   double botClock = 0;

@@ -153,6 +153,7 @@ class ArcherPop extends MiniGameBase {
   double _animClock = 0; // real-time clock (never scaled) for ambient/flash
   double _spawnTimer = 0;
   bool _frenzyAnnounced = false;
+  bool _winnerCheered = false; // one-shot: the match winner cheers at the end
 
   /// Seconds left during which NO new golden balloon may spawn. Set after any
   /// golden pop so the next prize is briefly withheld — players must RACE for it
@@ -529,6 +530,10 @@ class ArcherPop extends MiniGameBase {
         continue; // arrow consumed by the pop
       }
       if (life <= 0 || _outOfBounds(pos)) {
+        // Charm: an arrow that lived its full flight without popping anything is
+        // a wasted shot — the archer throws a light [hurt] shrug ("missed!").
+        // Only on the timeout fizzle, not a mid-flight off-screen sail.
+        if (life <= 0) _shrugMiss(s.ownerId);
         // On-field arrows linger a moment (stuck fade); off-screen ones vanish.
         if (!_outOfBounds(pos)) {
           s.stuckAt(pos, vel);
@@ -587,6 +592,10 @@ class ArcherPop extends MiniGameBase {
     // Golden is the scarce prize: popping one withholds the next golden briefly
     // so the table RACES for its return.
     if (target.golden) _goldenSuppress = _goldenSuppressSec;
+
+    // Charm: a hot pop reacts — a STEAL off a rival or a combo of 3+ throws a
+    // fist-pump (upper-body, so it never disturbs the bow sweep). Fires per pop.
+    if (stole || archer.combo >= 3) archer.figure.special();
 
     // Juice: a colored burst (golden gets a hotter, bigger one) + popups.
     final popColor = target.golden ? _comboColor : archer.color;
@@ -659,9 +668,25 @@ class ArcherPop extends MiniGameBase {
 
   void _checkEnd() {
     if (_elapsed >= _timeLimit) {
+      _cheerWinner();
       _juice.confetti(_size);
       finishByScore();
     }
+  }
+
+  /// Charm: at the match finish the leading archer reacts instead of freezing —
+  /// a full-body arms-up cheer. Fires once for the single highest scorer (ties
+  /// break by seat order, matching the score ranking's stable fallback).
+  void _cheerWinner() {
+    if (_winnerCheered || _archers.isEmpty) return;
+    _winnerCheered = true;
+    _Archer? best;
+    for (final a in _archers) {
+      if (best == null || scoreOf(a.playerId) > scoreOf(best.playerId)) {
+        best = a;
+      }
+    }
+    best?.figure.victory();
   }
 
   // ── Geometry helpers (mirror ArcherRenderer) ────────────────────────────────
@@ -687,6 +712,15 @@ class ArcherPop extends MiniGameBase {
       if (a.playerId == id) return a;
     }
     return null;
+  }
+
+  /// Charm: a light [hurt] shrug for a fizzled (wasted) shot. Upper-body only,
+  /// and skipped while another reaction (e.g. a fist-pump) is already playing so
+  /// a good beat is never cut short by a stray miss.
+  void _shrugMiss(int id) {
+    final archer = _archerOf(id);
+    if (archer == null || archer.figure.actionPlaying) return;
+    archer.figure.hurt();
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────

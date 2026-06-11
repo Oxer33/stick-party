@@ -114,6 +114,12 @@ class TapSprint extends MiniGameBase {
   static const double _figureScale = 1.9; // readable sprinters
   static const double _bodyWidthFactor = 2.6; // dust/shadow half-width / torsoW
   static const Color _accent = Color(0xFFFFD24A);
+  // RENDER-only down-scale as the field fills: at 1 lane the sprinter draws full
+  // size, by 4 lanes it draws smaller so neighbouring lanes never overlap. This
+  // scales ONLY the painted figure (about its feet) — lane positions, foot line,
+  // progress and finish logic are all left untouched.
+  static const double _renderScaleSolo = 1.0; // draw scale at 1 lane (full size)
+  static const double _renderScaleFull = 0.6; // draw scale at 4 lanes (slimmer)
 
   late Juice _juice;
   late Size _size;
@@ -306,6 +312,7 @@ class TapSprint extends MiniGameBase {
     r.rhythmBonus = math.max(0.0, r.rhythmBonus - _stumbleSetback);
     r.tripTimer = _stumbleTripSec;
     r.figure.setLoco(LocoState.idle); // brief trip read
+    r.figure.hurt(); // a quick full-body trip so the off-beat misstep shows
   }
 
   /// Extra per-tap fill for a trailing runner, scaled 0..1 by how far behind the
@@ -360,6 +367,9 @@ class TapSprint extends MiniGameBase {
     r.figure.setLoco(LocoState.idle);
 
     final place = _finishOrder.length;
+    // The tape winner throws an arms-up cheer so the finish lands on a reaction
+    // instead of an idle freeze; everyone else just decelerates into idle.
+    if (place == 1) r.figure.victory();
     final at = _runnerRoot(r).translate(0, -_footReach * 1.1);
     _juice.popup(at, _ordinal(place), _colorOf(r.slot.id), size: 34);
     if (!_confettiFor.contains(r.slot.id)) {
@@ -535,20 +545,30 @@ class TapSprint extends MiniGameBase {
     }
   }
 
+  /// RENDER-only figure scale for the current field size: full at 1 lane,
+  /// shrinking toward [_renderScaleFull] by 4 lanes so multi-lane sprinters stop
+  /// overlapping. Applied about the feet in the draw path only — it never moves a
+  /// lane, the foot line, progress, or the finish.
+  double _renderScale() {
+    final n = _laneCount();
+    final t = n <= 1 ? 0.0 : ((n - 1) / 3.0).clamp(0.0, 1.0);
+    return lerpDouble(_renderScaleSolo, _renderScaleFull, t)!;
+  }
+
   /// Draw a runner pitched forward by an amount that grows with mash energy
   /// (premium body language). Finished runners stand upright (decelerating).
-  /// The lean rotates around the feet so the plant stays glued to the track.
+  /// The lean rotates around the feet so the plant stays glued to the track; a
+  /// field-size render scale (about the same feet pivot) shrinks the painted
+  /// figure as lanes fill so neighbours never overlap.
   void _drawLeaningRunner(
       Canvas canvas, _Runner r, Offset root, double speed01) {
-    if (r.finished) {
-      SprintRenderer.drawSprinter(canvas, r.figure, root);
-      return;
-    }
-    final lean = _maxLeanRad * speed01; // forward (into +x) = positive rotation
     final pivot = Offset(root.dx, root.dy + _footReach);
+    final scale = _renderScale();
+    final lean = r.finished ? 0.0 : _maxLeanRad * speed01; // forward = +rotation
     canvas.save();
     canvas.translate(pivot.dx, pivot.dy);
-    canvas.rotate(lean);
+    if (lean != 0) canvas.rotate(lean);
+    if (scale != 1.0) canvas.scale(scale);
     canvas.translate(-pivot.dx, -pivot.dy);
     SprintRenderer.drawSprinter(canvas, r.figure, root);
     canvas.restore();

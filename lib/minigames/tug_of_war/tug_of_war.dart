@@ -392,6 +392,7 @@ class TugOfWar extends MiniGameBase {
     pl.heaveCharge = 0;
     pl.surge = 0;
     pl.cue = _heaveCueSec; // reuse the cue ring as a "slip!" tell
+    pl.figure.hurt(); // a buckle on the body so the over-hold reads as a slip
     final at = _runnerRoot(pl).translate(0, -_footReach * 0.9);
     _juice.popup(at, 'SLIP!', _splashLava, size: 24);
     _juice.shake.light();
@@ -580,6 +581,16 @@ class TugOfWar extends MiniGameBase {
       final vy = winnerIsTop ? -_size.height * 0.55 : _size.height * 0.55;
       final vx = (_midX - root.dx).sign * _size.width * 0.12;
       pl.figure.enterRagdoll(root, groundY, Offset(vx, vy));
+    }
+
+    // Winning side throws an arms-up cheer (firing once, here, as the round
+    // resolves) so the victors react on the body BEFORE the confetti — the
+    // losing side is already ragdoll-flying into the pit above.
+    for (final pl in _pullers.values) {
+      if (pl.side != winner) continue;
+      pl.figure
+        ..setLoco(LocoState.idle)
+        ..victory();
     }
 
     _splashAndPopups(winner);

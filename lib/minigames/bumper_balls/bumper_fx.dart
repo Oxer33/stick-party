@@ -72,6 +72,46 @@ class DashTrail {
   double get strength => maxLife <= 0 ? 0 : (life / maxLife).clamp(0.0, 1.0);
 }
 
+/// A knocked-off ball's VISUAL send-off: it keeps the velocity it had at the
+/// moment of elimination, spins, and shrinks to nothing over [maxLife] seconds as
+/// it sails off the platform — so a KO reads as a funny fling instead of an
+/// instant vanish. This is purely cosmetic; the game has already marked the body
+/// eliminated (alive=false, ranking recorded). Mutable round-scoped state.
+class FlungBall {
+  Offset pos;
+  final Offset vel; // the speed it was knocked off at (kept for the arc)
+  final Color color;
+  final double radius;
+  final int displayNumber;
+  final double spinDir; // +1 / -1 so flings tumble either way
+  double life;
+  final double maxLife;
+  double spin = 0;
+
+  FlungBall({
+    required this.pos,
+    required this.vel,
+    required this.color,
+    required this.radius,
+    required this.displayNumber,
+    required this.life,
+    this.spinDir = 1,
+  }) : maxLife = life;
+
+  /// 0..1 of life remaining (1 = just flung, 0 = gone) — drives scale + fade.
+  double get strength => maxLife <= 0 ? 0 : (life / maxLife).clamp(0.0, 1.0);
+
+  /// True once it has fully shrunk away and should be dropped.
+  bool get done => life <= 0;
+
+  /// Advance the fling: carry it along its velocity, tumble it, age it.
+  void tick(double dt) {
+    pos += vel * dt;
+    spin += spinDir * dt * 14.0; // a fast comedic tumble
+    life = math.max(0, life - dt);
+  }
+}
+
 /// A short-lived expanding impact spark ring stamped at a collision/KO point.
 class ImpactRing {
   final Offset at;

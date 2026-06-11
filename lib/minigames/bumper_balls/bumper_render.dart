@@ -1,6 +1,13 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+/// A ball's facial expression, driven by its current situation so the knockout
+/// reads with character: [neutral] is the determined default; [scared] (raised
+/// brows + shrunken pupils) shows when it is near the deadly edge; [happy] (a big
+/// arc smile) shows while buffed by a star; [dizzy] (X eyes + a wobbly mouth) is
+/// worn by a ball that has just been knocked off as it spins away.
+enum BallFace { neutral, scared, happy, dizzy }
+
 /// Pure-Canvas rendering for [BumperBalls]. Holds NO game state and never
 /// mutates the simulation — callers pass plain value snapshots. Kept in its own
 /// file so the gameplay module stays lean and the drawing stays cohesive.
@@ -352,6 +359,7 @@ class BumperRenderer {
     required Offset lookDir,
     required bool ready,
     required int displayNumber,
+    BallFace face = BallFace.neutral,
   }) {
     if (ballR <= 0) return;
 
@@ -418,7 +426,7 @@ class BumperRenderer {
       );
     }
 
-    _drawFace(canvas, pos, ballR, lookDir, displayNumber);
+    _drawFace(canvas, pos, ballR, lookDir, displayNumber, face);
 
     // Specular highlight blob, last so it sits on top.
     canvas.drawCircle(
@@ -430,36 +438,124 @@ class BumperRenderer {
     canvas.restore();
   }
 
+  /// The ball's face, switched by [face] so its mood reads at a glance. The
+  /// number badge is always drawn; the eyes + mouth vary with the expression.
   static void _drawFace(
     Canvas canvas,
     Offset pos,
     double ballR,
     Offset lookDir,
     int number,
+    BallFace face,
   ) {
-    final lean = _normalize(lookDir) * (ballR * 0.16);
     final eyeOffset = ballR * _eyeOffsetFactor;
     final eyeR = ballR * _eyeRadiusFactor;
+
+    if (face == BallFace.dizzy) {
+      _drawXEyes(canvas, pos, ballR, eyeOffset, eyeR);
+      _drawWobblyMouth(canvas, pos, ballR);
+    } else {
+      _drawLiveEyes(canvas, pos, ballR, lookDir, eyeOffset, eyeR, face);
+      _drawMoodMouth(canvas, pos, ballR, face);
+    }
+
+    // Player number badge tucked at the top of the ball (every expression).
+    _drawNumber(
+      canvas,
+      pos.translate(0, -ballR * 0.46),
+      '$number',
+      ballR * 0.4,
+      _white.withValues(alpha: 0.85),
+    );
+  }
+
+  /// White eyes that track [lookDir]. [face] tweaks them: SCARED shrinks the
+  /// pupils + adds raised brows, HAPPY keeps round pupils, NEUTRAL is the
+  /// determined default. Always draws a catchlight for life.
+  static void _drawLiveEyes(
+    Canvas canvas,
+    Offset pos,
+    double ballR,
+    Offset lookDir,
+    double eyeOffset,
+    double eyeR,
+    BallFace face,
+  ) {
+    final lean = _normalize(lookDir) * (ballR * 0.16);
+    final scared = face == BallFace.scared;
+    final pupilScale = scared ? 0.34 : 0.55; // small pupils read as alarmed
     final white = Paint()..color = _white;
     final pupilPaint = Paint()..color = _pupil;
 
     for (final sign in const [-1.0, 1.0]) {
       final eye = pos + Offset(sign * eyeOffset, -ballR * 0.08);
       canvas.drawCircle(eye, eyeR, white);
-      canvas.drawCircle(eye + lean, eyeR * 0.55, pupilPaint);
+      canvas.drawCircle(eye + lean, eyeR * pupilScale, pupilPaint);
       // Tiny catchlight for life.
       canvas.drawCircle(
         eye + Offset(-eyeR * 0.3, -eyeR * 0.3),
         eyeR * 0.22,
         Paint()..color = _white.withValues(alpha: 0.9),
       );
+      // Raised worried brow above each eye when scared.
+      if (scared) {
+        final brow = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.2, ballR * 0.06)
+          ..strokeCap = StrokeCap.round
+          ..color = _pupil;
+        final by = eye.dy - eyeR * 1.7;
+        canvas.drawLine(
+          Offset(eye.dx - eyeR * 0.9, by + eyeR * 0.5),
+          Offset(eye.dx + eyeR * 0.9, by),
+          brow,
+        );
+      }
     }
+  }
 
-    // Determined little mouth.
+  /// Cross (X) eyes for a knocked-out ball — the classic "seeing stars" read.
+  static void _drawXEyes(
+    Canvas canvas,
+    Offset pos,
+    double ballR,
+    double eyeOffset,
+    double eyeR,
+  ) {
+    final x = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.4, ballR * 0.08)
+      ..strokeCap = StrokeCap.round
+      ..color = _pupil;
+    for (final sign in const [-1.0, 1.0]) {
+      final eye = pos + Offset(sign * eyeOffset, -ballR * 0.08);
+      final r = eyeR * 0.9;
+      canvas.drawLine(eye + Offset(-r, -r), eye + Offset(r, r), x);
+      canvas.drawLine(eye + Offset(-r, r), eye + Offset(r, -r), x);
+    }
+  }
+
+  /// Mouth for a live ball: HAPPY is a wide upward smile, SCARED a small worried
+  /// O, NEUTRAL the determined arc (unchanged from the original face).
+  static void _drawMoodMouth(
+    Canvas canvas,
+    Offset pos,
+    double ballR,
+    BallFace face,
+  ) {
+    if (face == BallFace.scared) {
+      // A small open "oh no" mouth.
+      canvas.drawCircle(
+        pos + Offset(0, ballR * 0.34),
+        ballR * 0.13,
+        Paint()..color = _pupil,
+      );
+      return;
+    }
     final mouth = Rect.fromCenter(
-      center: pos + Offset(0, ballR * 0.3),
-      width: ballR * 0.62,
-      height: ballR * 0.42,
+      center: pos + Offset(0, ballR * (face == BallFace.happy ? 0.24 : 0.3)),
+      width: ballR * (face == BallFace.happy ? 0.78 : 0.62),
+      height: ballR * (face == BallFace.happy ? 0.6 : 0.42),
     );
     canvas.drawArc(
       mouth,
@@ -472,14 +568,25 @@ class BumperRenderer {
         ..strokeCap = StrokeCap.round
         ..color = _pupil,
     );
+  }
 
-    // Player number badge tucked at the top of the ball.
-    _drawNumber(
-      canvas,
-      pos.translate(0, -ballR * 0.46),
-      '$number',
-      ballR * 0.4,
-      _white.withValues(alpha: 0.85),
+  /// A small wavy mouth for the dizzy/KO'd ball.
+  static void _drawWobblyMouth(Canvas canvas, Offset pos, double ballR) {
+    final w = ballR * 0.5;
+    final y = pos.dy + ballR * 0.32;
+    final path = Path()..moveTo(pos.dx - w, y);
+    path.cubicTo(
+      pos.dx - w * 0.33, y - ballR * 0.14,
+      pos.dx + w * 0.33, y + ballR * 0.14,
+      pos.dx + w, y,
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.4, ballR * 0.08)
+        ..strokeCap = StrokeCap.round
+        ..color = _pupil,
     );
   }
 

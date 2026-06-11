@@ -133,6 +133,7 @@ class _Climber {
   bool leapPending = false; // a held hop has already sprung its bonus rung
   int crackedRung = -1; // rung currently crumbling under the climber (-1 = none)
   double crackTimer = 0; // time left before the cracked rung gives way
+  bool crackPanicked = false; // latched once the crack-warn panic flinch fires
 
   _Climber({
     required this.playerId,
@@ -191,6 +192,7 @@ class ChickenJump extends MiniGameBase {
   double _animClock = 0; // real-time clock for ambient FX (never scaled)
   double _lavaSpeed = _Tuning.lavaRiseStart;
   bool _climaxFired = false; // one-shot "HURRY!" finale cue latch
+  bool _winnerCheered = false; // one-shot: the top survivor cheers atop the tower
 
   @override
   void init(MiniGameContext ctx) {
@@ -320,10 +322,12 @@ class ChickenJump extends MiniGameBase {
     if (cracked) {
       c.crackedRung = c.hopper.lane;
       c.crackTimer = _Tuning.crackHoldSec;
+      c.crackPanicked = false; // arm the panic flinch for this new cracked rung
     } else if (c.hopper.lane != c.crackedRung) {
       // Hopped off a cracked rung onto solid stone — clear the crumble timer.
       c.crackedRung = -1;
       c.crackTimer = 0;
+      c.crackPanicked = false; // safe now — re-arm for the next crack
     }
 
     c.jumpHold = _Tuning.jumpHoldSec;
@@ -489,6 +493,13 @@ class ChickenJump extends MiniGameBase {
     if (c.crackedRung < 0 || c.hopper.lane != c.crackedRung) return;
     if (!c.hopper.settled) return; // only counts down once actually standing
     c.crackTimer -= dt;
+    // Charm: in the final warn beat before the rung gives way the climber panics
+    // — a one-shot [hurt] jitter so kids read "GET OFF!" before it crumbles.
+    // Latched per crack (re-armed when the climber lands on a fresh rung).
+    if (!c.crackPanicked && c.crackTimer <= _Tuning.crackWarnSec) {
+      c.crackPanicked = true;
+      if (!c.figure.isRagdoll) c.figure.hurt();
+    }
     if (c.crackTimer > 0) return;
     _crumble(c);
   }
@@ -498,6 +509,7 @@ class ChickenJump extends MiniGameBase {
   void _crumble(_Climber c) {
     c.crackedRung = -1;
     c.crackTimer = 0;
+    c.crackPanicked = false; // crack resolved — re-arm for any future crack
     final before = c.hopper.lane;
     c.hopper.hop(-1); // fall back one rung
     if (c.hopper.lane == before) return; // already at the lowest rung
@@ -649,6 +661,14 @@ class ChickenJump extends MiniGameBase {
     // ordered most-recent-first (they lasted longest).
     final survivors = alive.toList()
       ..sort((a, b) => b.topReached.compareTo(a.topReached));
+    // Charm: the TOP survivor reacts atop the tower instead of freezing — a
+    // full-body arms-up cheer (fist-pump). Fires once; fallers already use the
+    // fall loco / ragdoll, so only a living climber celebrates.
+    if (!_winnerCheered && survivors.isNotEmpty) {
+      _winnerCheered = true;
+      final top = survivors.first;
+      if (!top.figure.isRagdoll) top.figure.victory();
+    }
     final ranking = <int>[
       for (final c in survivors) c.playerId,
       ..._eliminationOrder.reversed,

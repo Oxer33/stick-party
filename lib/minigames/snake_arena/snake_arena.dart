@@ -130,11 +130,26 @@ class SnakeArena extends MiniGameBase {
   static const double _hintFadeSec = 1.6; // turn-hint settle time at round start
   static const double _hintIdleLevel = 0.55; // resting turn-hint brightness
 
+  // ── Death break-apart + winner celebration tuning (visual only) ─────────────
+  static const double _deathBurstSpreadSec = 0.2; // stagger window head→tail
+  static const int _deathBurstStride = 2; // burst every Nth segment (as before)
+  static const double _winnerEyeScale = 1.0; // winner keeps normal eyes
+  static const double _suddenDeathEyeScale = 1.5; // wider, alert eyes in SD
+
   late Juice _juice;
   final List<Snake> _snakes = [];
   final List<Cell> _food = [];
   final Set<Cell> _golden = <Cell>{}; // which active pellets are golden
   bool _suddenDeathAnnounced = false; // the closing-arena cue fired once
+  bool _winnerCelebrated = false; // the one-shot winner bigMoment fired
+
+  /// The player id of the round's winner once resolved (drives a bright pulse on
+  /// that snake), or null until the round finishes.
+  int? _winnerId;
+
+  /// Staggered death sparks waiting to fire: each segment of a dying snake pops a
+  /// beat after the last so the body reads as breaking apart, not one blast.
+  final List<_PendingBurst> _pendingBursts = <_PendingBurst>[];
 
   // Death order, worst→best as snakes die (used to build the final ranking).
   final List<int> _deathOrder = [];
@@ -314,6 +329,7 @@ class SnakeArena extends MiniGameBase {
 
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
+    _tickPendingBursts(dt); // drain staggered death sparks (visual break-apart)
 
     _maybeAnnounceSuddenDeath();
     _cullClosedRing();
@@ -645,20 +661,43 @@ class SnakeArena extends MiniGameBase {
     s.alive = false;
     _deathOrder.add(s.playerId);
     final at = _cellCenter(s.head, _lastSize);
-    // Explosion: scatter the body into sparks along its length, then a big KO.
-    for (var i = 0; i < s.body.length; i += 2) {
-      _juice.particles.burst(
+    // Break-apart explosion (VISUAL ONLY): instead of bursting every segment at
+    // once, STAGGER the per-segment sparks from head to tail across a short
+    // window so the snake visibly tears apart along its length. The big KO at the
+    // head still fires immediately so the death still lands hard. Scoring + death
+    // bookkeeping above is unchanged.
+    final n = s.body.length;
+    for (var i = 0; i < n; i += _deathBurstStride) {
+      final frac = n <= 1 ? 0.0 : i / (n - 1); // 0 at head → 1 at tail
+      _pendingBursts.add(_PendingBurst(
         at: _cellCenter(s.body[i], _lastSize),
-        count: 4,
         color: s.color,
+        delay: frac * _deathBurstSpreadSec,
+      ));
+    }
+    _juice.ko(at, s.color);
+    _wallFlare = 1.0;
+    setScore(s.playerId, s.length);
+  }
+
+  /// Fire any scheduled death sparks whose [_PendingBurst.delay] has elapsed,
+  /// draining them as they pop — this is what spreads a snake's break-apart along
+  /// its body. Runs on the (real) frame dt so the stagger reads at any speed.
+  void _tickPendingBursts(double dt) {
+    if (_pendingBursts.isEmpty) return;
+    for (final b in _pendingBursts) {
+      b.delay -= dt;
+      if (b.delay > 0) continue;
+      _juice.particles.burst(
+        at: b.at,
+        count: 4,
+        color: b.color,
         speed: 200,
         size: 5,
         life: 0.6,
       );
     }
-    _juice.ko(at, s.color);
-    _wallFlare = 1.0;
-    setScore(s.playerId, s.length);
+    _pendingBursts.removeWhere((b) => b.delay <= 0);
   }
 
   int _aliveCount() => _snakes.where((s) => s.alive).length;
@@ -685,7 +724,32 @@ class SnakeArena extends MiniGameBase {
     for (final p in ctx.players) {
       if (seen.add(p.id)) full.add(p.id);
     }
+    // CHARM: the top of the ranking is the winner — celebrate it once with the
+    // signature bigMoment at its head + a bright pulse on its body (the renderer
+    // brightens [_winnerId] while finished). This is the only non-takedown
+    // bigMoment. Ordering/scoring above is untouched.
+    if (full.isNotEmpty) _celebrateWinner(full.first);
     finishByOrder(full);
+  }
+
+  /// Fire the one-shot winner celebration: remember [_winnerId] (so the renderer
+  /// can pulse that snake bright) and pop a [Juice.bigMoment] at its head — its
+  /// crash cell if it already died, else its live head. Visual only.
+  void _celebrateWinner(int winnerId) {
+    if (_winnerCelebrated) return;
+    _winnerCelebrated = true;
+    _winnerId = winnerId;
+    Snake? winner;
+    for (final s in _snakes) {
+      if (s.playerId == winnerId) {
+        winner = s;
+        break;
+      }
+    }
+    if (winner == null) return;
+    final at = _cellCenter(winner.head, _lastSize);
+    _juice.bigMoment(at, winner.color, banner: 'WINNER!');
+    _wallFlare = 1.0;
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -748,6 +812,11 @@ class SnakeArena extends MiniGameBase {
 
   void _drawSnake(Canvas canvas, Snake s, Size size) {
     final pixels = [for (final c in s.body) _cellCenter(c, size)];
+    // Eyes widen for everyone once the arena is closing in (SUDDEN DEATH), so the
+    // snakes read as alert in the squeeze. The resolved winner pulses bright.
+    final eyeScale =
+        _shrinkRings() > 0 ? _suddenDeathEyeScale : _winnerEyeScale;
+    final isWinner = status == MiniGameStatus.finished && s.playerId == _winnerId;
     SnakeRenderer.drawSnake(
       canvas,
       pixels,
@@ -755,6 +824,8 @@ class SnakeArena extends MiniGameBase {
       _cell(),
       s.color,
       alive: s.alive,
+      eyeScale: eyeScale,
+      winnerGlow: isWinner ? 1.0 : 0.0,
     );
   }
 
@@ -901,4 +972,14 @@ class SnakeArena extends MiniGameBase {
     _golden.clear();
     _spawnOneFood();
   }
+}
+
+/// A death spark scheduled to fire after [delay] seconds at [at]. Used to stagger
+/// a dying snake's per-segment bursts along its body so it reads as breaking
+/// apart over a short window instead of one simultaneous pop. Visual only.
+class _PendingBurst {
+  final Offset at;
+  final Color color;
+  double delay;
+  _PendingBurst({required this.at, required this.color, required this.delay});
 }

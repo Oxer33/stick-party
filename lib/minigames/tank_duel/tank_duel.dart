@@ -167,6 +167,8 @@ class TankDuel extends MiniGameBase {
   late AirdropController _airdrop;
   late Rect _airField; // where airdrops may land
   bool _frenzyAnnounced = false;
+  bool _winnerCelebrated = false; // one-shot winner victory pulse fired
+  int? _winnerId; // resolved winner (drives the hull victory pulse), or null
 
   @override
   void init(MiniGameContext ctx) {
@@ -581,6 +583,9 @@ class TankDuel extends MiniGameBase {
     TankFx.explode(_juice, at, shooter.color,
         heavy: true, jolt: !(downed || clinch));
     if (downed) {
+      // Stamp the down time so the renderer can age its burning WRECK + smoke
+      // column. Visual only — hp/score/removal already handled above.
+      if (victim.downedAt < 0) victim.downedAt = _animClock;
       _juice.bigMoment(at, shooter.color, banner: 'DIRECT HIT!');
     } else if (clinch) {
       _juice.ko(at, shooter.color);
@@ -661,9 +666,31 @@ class TankDuel extends MiniGameBase {
     final reachedTarget = _elapsed >= _minRoundSec &&
         _tanks.any((t) => scoreOf(t.playerId) >= _hitsToWin);
     if (reachedTarget || _elapsed >= _timeLimit) {
+      _celebrateWinner(); // mark the winner + pop its victory beat (visual only)
       _juice.confetti(_size);
       finishByScore();
     }
+  }
+
+  /// One-shot winner celebration at finish: pick the top-scoring tank (ties →
+  /// first seat, matching the scoreboard) and pop a [Juice.bigMoment] flash at
+  /// its hull. [_winnerId] then drives a bright victory pulse on that tank in the
+  /// renderer. Reads only scores; changes no scoring/ranking.
+  void _celebrateWinner() {
+    if (_winnerCelebrated) return;
+    _winnerCelebrated = true;
+    _Tank? best;
+    var bestScore = -1.0;
+    for (final t in _tanks) {
+      final double s = scoreOf(t.playerId).toDouble();
+      if (s > bestScore) {
+        bestScore = s;
+        best = t;
+      }
+    }
+    if (best == null) return;
+    _winnerId = best.playerId;
+    _juice.bigMoment(_turretPivotOf(best), best.color, banner: 'WINNER!');
   }
 
   // ── Geometry helpers (mirror TankRenderer) ──────────────────────────────────
@@ -712,13 +739,19 @@ class TankDuel extends MiniGameBase {
     final drop = _airdrop.crate;
     if (drop != null) TankFx.drawAirdrop(canvas, drop);
 
-    // Aim guides first (under the tanks), then the tanks themselves.
+    // Aim guides first (under the live tanks), then the tanks themselves. A
+    // downed tank is drawn as a burning WRECK + smoke column instead of an intact
+    // hull, so a KO leaves a smoldering hulk on the field.
     for (final t in _tanks) {
       if (t.hp <= 0) continue;
       TankRenderer.drawAimGuide(canvas, _viewOf(t));
     }
     for (final t in _tanks) {
-      if (t.overcharged && t.hp > 0) _drawOverchargeRing(canvas, t);
+      if (t.hp <= 0) {
+        TankRenderer.drawWreck(canvas, _wreckOf(t));
+        continue;
+      }
+      if (t.overcharged) _drawOverchargeRing(canvas, t);
       TankRenderer.drawTank(canvas, _viewOf(t));
     }
 
@@ -777,6 +810,27 @@ class TankDuel extends MiniGameBase {
       scale: _scale,
       precision: charging,
       charge: charging ? t.holdPower : 0.0,
+      victory: _isWinner(t) ? 1.0 : 0.0,
+    );
+  }
+
+  /// True once the round is over and [t] is the resolved winner — used to pulse
+  /// the winning hull bright. Reads only the resolved id, mutates nothing.
+  bool _isWinner(_Tank t) =>
+      status == MiniGameStatus.finished && t.playerId == _winnerId;
+
+  /// Snapshot a downed tank's wreck (burning hulk + smoke column). The wreck age
+  /// drives ember flicker + smoke rise; the ambient clock drives flicker phase.
+  WreckView _wreckOf(_Tank t) {
+    final age = t.downedAt < 0 ? 0.0 : math.max(0.0, _animClock - t.downedAt);
+    return WreckView(
+      base: t.base,
+      color: t.color,
+      edge: t.edge,
+      aimAngle: t.barrel.angle,
+      scale: _scale,
+      age: age,
+      t: _animClock,
     );
   }
 }
@@ -798,6 +852,7 @@ class _Tank {
   double holdSec = 0; // how long the current hold has lasted
   double holdPower = 0; // 0..1 charge accrued while holding (scales launch speed)
   double overcharge = 0; // seconds of airdrop double-damage buff remaining
+  double downedAt = -1; // _animClock when destroyed (-1 = still alive); wreck age
 
   _Tank({
     required this.playerId,

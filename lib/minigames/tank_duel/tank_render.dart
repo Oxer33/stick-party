@@ -40,6 +40,7 @@ class TankView {
   final double scale; // body scale factor (fits the arena)
   final bool precision; // true while the player holds to charge (fine-tune aim)
   final double charge; // 0..1 charge level while holding (0 = snap/tap)
+  final double victory; // 0..1 winner-celebration pulse on the hull (0 = none)
 
   const TankView({
     required this.base,
@@ -55,6 +56,30 @@ class TankView {
     required this.scale,
     this.precision = false,
     this.charge = 0,
+    this.victory = 0,
+  });
+}
+
+/// Immutable snapshot of a DOWNED tank's smoldering wreck, handed to the renderer
+/// so a destroyed tank leaves a burning hulk + a rising smoke column instead of
+/// vanishing. Carries only what the wreck draw needs — no gameplay coupling.
+class WreckView {
+  final Offset base; // turret pivot anchor in arena px (same as the live tank)
+  final Color color;
+  final TankEdge edge;
+  final double aimAngle; // last barrel angle, so the broken barrel droops from it
+  final double scale;
+  final double age; // seconds since downed (drives ember flicker + smoke rise)
+  final double t; // ambient clock for flicker/sway phase
+
+  const WreckView({
+    required this.base,
+    required this.color,
+    required this.edge,
+    required this.aimAngle,
+    required this.scale,
+    required this.age,
+    required this.t,
   });
 }
 
@@ -109,6 +134,7 @@ class TankRenderer {
   static const Color _steel = Color(0xFF8A95A6);
   static const Color _steelDark = Color(0xFF2B3340);
   static const Color _scorch = Color(0xFF0A0A0C);
+  static const Color _smoke = Color(0xFF6A6F78); // wreck smoke column
   static const Color _crateWood = Color(0xFFB07C3C);
   static const Color _crateWoodDark = Color(0xFF6E4A20);
   static const Color _crateBand = Color(0xFF3A2A14);
@@ -449,12 +475,129 @@ class TankRenderer {
     if (blinkHidden) return;
 
     final flashK = t.flash.clamp(0.0, 1.0);
-    final fill = _blend(t.color, _white, flashK * 0.7);
+    // The winner pulse brightens the whole tank toward white on top of any hit
+    // flash, so a victorious hull visibly glows.
+    final vic = t.victory.clamp(0.0, 1.0);
+    final fill = _blend(t.color, _white, (flashK * 0.7 + vic * 0.45).clamp(0.0, 1.0));
 
+    if (vic > 0) _drawVictoryPulse(canvas, t, r, vic);
     _drawTracks(canvas, t, r, side, up);
     _drawHull(canvas, t, r, side, up, fill, flashK);
     _drawTurretAndBarrel(canvas, t, r, fill);
     _drawHealthPips(canvas, t, r, side, up);
+  }
+
+  /// A bright celebration halo + ring under/around the winning tank's turret so
+  /// the round ends on a clear "this one won" beat. [vic] 0..1 scales it.
+  static void _drawVictoryPulse(Canvas canvas, TankView t, double r, double vic) {
+    final pivot = _turretPivot(t);
+    final glow = _blend(t.color, _white, 0.5);
+    canvas.drawCircle(
+      pivot,
+      r * (1.8 + 0.5 * vic),
+      Paint()..color = glow.withValues(alpha: 0.22 * vic),
+    );
+    canvas.drawCircle(
+      pivot,
+      r * (1.4 + 0.3 * vic),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, r * 0.12)
+        ..color = glow.withValues(alpha: (0.7 * vic).clamp(0.0, 1.0)),
+    );
+  }
+
+  // ── Downed wreck (burning hulk + smoke column) ─────────────────────────────
+  /// A destroyed tank's smoldering remains: a scorched footprint, a darkened
+  /// caved hull, a drooping snapped barrel, flickering embers and a rising smoke
+  /// column — so a KO'd tank leaves a wreck instead of popping out of existence.
+  /// All cheap solid fills; guards its inputs and never throws.
+  static void drawWreck(Canvas canvas, WreckView w) {
+    final r = _baseR * w.scale;
+    if (r <= 0) return;
+    final up = w.edge.outward;
+    final side = w.edge.along;
+    final pivot = w.base + up * (r * 0.62); // hull center (matches live tank)
+    final age = math.max(0.0, w.age);
+    // The wreck eases in over the first moment so it doesn't pop.
+    final settle = (age / 0.25).clamp(0.0, 1.0);
+
+    // Scorched ground footprint under the hulk.
+    canvas.save();
+    canvas.translate(pivot.dx, pivot.dy);
+    canvas.rotate(math.atan2(side.dy, side.dx));
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset.zero, width: r * 3.0, height: r * 1.2),
+      Paint()..color = _scorch.withValues(alpha: 0.5 * settle),
+    );
+    // Caved, charred hull body (a dark husk in a dim player tint).
+    final husk = _blend(_blend(w.color, _black, 0.72), _scorch, 0.3);
+    final hw = r * _hullW * 0.92, hh = r * _hullH * 0.82;
+    final rect = Rect.fromCenter(center: Offset.zero, width: hw, height: hh);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, Radius.circular(r * _hullRadius)),
+      Paint()..color = husk.withValues(alpha: settle),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, Radius.circular(r * _hullRadius)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, r * 0.06)
+        ..color = _black.withValues(alpha: 0.6 * settle),
+    );
+    canvas.restore();
+
+    // Snapped barrel stub drooping off the last aim direction.
+    final dir = Offset(math.cos(w.aimAngle), math.sin(w.aimAngle));
+    final droop = Offset(dir.dx, dir.dy + 0.5); // sags downward
+    final dl = droop.distance < 1e-3 ? const Offset(0, 1) : droop / droop.distance;
+    final stub = pivot + dl * (r * _barrelLen * 0.7);
+    canvas.drawLine(
+      pivot,
+      stub,
+      Paint()
+        ..color = _steelDark.withValues(alpha: settle)
+        ..strokeWidth = r * _barrelW
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // Flickering embers clustered on the hull.
+    final flick = 0.5 + 0.5 * math.sin(w.t * 12.0);
+    for (var i = 0; i < 3; i++) {
+      final off = Offset(
+        math.cos(w.t * 3 + i * 2.1) * r * 0.4,
+        math.sin(w.t * 2.4 + i) * r * 0.22,
+      );
+      canvas.drawCircle(
+        pivot + off,
+        r * (0.10 + 0.05 * flick),
+        Paint()..color = _embers.withValues(alpha: (0.5 + 0.4 * flick) * settle),
+      );
+    }
+
+    _drawSmokeColumn(canvas, pivot, r, up, age, w.t);
+  }
+
+  /// A rising, widening, fading smoke column above a wreck. A handful of stacked
+  /// soft puffs drift along the tank's "up" (away from the field) with a gentle
+  /// sway — a brief plume that reads without a per-frame blur.
+  static void _drawSmokeColumn(
+      Canvas canvas, Offset hull, double r, Offset up, double age, double t) {
+    const puffs = 5;
+    for (var i = 0; i < puffs; i++) {
+      // Each puff is at a phase along the column; phase scrolls upward with time.
+      final phase = ((i / puffs) + t * 0.18) % 1.0;
+      final rise = up * (r * (0.6 + 3.2 * phase));
+      final sway = Offset(-up.dy, up.dx) * (math.sin(t * 1.6 + i) * r * 0.3 * phase);
+      final at = hull + rise + sway;
+      final grow = r * (0.45 + 0.9 * phase);
+      // Fade in quickly, out toward the top; gated by how long it has burned.
+      final ramp = (age / 0.4).clamp(0.0, 1.0);
+      final alpha = (0.34 * (1.0 - phase) * ramp).clamp(0.0, 1.0);
+      if (alpha <= 0.01) continue;
+      final shade = _blend(_smoke, _black, 0.3 * (1.0 - phase));
+      canvas.drawCircle(at, grow, Paint()..color = shade.withValues(alpha: alpha));
+    }
   }
 
   static void _drawTracks(

@@ -131,6 +131,15 @@ class BumperBalls extends MiniGameBase {
 
   // ── Ring-out tuning ─────────────────────────────────────────────────────────
   static const double _ringOutGraceFactor = 1.02; // detect just past current R
+  // KO send-off: a knocked-off ball lingers as a spinning, shrinking VISUAL that
+  // keeps its velocity and sails off over this many seconds (pure cosmetic — the
+  // body is already eliminated). A small outward kick guarantees it clears the
+  // platform even on a near-stationary ring-out.
+  static const double _flingLifeSec = 0.4;
+  static const double _flingMinOutSpeed = 260.0; // floor outward fling speed
+
+  // ── Expression tuning ────────────────────────────────────────────────────────
+  static const double _scaredEdgeFactor = 0.78; // dist/ring above → looks scared
 
   // ── Bot tuning (mirrors Sumo's fair model) ──────────────────────────────────
   static const double _botWarmupSec = 2.0; // grace before bots engage
@@ -168,6 +177,10 @@ class BumperBalls extends MiniGameBase {
   final List<int> _eliminationOrder = <int>[];
   final Set<int> _eliminated = <int>{};
   final List<ImpactRing> _impacts = <ImpactRing>[];
+
+  /// Knocked-off balls still spinning + shrinking off-screen (visual only; the
+  /// matching bodies are already eliminated). Drained as each fling finishes.
+  final List<FlungBall> _flung = <FlungBall>[];
 
   late StarController _stars;
   bool _suddenDeathAnnounced = false;
@@ -310,6 +323,7 @@ class BumperBalls extends MiniGameBase {
 
     _tickBallStates(dt);
     _tickImpacts(dt);
+    _tickFlung(dt);
     _driveBots(dt);
     _shrinkRing(dt);
     _stars.tick(
@@ -658,6 +672,12 @@ class BumperBalls extends MiniGameBase {
       if (!b.alive || _eliminated.contains(b.id)) continue;
       if ((b.pos - _center).distance <= edge) continue;
 
+      // CHARM (visual only): before the body is zeroed/retired, snapshot a
+      // spinning, shrinking fling that keeps the ball's knock-off velocity and
+      // sails off-platform — so a KO is funny instead of an instant pop. A small
+      // outward floor guarantees it clears the edge even on a slow ring-out.
+      _spawnFling(b);
+
       b.alive = false;
       b.vel = Offset.zero;
       _eliminated.add(b.id);
@@ -689,6 +709,35 @@ class BumperBalls extends MiniGameBase {
         life: 0.7,
       );
     }
+  }
+
+  /// Snapshot a spinning, shrinking fling for a ball that is about to be retired.
+  /// It keeps the ball's knock-off velocity but is nudged outward (away from the
+  /// centre) to a guaranteed minimum so it always sails off the platform. Purely
+  /// a visual; the caller still flips alive=false and records the ranking.
+  void _spawnFling(Body b) {
+    final outDir = _normalize(b.pos - _center);
+    final dir = outDir == Offset.zero ? const Offset(0, 1) : outDir;
+    // Keep the existing velocity, but ensure a brisk outward component so a slow
+    // ring-out still launches rather than dribbling at the edge.
+    final outwardSpeed = math.max(b.vel.distance, _flingMinOutSpeed);
+    final vel = b.vel + dir * outwardSpeed;
+    _flung.add(FlungBall(
+      pos: b.pos,
+      vel: vel,
+      color: _colorOf(b.id),
+      radius: b.radius,
+      displayNumber: b.id + 1,
+      life: _flingLifeSec,
+      spinDir: b.id.isEven ? 1.0 : -1.0,
+    ));
+  }
+
+  void _tickFlung(double dt) {
+    for (final f in _flung) {
+      f.tick(dt);
+    }
+    _flung.removeWhere((f) => f.done);
   }
 
   // ── Outcome ──────────────────────────────────────────────────────────────────
@@ -747,6 +796,7 @@ class BumperBalls extends MiniGameBase {
     if (star != null) BumperFx.drawStar(canvas, star);
 
     _drawBalls(canvas);
+    _drawFlung(canvas); // spinning/shrinking knocked-off balls (visual send-off)
     _drawImpacts(canvas);
 
     _juice.render(canvas);
@@ -860,6 +910,7 @@ class BumperBalls extends MiniGameBase {
         lookDir: lookDir,
         ready: state?.ready ?? true,
         displayNumber: b.id + 1,
+        face: _faceFor(b, state),
       );
 
       // No idle arrow. While charging, a telegraph points the way the player is
@@ -874,6 +925,46 @@ class BumperBalls extends MiniGameBase {
           charge: state.charge,
         );
       }
+    }
+  }
+
+  /// The live expression for an alive ball: HAPPY while a star buff is up,
+  /// SCARED once it has drifted out near the deadly edge, else the determined
+  /// NEUTRAL face. (DIZZY is reserved for knocked-off flings.)
+  BallFace _faceFor(Body b, BallState? state) {
+    if (state != null && state.buffed) return BallFace.happy;
+    final edgeDist = (b.pos - _center).distance;
+    if (edgeDist > _currentRingRadius * _scaredEdgeFactor) {
+      return BallFace.scared;
+    }
+    return BallFace.neutral;
+  }
+
+  /// Draw each knocked-off ball's send-off: the same glossy ball wearing a DIZZY
+  /// face, tumbling and shrinking to nothing as it sails off (a transform-only
+  /// reuse of [BumperRenderer.drawBall] — no new art).
+  void _drawFlung(Canvas canvas) {
+    for (final f in _flung) {
+      final scale = f.strength; // 1 → 0 over its short life
+      if (scale <= 0.02) continue;
+      canvas.save();
+      canvas.translate(f.pos.dx, f.pos.dy);
+      canvas.rotate(f.spin);
+      canvas.scale(scale);
+      canvas.translate(-f.pos.dx, -f.pos.dy);
+      BumperRenderer.drawBall(
+        canvas,
+        f.pos,
+        f.radius,
+        f.color,
+        squash: 0,
+        stretchDir: const Offset(1, 0),
+        lookDir: const Offset(1, 0),
+        ready: false,
+        displayNumber: f.displayNumber,
+        face: BallFace.dizzy,
+      );
+      canvas.restore();
     }
   }
 

@@ -390,12 +390,19 @@ class ReactionDuel extends MiniGameBase {
         (1.0 - (reaction / _decisiveRefSec)).clamp(0.0, 1.0); // 0..1
     final color = _colorOf(winner.slot.id);
 
-    // Face the loser cluster and level the blade at them, then whip the slash.
+    // Face the loser cluster, level the blade at them, and snap into a full-body
+    // VICTORY hold (fired once per round) so the "FASTEST!" banner lands on a
+    // triumphant pose instead of a frozen idle. The slash arc itself is a
+    // separate effect drawn from the blade tip below, so the cheer doesn't eat
+    // the strike read.
     final faceDir = _loserDirection(winner);
     winner.figure
       ..facing = faceDir
-      ..aimAngle = faceDir >= 0 ? 0.0 : math.pi
-      ..attack(0);
+      ..aimAngle = faceDir >= 0 ? 0.0 : math.pi;
+    if (!winner.cheered) {
+      winner.cheered = true;
+      winner.figure.victory();
+    }
 
     _juice.hitStop.trigger(_hitStopSec, scale: _hitStopScale);
     // Signature FASTEST! cinematic: burst + shake + slow-mo + zoom toward the
@@ -688,7 +695,7 @@ class ReactionDuel extends MiniGameBase {
         idx + 1,
         locked: locked,
       );
-      ReactionRenderer.drawDuelist(canvas, fig, _rootOf(r));
+      _drawDuelistWithWaitSway(canvas, r, locked);
 
       // Per-duelist readout above the head: a small reaction time once they
       // draw, for flavor. The WAIT/TAP/TOO-EARLY state is carried by the big
@@ -701,6 +708,34 @@ class ReactionDuel extends MiniGameBase {
         ReactionRenderer.drawEarlyX(canvas, _chestOf(r), _scaleUnit, r.tooSoon);
       }
     }
+  }
+
+  // ── Wait-phase micro-sway ───────────────────────────────────────────────────
+  // Tiny tuning for a pure-visual ready-stance breathing tilt while the field
+  // holds its nerve through WAIT. Render only — touches no scoring/round state.
+  static const double _waitSwayRad = 0.025; // peak tilt (radians) during WAIT
+  static const double _waitSwayHz = 1.6; // sway speed
+
+  /// Draw a duelist, adding a faint breathing sway (a small tilt about the feet)
+  /// ONLY while the gate is still WAITING and the duelist isn't locked out — a
+  /// touch of life in the standoff. Purely visual: it never changes the figure's
+  /// pose state, position, or any game value, so the strike still reads instantly.
+  void _drawDuelistWithWaitSway(Canvas canvas, _Reactor r, bool locked) {
+    final swaying = !locked && _gate.phase == ReactionPhase.waiting;
+    if (!swaying) {
+      ReactionRenderer.drawDuelist(canvas, r.figure, _rootOf(r));
+      return;
+    }
+    // Per-duelist phase offset (from foot x) so the row doesn't sway in lockstep.
+    final tilt = _waitSwayRad *
+        math.sin(_animClock * _waitSwayHz + r.foot.dx * 0.02);
+    final pivot = r.foot;
+    canvas.save();
+    canvas.translate(pivot.dx, pivot.dy);
+    canvas.rotate(tilt);
+    canvas.translate(-pivot.dx, -pivot.dy);
+    ReactionRenderer.drawDuelist(canvas, r.figure, _rootOf(r));
+    canvas.restore();
   }
 
   void _drawSlashes(Canvas canvas) {
@@ -835,6 +870,7 @@ class _Reactor {
   final bool jumpsTheGun; // bot decided to false-start this round
 
   bool acted = false;
+  bool cheered = false; // fired the one-shot victory hold on a winning strike
   double tooSoon = 0; // 1 → 0 life of the "TOO SOON!" stamp
 
   _Reactor({

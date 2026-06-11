@@ -233,9 +233,16 @@ class SnakeRenderer {
     double cell,
     Color color, {
     required bool alive,
+    double eyeScale = 1.0,
+    double winnerGlow = 0.0,
   }) {
     if (pixels.isEmpty || cell <= 0) return;
     final n = pixels.length;
+    // A winning snake reads as a triumphant flash: dial the whole body brighter
+    // (toward white) so it pulses out from the field. [winnerGlow] 0..1 controls
+    // the strength of that celebration tint.
+    final wg = winnerGlow.clamp(0.0, 1.0);
+    if (wg > 0) color = Color.lerp(color, _white, 0.45 * wg) ?? color;
     final dim = alive ? 1.0 : 0.22;
     final inset = cell * _bodyInset;
     final bodyR = math.max(1.0, cell * _bodyRadiusFactor);
@@ -291,17 +298,20 @@ class SnakeRenderer {
         Paint()..color = _white.withValues(alpha: 0.85 * dim));
 
     if (alive) {
-      _drawEyes(canvas, head, heading, headR);
+      _drawEyes(canvas, head, heading, headR, eyeScale);
     }
   }
 
-  static void _drawEyes(
-      Canvas canvas, Offset head, Offset heading, double headR) {
+  /// The head's eyes. [eyeScale] widens them (used during SUDDEN DEATH so the
+  /// snakes look alert/panicked as the arena closes in); 1.0 is the default.
+  static void _drawEyes(Canvas canvas, Offset head, Offset heading,
+      double headR, double eyeScale) {
     var dir = heading;
     if (dir.distance < 1e-3) dir = const Offset(0, -1);
     dir = dir / dir.distance;
     final side = Offset(-dir.dy, dir.dx); // perpendicular
-    final eyeR = headR * (_eyeRadiusFactor / _headRadiusFactor);
+    final scale = eyeScale.clamp(0.5, 3.0);
+    final eyeR = headR * (_eyeRadiusFactor / _headRadiusFactor) * scale;
     final fwd = head + dir * headR * 0.4;
     final whitePaint = Paint()..color = _white;
     final pupil = Paint()..color = _black.withValues(alpha: 0.85);

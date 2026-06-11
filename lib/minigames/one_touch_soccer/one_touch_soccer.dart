@@ -330,9 +330,14 @@ class OneTouchSoccer extends MiniGameBase {
     }
 
     // During the kickoff pause the world is frozen (only juice + timers run).
+    // Figures still ANIMATE on real dt though, so the just-fired goal reactions
+    // (scorers' arms-up cheer / keeper slump) actually play out in the dead beat
+    // instead of freezing on frame 0. Loco is pinned to idle so a striker that
+    // was sprinting when the goal landed doesn't run-in-place over its frozen
+    // body. This advances only visual animation clocks — no sim/score/pacing.
     if (_kickoffPause > 0) {
       _pads.tick(sdt, ctx.rng, _pitch); // pad keeps drifting/aging visually
-      _syncFigures(0);
+      _syncFigures(dt, freezeLocoIdle: true);
       _resolveOutcome();
       return;
     }
@@ -601,13 +606,17 @@ class OneTouchSoccer extends MiniGameBase {
   Offset _opponentGoalTarget(int playerId) => SoccerFx.opponentGoalTarget(
       _attacksTop[playerId] ?? true, _goalMouth.center, _topLine, _bottomLine);
 
-  void _syncFigures(double dt) {
+  /// Advance every striker figure. [freezeLocoIdle] pins locomotion to idle
+  /// (used during the kickoff pause so reaction actions play over a still base
+  /// instead of a stale run cycle); it never affects the sim, only what plays.
+  void _syncFigures(double dt, {bool freezeLocoIdle = false}) {
     for (final entry in _figures.entries) {
       final body = _bodyOf(entry.key);
       final fig = entry.value;
       if (body != null) {
-        fig.setLoco(
-            body.vel.distance > _runSpeed ? LocoState.run : LocoState.idle);
+        fig.setLoco(!freezeLocoIdle && body.vel.distance > _runSpeed
+            ? LocoState.run
+            : LocoState.idle);
         final dir = _moveDir[entry.key] ?? Offset.zero;
         if (dir.dx.abs() > 0.05) fig.facing = dir.dx >= 0 ? 1.0 : -1.0;
       }
@@ -657,8 +666,31 @@ class OneTouchSoccer extends MiniGameBase {
         size: _pitch.shortestSide * 0.04);
     _juice.confetti(_size, colors: [color, _confettiA, _confettiB]);
 
+    // CHARM: react to the goal during the dead pause that follows — the scoring
+    // side throws its arms up, the side that conceded slumps at the keeper. Fired
+    // exactly once here (a goal sets the kickoff pause + resets the ball, so
+    // _checkGoals can't re-enter), so no extra guard flag is needed.
+    _reactToGoal(scoringAttacksTop: attacksTop);
+
     _kickoffPause = _kickoffPauseSec;
     _resetBall();
+  }
+
+  /// Goal reaction (pure feel, fired once from [_scoreFor]): every striker on the
+  /// scoring side cheers ([StickFigure.victory] — full-body arms-up) while the
+  /// conceding side's KEEPER (its rear-most defender) slumps ([StickFigure.hurt]).
+  /// Plays out in the existing kickoff pause; touches no scoring/pacing state.
+  void _reactToGoal({required bool scoringAttacksTop}) {
+    for (final entry in _figures.entries) {
+      final id = entry.key;
+      final fig = entry.value;
+      final onScoringSide = _attacksTop[id] == scoringAttacksTop;
+      if (onScoringSide) {
+        fig.victory();
+      } else if (_isKeeper(id)) {
+        fig.hurt();
+      }
+    }
   }
 
   void _resetBall() {
