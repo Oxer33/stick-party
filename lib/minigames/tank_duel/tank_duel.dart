@@ -3,6 +3,9 @@ import 'dart:ui';
 
 import '../../art/fx/juice.dart';
 import '../../art/fx/particles.dart';
+import '../../art/stick/stick_figure.dart';
+import '../../art/stick/stick_skeleton.dart';
+import '../../art/stick/stick_style.dart';
 import '../../core/math2.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/aim_sweep.dart';
@@ -40,13 +43,28 @@ import 'tank_render.dart';
 ///    the time limit always resolves it.
 ///
 /// FAIR BOTS: they LEAD the arc — solving (by a cheap arc search) the launch
-/// angle that drops a shell onto the nearest reachable opponent — but only after
-/// a warm-up grace, and with a [BotProfile] accuracy error plus a per-shot
-/// flinch so easy bots genuinely MISS often and are beatable, not snipers.
-/// Each shot a bot also picks a CHARGE: it usually snap-fires flat at base
-/// speed, but a stronger (more accurate) bot will sometimes wind up a charged
-/// shot — and it solves the arc at the SAME charged speed it will fire at, so a
-/// charged bot shell still lands instead of overshooting.
+/// angle that drops a shell onto the nearest reachable ENEMY (a teammate is
+/// never a target) — but only after a warm-up grace, and with a [BotProfile]
+/// accuracy error plus a per-shot flinch so easy bots genuinely MISS often and
+/// are beatable, not snipers. Each shot a bot also picks a CHARGE: it usually
+/// snap-fires flat at base speed, but a stronger (more accurate) bot will
+/// sometimes wind up a charged shot — and it solves the arc at the SAME charged
+/// speed it will fire at, so a charged bot shell still lands instead of
+/// overshooting.
+///
+/// MODES — every shell carries its owner's TEAM, and damage/scoring resolve by
+/// team so a 2v2 plays as two squads, not four loners:
+///  * TEAM 2v2 ([GameMode.team2v2] with an even seat count): seats split into
+///    [Team.a] (even ids) vs [Team.b] (odd ids). FRIENDLY FIRE IS OFF — a shell
+///    that reaches a teammate does no damage and fizzles. A team WINS when all
+///    of the other team's tanks are downed (or, at the time limit, the team with
+///    the most aggregate hits). Each tank still keeps its own player color, but
+///    its tracer is TEAM-tinted so the table reads "blue squad vs red squad".
+///  * FREE-FOR-ALL (FFA / duel / 1+CPU / any ODD seat count): each tank is its
+///    own team, every kill scores individually, and the last tank standing (or
+///    most hits) wins. Running 3p as an FFA is the deliberate fix for the unfair
+///    1-vs-2 a 3-seat "team" split would create — nobody is the lone, ganged
+///    side; each of the three fights for itself.
 class TankDuel extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -54,7 +72,7 @@ class TankDuel extends MiniGameBase {
         name: 'Tank Duel',
         minPlayers: 1,
         maxPlayers: 4,
-        modes: [GameMode.ffa, GameMode.duel1v1],
+        modes: [GameMode.ffa, GameMode.duel1v1, GameMode.team2v2],
         inputHint: 'TAP',
       );
 
@@ -148,6 +166,18 @@ class TankDuel extends MiniGameBase {
   static const int _overchargeDamage = 2; // damage per shell while overcharged
   static const Color _airColor = Color(0xFFFFE45C);
 
+  // ── Gunner mascot tuning ─────────────────────────────────────────────────────
+  // A small player-colored stick gunner rides each turret: idle while aiming,
+  // flinches [StickFigure.hurt] when its tank is hit, cheers [victory] on the
+  // winner, and slumps (hurt) atop a wreck. Anim advances on frame dt.
+  static const double _gunnerScale = 0.42; // hero proportions × this (rides small)
+  static const double _gunnerSeatOut = 0.34; // seat offset along turret "up" / r
+  static const double _gunnerWreckSeatOut = 0.16; // lower, slumped onto a wreck
+
+  // ── Team palette (tracers/aura in team mode read squad-colored) ──────────────
+  static const Color _teamAColor = Color(0xFF36B6FF); // squad A — cool blue
+  static const Color _teamBColor = Color(0xFFFF5A52); // squad B — hot red
+
   // ── Ambient ─────────────────────────────────────────────────────────────────
   static const int _emberCount = 26;
   static const double _horizonFactor = 0.34; // horizon Y / arena height
@@ -159,6 +189,9 @@ class TankDuel extends MiniGameBase {
   final List<_Scorch> _scorches = <_Scorch>[];
   final List<Offset> _embers = <Offset>[];
 
+  // One small stick gunner per tank, keyed by playerId; advances on frame dt.
+  final Map<int, StickFigure> _gunners = <int, StickFigure>{};
+
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for ambient/flash
   late Size _size;
@@ -166,15 +199,22 @@ class TankDuel extends MiniGameBase {
   late double _horizonY;
   late AirdropController _airdrop;
   late Rect _airField; // where airdrops may land
+  // Team mode is on only for an even seat count in [GameMode.team2v2]; an odd
+  // count (or ffa/duel) stays FFA so a 3p never splits into an unfair 1-vs-2.
+  bool _teamMode = false;
   bool _frenzyAnnounced = false;
   bool _winnerCelebrated = false; // one-shot winner victory pulse fired
   int? _winnerId; // resolved winner (drives the hull victory pulse), or null
+  Team? _winnerTeam; // resolved winning team in team mode (drives squad pulse)
 
   @override
   void init(MiniGameContext ctx) {
     prepare(ctx);
     _juice = Juice(rng: ctx.rng);
     _size = ctx.arena;
+    // Team 2v2 only with an even seat count: an odd roster (1 / 3) stays FFA so
+    // it never becomes a lop-sided 1-vs-2. Duel / ffa are always FFA too.
+    _teamMode = ctx.mode == GameMode.team2v2 && ctx.players.length.isEven;
     final minSide = math.min(_size.width, _size.height);
     // Scale tanks down on small arenas, up modestly on big ones.
     _scale = (minSide / 520).clamp(0.7, 1.6);
@@ -217,16 +257,55 @@ class TankDuel extends MiniGameBase {
         speed: _sweepSpeed,
         angle: center + ctx.rng.jitter(_sweepHalfBand * 0.6),
       );
+      final color = Color(p.colorArgb);
+      final team = _teamMode ? _teamOf(p) : Team.none;
       _tanks.add(_Tank(
         playerId: p.id,
-        color: Color(p.colorArgb),
+        color: color,
+        team: team,
+        // The tracer reads SQUAD-colored in team mode (so two tanks on one team
+        // share a shell color) but stays the player's own color in FFA.
+        tracer: _teamMode ? _teamTint(team) : color,
         base: base,
         edge: edge,
         barrel: barrel,
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
+      // A small player-colored stick gunner rides the turret; it faces inward so
+      // it reads as crewing a barrel that points into the field.
+      _gunners[p.id] = StickFigure(
+        proportions: StickProportions.hero.scaled(_gunnerScale),
+        style: _gunnerStyle(color),
+        facing: inward.dx >= 0 ? 1.0 : -1.0,
+      )..setLoco(LocoState.idle);
     }
   }
+
+  /// Squad for [p] in team mode: an explicit [PlayerSlot.team] wins, else even
+  /// ids are [Team.a] and odd ids [Team.b] (matching the soccer split).
+  Team _teamOf(PlayerSlot p) {
+    if (p.team == Team.a || p.team == Team.b) return p.team;
+    return p.id.isEven ? Team.a : Team.b;
+  }
+
+  /// Squad tracer/aura tint for a [team] (only used in team mode).
+  Color _teamTint(Team team) => team == Team.b ? _teamBColor : _teamAColor;
+
+  /// Bright stick-gunner style: player-color fill with a brightened neon outline
+  /// + glow (same recipe sumo/soccer use for their figures).
+  StickStyle _gunnerStyle(Color color) => StickStyle(
+        fill: color,
+        outline: _brighten(color, 0.5),
+        glowSigma: 3,
+        lineWidth: 1.0,
+        rimAlpha: 0.26,
+        shadowAlpha: 0.0, // tank already lays its own contact shadow
+        gradientBottom: 0.5,
+        smearAlpha: 0.2,
+      );
+
+  static Color _brighten(Color c, double t) =>
+      Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
 
   /// Assign each seat to a screen edge: bottom, then top, then the sides.
   TankEdge _edgeFor(int index, int count) {
@@ -334,7 +413,9 @@ class TankDuel extends MiniGameBase {
       pos: muzzle,
       vel: dir * speed,
       ownerId: id,
-      color: tank.color,
+      // Squad-tinted tracer in team mode (two teammates fire the same color),
+      // the player's own color in FFA — so 4 tanks' shells read at a glance.
+      color: tank.tracer,
     ));
     tank.recoil = _recoilSec;
     tank.muzzle = _muzzleSec;
@@ -395,6 +476,7 @@ class TankDuel extends MiniGameBase {
     for (final c in _crates) {
       c.tickFlash(dt, _crateFlashSec);
     }
+    _syncGunners(dt);
     _ageScorches(dt);
     _airdrop.tick(dt, ctx.rng, _airField);
     _driveBots(dt);
@@ -418,6 +500,19 @@ class TankDuel extends MiniGameBase {
       s.life -= dt;
     }
     _scorches.removeWhere((s) => s.life <= 0);
+  }
+
+  /// Advance every gunner's animation on frame dt (like the other figure games).
+  /// A live gunner that isn't mid-action settles back to [LocoState.idle]; a
+  /// downed gunner is left in whatever clip it holds (the wreck draws it slumped)
+  /// and still ticks so its pose ages instead of freezing.
+  void _syncGunners(double dt) {
+    for (final t in _tanks) {
+      final g = _gunners[t.playerId];
+      if (g == null) continue;
+      if (t.hp > 0 && !g.actionPlaying) g.setLoco(LocoState.idle);
+      g.update(dt);
+    }
   }
 
   // ── Bots: lead the arc, then fire on cadence ────────────────────────────────
@@ -479,9 +574,14 @@ class TankDuel extends MiniGameBase {
   /// delegates the arc search. A faster (charged) shell flies flatter, so the
   /// solved angle differs — keeping a charged bot shot honest.
   double? _bestLaunchAngle(_Tank shooter, double shellSpeed) {
+    // Bots aim at ENEMIES only: a teammate (team mode) is never targeted, and a
+    // downed tank is skipped so the bot keeps hunting a live foe.
     final targets = <Offset>[
       for (final t in _tanks)
-        if (t.playerId != shooter.playerId) _turretPivotOf(t),
+        if (t.playerId != shooter.playerId &&
+            t.hp > 0 &&
+            !_areAllies(shooter, t))
+          _turretPivotOf(t),
     ];
     return TankFx.bestLaunchAngle(
       lo: shooter.barrel.minAngle,
@@ -536,8 +636,13 @@ class TankDuel extends MiniGameBase {
   }
 
   int? _hitTank(Offset pos, int ownerId) {
+    final owner = _tankOf(ownerId);
     for (final t in _tanks) {
       if (t.playerId == ownerId) continue;
+      // FRIENDLY FIRE OFF: in team mode a shell passes harmlessly THROUGH a
+      // teammate (never a valid hit), so it can sail on to an enemy beyond or
+      // fizzle. In FFA every other tank is fair game.
+      if (owner != null && _areAllies(owner, t)) continue;
       // A downed tank (hp 0) is no longer a target: it isn't removed from the
       // list and its post-down invuln expires, so without this it would keep
       // absorbing shells once a round runs on past a pre-[_minRoundSec] down —
@@ -549,6 +654,11 @@ class TankDuel extends MiniGameBase {
     }
     return null;
   }
+
+  /// True when [a] and [b] are on the same squad (team mode only). In FFA every
+  /// [Team.none] tank is its own side, so this is always false.
+  bool _areAllies(_Tank a, _Tank b) =>
+      _teamMode && a.team != Team.none && a.team == b.team;
 
   _Crate? _hitCrate(Offset pos) {
     for (final c in _crates) {
@@ -570,6 +680,10 @@ class TankDuel extends MiniGameBase {
     victim.invuln = _invulnSec;
     addScore(shooterId, damage);
     _scorches.add(_Scorch(at: at));
+    // The victim's gunner flinches; on the killing blow it slumps (the wreck
+    // draw keeps it slumped). Guarded — a missing/already-playing figure no-ops.
+    final gunner = _gunners[victimId];
+    if (gunner != null && !gunner.actionPlaying) gunner.hurt();
 
     // The signature beat is a DIRECT HIT that DOWNS a tank (its last pip): a
     // single big-moment (burst + heavy shake + slow-mo + zoom toward the hit +
@@ -661,24 +775,92 @@ class TankDuel extends MiniGameBase {
   // ── End condition ───────────────────────────────────────────────────────────
 
   void _checkEnd() {
-    // The hits-target only resolves after the floor, so an early flurry can't
-    // end the round in under a few seconds; the time limit always ends it.
-    final reachedTarget = _elapsed >= _minRoundSec &&
-        _tanks.any((t) => scoreOf(t.playerId) >= _hitsToWin);
-    if (reachedTarget || _elapsed >= _timeLimit) {
+    // Past the floor (so an early flurry can't end it in under a few seconds) a
+    // round resolves on the win condition; the time limit always ends it.
+    //  * TEAM: a team wins the instant the OTHER team is fully downed.
+    //  * FFA: any tank reaching the hits-target wins (and a wipe-out — only one
+    //    tank left alive — also ends it so a sweep doesn't idle out the clock).
+    final pastFloor = _elapsed >= _minRoundSec;
+    final decided = pastFloor &&
+        (_teamMode ? _aTeamIsWiped() : _ffaDecided());
+    if (decided || _elapsed >= _timeLimit) {
       _celebrateWinner(); // mark the winner + pop its victory beat (visual only)
       _juice.confetti(_size);
-      finishByScore();
+      _finishMatch();
     }
   }
 
-  /// One-shot winner celebration at finish: pick the top-scoring tank (ties →
-  /// first seat, matching the scoreboard) and pop a [Juice.bigMoment] flash at
-  /// its hull. [_winnerId] then drives a bright victory pulse on that tank in the
-  /// renderer. Reads only scores; changes no scoring/ranking.
+  /// FFA finish trigger: someone hit the target, or only one tank is still up.
+  bool _ffaDecided() {
+    if (_tanks.any((t) => scoreOf(t.playerId) >= _hitsToWin)) return true;
+    return _aliveCount() <= 1 && _tanks.length > 1;
+  }
+
+  /// Team finish trigger: at least one squad has every tank downed (so the other
+  /// squad has won). Guarded so a not-yet-engaged round doesn't false-trigger.
+  bool _aTeamIsWiped() {
+    final aAlive = _tanks.any((t) => t.team == Team.a && t.hp > 0);
+    final bAlive = _tanks.any((t) => t.team == Team.b && t.hp > 0);
+    return !aAlive || !bAlive;
+  }
+
+  int _aliveCount() => _tanks.where((t) => t.hp > 0).length;
+
+  /// Aggregate hits scored by all tanks on [team].
+  num _teamScore(Team team) {
+    num sum = 0;
+    for (final t in _tanks) {
+      if (t.team == team) sum += scoreOf(t.playerId);
+    }
+    return sum;
+  }
+
+  /// Resolve the round. FFA ranks by each tank's own hits. TEAM ranks the whole
+  /// winning squad above the losing one (by aggregate team hits, then a tank's
+  /// own hits, then seat) so 2v2 finishes as "blue beat red", not four loners —
+  /// while [finalScores] still reports each player's individual hits.
+  void _finishMatch() {
+    if (!_teamMode) {
+      finishByScore();
+      return;
+    }
+    // A strict, total team order so teammates are ALWAYS adjacent in the final
+    // ranking (no interleaving even when aggregate hits tie): a living squad
+    // beats a wiped one; then more aggregate team hits; then a stable squad
+    // ordinal (Team.a first) as the final, deterministic tiebreak.
+    final winning = _winnerTeam ?? Team.a;
+    int teamKey(Team t) {
+      final wiped = !_tanks.any((x) => x.team == t && x.hp > 0);
+      final score = _teamScore(t).toInt();
+      final ordinal = t == winning ? 0 : 1; // resolved winner always sorts first
+      return (wiped ? 1 : 0) * 1000000 - score * 10 + ordinal;
+    }
+    final ids = ctx.players.map((p) => p.id).toList()
+      ..sort((a, b) {
+        final ta = _tankOf(a), tb = _tankOf(b);
+        final ka = ta == null ? 0 : teamKey(ta.team);
+        final kb = tb == null ? 0 : teamKey(tb.team);
+        if (ka != kb) return ka.compareTo(kb);
+        // Same squad: better individual shooter first, then id (stable).
+        final cmp = scoreOf(b).compareTo(scoreOf(a));
+        return cmp != 0 ? cmp : a.compareTo(b);
+      });
+    finishWith(
+        WinResult(ranking: ids, finalScores: Map<int, num>.from(scores.byPlayer)));
+  }
+
+  /// One-shot winner celebration at finish. FFA: pick the top-scoring tank
+  /// (ties → first seat, matching the scoreboard), cheer its gunner and pop a
+  /// [Juice.bigMoment] at its hull; [_winnerId] then drives its victory pulse.
+  /// TEAM: delegate to [_celebrateWinningTeam] (whole squad cheers + pulses).
+  /// Reads only scores/hp; changes no scoring/ranking.
   void _celebrateWinner() {
     if (_winnerCelebrated) return;
     _winnerCelebrated = true;
+    if (_teamMode) {
+      _celebrateWinningTeam();
+      return;
+    }
     _Tank? best;
     var bestScore = -1.0;
     for (final t in _tanks) {
@@ -690,7 +872,42 @@ class TankDuel extends MiniGameBase {
     }
     if (best == null) return;
     _winnerId = best.playerId;
+    _cheerGunner(best);
     _juice.bigMoment(_turretPivotOf(best), best.color, banner: 'WINNER!');
+  }
+
+  /// Team finish beat: pick the winning squad (a wiped enemy, else more aggregate
+  /// hits; ties → Team.a) and pop a victory cheer + a [Juice.bigMoment] at each
+  /// surviving member. [_winnerTeam] then drives the squad hull pulse.
+  void _celebrateWinningTeam() {
+    final aWiped = !_tanks.any((t) => t.team == Team.a && t.hp > 0);
+    final bWiped = !_tanks.any((t) => t.team == Team.b && t.hp > 0);
+    final Team winner;
+    if (aWiped != bWiped) {
+      winner = aWiped ? Team.b : Team.a;
+    } else {
+      winner = _teamScore(Team.b) > _teamScore(Team.a) ? Team.b : Team.a;
+    }
+    _winnerTeam = winner;
+    var fired = false;
+    for (final t in _tanks) {
+      if (t.team != winner) continue;
+      _winnerId ??= t.playerId; // first surviving member drives single-hull reads
+      if (t.hp > 0) _cheerGunner(t);
+      if (!fired) {
+        fired = true;
+        _juice.bigMoment(_turretPivotOf(t), _teamTint(winner),
+            banner: 'TEAM WINS!');
+      }
+    }
+  }
+
+  /// Switch a tank's gunner into its arms-up [StickFigure.victory] cheer.
+  void _cheerGunner(_Tank t) {
+    final g = _gunners[t.playerId];
+    if (g == null) return;
+    g.setLoco(LocoState.idle);
+    g.victory();
   }
 
   // ── Geometry helpers (mirror TankRenderer) ──────────────────────────────────
@@ -746,13 +963,23 @@ class TankDuel extends MiniGameBase {
       if (t.hp <= 0) continue;
       TankRenderer.drawAimGuide(canvas, _viewOf(t));
     }
+    // Team mode: a faint squad-colored ground ring under every live tank so the
+    // table reads "blue squad vs red squad" at rest (matching the shell tracers),
+    // drawn under the hulls so it never muddies them.
+    if (_teamMode) {
+      for (final t in _tanks) {
+        if (t.hp > 0) _drawTeamRing(canvas, t);
+      }
+    }
     for (final t in _tanks) {
       if (t.hp <= 0) {
         TankRenderer.drawWreck(canvas, _wreckOf(t));
+        _drawGunner(canvas, t, downed: true);
         continue;
       }
       if (t.overcharged) _drawOverchargeRing(canvas, t);
       TankRenderer.drawTank(canvas, _viewOf(t));
+      _drawGunner(canvas, t, downed: false);
     }
 
     for (final s in _shells) {
@@ -771,6 +998,29 @@ class TankDuel extends MiniGameBase {
     _juice.renderOverlay(canvas, size);
   }
 
+  /// A faint, steady squad-colored ground ring under a tank (team mode only) so
+  /// the two teams read apart at a glance even when nobody is firing.
+  void _drawTeamRing(Canvas canvas, _Tank t) {
+    final r = _baseR * _scale;
+    final tint = _teamTint(t.team);
+    final at = t.base + t.edge.outward * (r * _shadowDrop);
+    canvas.drawCircle(
+      at,
+      r * 1.7,
+      Paint()..color = tint.withValues(alpha: 0.10),
+    );
+    canvas.drawCircle(
+      at,
+      r * 1.7,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, r * 0.07)
+        ..color = tint.withValues(alpha: 0.5),
+    );
+  }
+
+  static const double _shadowDrop = 0.55; // mirrors TankRenderer shadow offset
+
   /// A pulsing gold ring under an overcharged tank so the table sees who is
   /// dangerous right now (double-damage shells).
   void _drawOverchargeRing(Canvas canvas, _Tank t) {
@@ -786,6 +1036,25 @@ class TankDuel extends MiniGameBase {
             .withValues(alpha: (0.5 + 0.3 * pulse).clamp(0.0, 1.0)),
     );
   }
+
+  /// Draw a tank's stick gunner riding the turret. It's anchored a touch above
+  /// the turret dome in SCREEN space (always upright, never rotated by the tank's
+  /// edge) so a bottom/top/side tank all read "a little crew member on top". On a
+  /// [downed] wreck it sits lower (slumped into the hulk). Guarded + wrapped so a
+  /// missing figure or a paint hiccup never throws from render.
+  void _drawGunner(Canvas canvas, _Tank t, {required bool downed}) {
+    final g = _gunners[t.playerId];
+    if (g == null) return;
+    final r = _baseR * _scale;
+    final pivot = _turretPivotOf(t);
+    // Seat the pelvis above the dome; the legs (~0.6r at this scale) then rest
+    // near the turret top. A wreck seat sits lower so the gunner slumps onto it.
+    final seatOut = downed ? _gunnerWreckSeatOut : _gunnerSeatOut;
+    final root = pivot + const Offset(0, -1) * (r * (_turretR + seatOut));
+    g.render(canvas, root);
+  }
+
+  static const double _turretR = 0.78; // mirrors TankRenderer turret radius / r
 
   TankView _viewOf(_Tank t) {
     // Invuln phase counts blink cycles; pass the phase index so the renderer can
@@ -814,10 +1083,14 @@ class TankDuel extends MiniGameBase {
     );
   }
 
-  /// True once the round is over and [t] is the resolved winner — used to pulse
-  /// the winning hull bright. Reads only the resolved id, mutates nothing.
-  bool _isWinner(_Tank t) =>
-      status == MiniGameStatus.finished && t.playerId == _winnerId;
+  /// True once the round is over and [t] is on the winning side — used to pulse
+  /// the winning hull(s) bright. In FFA that's the single top tank; in team mode
+  /// it's every tank on the winning squad. Reads only resolved ids, mutates none.
+  bool _isWinner(_Tank t) {
+    if (status != MiniGameStatus.finished) return false;
+    if (_teamMode && _winnerTeam != null) return t.team == _winnerTeam;
+    return t.playerId == _winnerId;
+  }
 
   /// Snapshot a downed tank's wreck (burning hulk + smoke column). The wreck age
   /// drives ember flicker + smoke rise; the ambient clock drives flicker phase.
@@ -838,7 +1111,9 @@ class TankDuel extends MiniGameBase {
 /// One tank. Mutable round-scoped state (allowed for the duration of one round).
 class _Tank {
   final int playerId;
-  final Color color;
+  final Color color; // the player's own color (hull/turret tint)
+  final Team team; // squad in team mode; [Team.none] in FFA
+  final Color tracer; // shell tracer color: squad-tinted in team mode, else own
   final Offset base; // turret-base anchor in arena px
   final TankEdge edge;
   final AimSweep barrel;
@@ -857,6 +1132,8 @@ class _Tank {
   _Tank({
     required this.playerId,
     required this.color,
+    required this.team,
+    required this.tracer,
     required this.base,
     required this.edge,
     required this.barrel,

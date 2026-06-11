@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
@@ -10,7 +12,9 @@ import 'package:stick_party/minigames/tank_duel/tank_fx.dart';
 
 void main() {
   MiniGameContext ctxFor(int n,
-      {int seed = 7, BotDifficulty difficulty = BotDifficulty.medium}) {
+      {int seed = 7,
+      BotDifficulty difficulty = BotDifficulty.medium,
+      GameMode mode = GameMode.ffa}) {
     final players = [for (var i = 0; i < n; i++) PlayerSlot.defaults(i, isBot: true)];
     return MiniGameContext(
       players: players,
@@ -18,7 +22,27 @@ void main() {
       rng: SeededRng(seed),
       zones: ZoneLayout.forPlayers(n),
       difficulty: difficulty,
+      mode: mode,
     );
+  }
+
+  /// Advance an all-bot game to its finish (or a hard cap) at a fixed 60 fps,
+  /// returning the frame count it took.
+  int runToFinish(TankDuel g, {int maxFrames = 60 * 80}) {
+    var frames = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < maxFrames) {
+      g.update(1 / 60);
+    }
+    return frames;
+  }
+
+  /// Render one frame into a throwaway canvas so render-path asserts can prove
+  /// "never throws" (the gunner mascot + team tints draw here).
+  void renderOnce(TankDuel g, {ui.Size size = const ui.Size(800, 1200)}) {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder, ui.Offset.zero & size);
+    g.render(canvas, size);
+    recorder.endRecording().dispose();
   }
 
   test('tank duel finishes with four bots and ranks all players', () {
@@ -166,6 +190,97 @@ void main() {
     }
     // Shells (tap + charged) reach their targets, so hits accumulate overall.
     expect(totalHits, greaterThan(0));
+  });
+
+  // ── TEAM 2v2 + FFA fairness ────────────────────────────────────────────────
+
+  test('team2v2 4p finishes and ranks all four players', () {
+    final g = TankDuel()..init(ctxFor(4, seed: 40, mode: GameMode.team2v2));
+    runToFinish(g);
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
+  });
+
+  test('team2v2 resolves by TEAM: the winning squad takes the top two ranks',
+      () {
+    // Squads split by id parity ({0,2} vs {1,3}). However a round resolves —
+    // a team wiped early or most aggregate hits at the bell — the two members
+    // of the winning team must occupy ranks 0 & 1 (never interleaved with the
+    // losers), proving scoring/ranking aggregate per TEAM rather than per loner.
+    for (var seed = 0; seed < 8; seed++) {
+      final g =
+          TankDuel()..init(ctxFor(4, seed: 300 + seed, mode: GameMode.team2v2));
+      runToFinish(g);
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      final rank = g.winResult!.ranking;
+      // Top two are teammates (same parity); bottom two are the other squad.
+      expect(rank[0].isEven, rank[1].isEven,
+          reason: 'seed $seed: top two should be one squad ($rank)');
+      expect(rank[2].isEven, rank[3].isEven,
+          reason: 'seed $seed: bottom two should be the other squad ($rank)');
+      expect(rank[0].isEven, isNot(rank[2].isEven),
+          reason: 'seed $seed: the two squads must not interleave ($rank)');
+    }
+  });
+
+  test('friendly fire is OFF: a team is never wiped faster than free-for-all',
+      () {
+    // With friendly fire off, teammates cannot damage each other, so a 2v2
+    // takes (on aggregate, across seeds) AT LEAST as long to resolve as the same
+    // four tanks in a free-for-all where every shell can hurt every other tank.
+    // A shorter team round would betray teammates dealing damage. Deterministic
+    // via ctx.rng (same seeds compared head-to-head).
+    var ffaTotal = 0, teamTotal = 0;
+    for (var seed = 0; seed < 8; seed++) {
+      final ffa = TankDuel()..init(ctxFor(4, seed: 500 + seed));
+      final team = TankDuel()
+        ..init(ctxFor(4, seed: 500 + seed, mode: GameMode.team2v2));
+      ffaTotal += runToFinish(ffa);
+      teamTotal += runToFinish(team);
+    }
+    expect(teamTotal, greaterThanOrEqualTo(ffaTotal),
+        reason: 'team rounds resolved faster than FFA — friendly fire leaked');
+  });
+
+  test('team2v2 paces correctly: past the floor, within the limit', () {
+    for (var seed = 0; seed < 6; seed++) {
+      final g =
+          TankDuel()..init(ctxFor(4, seed: 700 + seed, mode: GameMode.team2v2));
+      final frames = runToFinish(g);
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      expect(frames, greaterThan(90),
+          reason: 'seed $seed ended too fast (${frames / 60}s)');
+      expect(frames, lessThan(60 * 50),
+          reason: 'seed $seed overran the limit (${frames / 60}s)');
+    }
+  });
+
+  test('odd 3p stays free-for-all (no lone-ganged team) even in team2v2 mode',
+      () {
+    // An odd seat count can't split into fair squads, so requesting team2v2 with
+    // 3 players must fall back to FFA: each tank scores for itself and all three
+    // are ranked individually. (The 1-vs-2 unfairness is the thing we avoid.)
+    final g = TankDuel()..init(ctxFor(3, seed: 21, mode: GameMode.team2v2));
+    runToFinish(g);
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.winResult!.ranking.toSet(), {0, 1, 2});
+  });
+
+  test('render never throws across modes (gunner mascot + team tints + wreck)',
+      () {
+    // Drive each mode to a finish (so wrecks, the winner pulse and the cheering
+    // gunner are all on screen) and render at several points — none may throw.
+    for (final mode in [GameMode.ffa, GameMode.team2v2]) {
+      final g = TankDuel()..init(ctxFor(4, seed: 33, mode: mode));
+      expect(() {
+        for (var i = 0; i < 60 * 80 && g.status != MiniGameStatus.finished; i++) {
+          g.update(1 / 60);
+          if (i % 40 == 0) renderOnce(g);
+        }
+        renderOnce(g); // final frame: winner celebration + any wrecks
+      }, returnsNormally, reason: 'mode $mode threw while rendering');
+      expect(g.status, MiniGameStatus.finished);
+    }
   });
 
   group('AirdropController (chaos pickup)', () {
