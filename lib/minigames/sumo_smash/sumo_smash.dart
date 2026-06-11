@@ -719,6 +719,12 @@ class SumoSmash extends MiniGameBase {
 
     _drawWrestlers(canvas);
 
+    _juice.render(canvas);
+    canvas.restore();
+
+    // Screen-space overlays (after the world transform is restored so they are
+    // never shaken or zoomed by the camera punch): the SUDDEN DEATH banner +
+    // the cinematic flash/banner from bigMoment.
     if (_isSuddenDeath) {
       SumoFx.drawSuddenDeathBanner(
         canvas,
@@ -727,10 +733,6 @@ class SumoSmash extends MiniGameBase {
         _animClock,
       );
     }
-
-    _juice.render(canvas);
-    canvas.restore();
-
     _juice.renderOverlay(canvas, size);
   }
 

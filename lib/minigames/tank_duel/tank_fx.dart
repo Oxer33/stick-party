@@ -184,8 +184,13 @@ class TankFx {
 
   /// Impact explosion: a hot two-tone particle burst + shake + hit-stop. [heavy]
   /// is a tank hit (bigger); else a crate shatter / airdrop pop. Pure feedback.
+  ///
+  /// Set [jolt] false to draw only the particle burst and leave the screen-jolt
+  /// (shake + hit-stop) to the caller — used on a downing / KO hit where
+  /// [Juice.bigMoment] / [Juice.ko] already own a heavier shake + hit-stop, so
+  /// firing explode's jolt too would double the screen-shake on one event.
   static void explode(Juice juice, Offset at, Color color,
-      {required bool heavy}) {
+      {required bool heavy, bool jolt = true}) {
     juice.particles.burst(
       at: at,
       count: heavy ? 20 : 12,
@@ -206,6 +211,7 @@ class TankFx {
       gravity: 400,
       life: 0.4,
     );
+    if (!jolt) return;
     if (heavy) {
       juice.shake.heavy();
       juice.hitStop.trigger(0.1, scale: 0.1);

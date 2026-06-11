@@ -61,7 +61,6 @@ class ReactionDuel extends MiniGameBase {
   // ── Strike / feel tuning ────────────────────────────────────────────────────
   static const double _strikeFlashSec = 0.45; // blinding flash + screen-flash
   static const double _strikeWordSec = 0.55; // STRIKE word punch-in then fade
-  static const double _screenFlashMax = 0.4; // peak white screen-flash opacity
   static const double _slashLifeSec = 0.55; // slash arc + speed-line life
   static const double _tooSoonLifeSec = 1.4; // "TOO SOON!" stamp life
   static const double _hitStopSec = 0.22; // slow-mo on the decisive strike
@@ -643,13 +642,16 @@ class ReactionDuel extends MiniGameBase {
       waitPulse: _waitPulse(),
       centerFrac: _cueCenterFrac,
     );
-    ReactionRenderer.drawScreenFlash(canvas, size, _strikeFlash * _screenFlashMax);
 
     _juice.render(canvas);
     canvas.restore();
 
     // Screen-space cinematic overlays (GO flash + FASTEST! banner) after the
-    // world transform is restored, so they are not shaken or zoomed.
+    // world transform is restored, so they are not shaken or zoomed. The GO
+    // wash is the green [Juice.flashScreen] overlay fired once on the signal
+    // edge; the old in-world white [drawScreenFlash] was removed so the flash no
+    // longer double-stacks (white over green) nor gets zoomed by a strike's
+    // camera punch (which left unflashed wedges at the screen corners).
     _juice.renderOverlay(canvas, size);
   }
 

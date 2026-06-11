@@ -725,16 +725,16 @@ class ArcherPop extends MiniGameBase {
       ArcherRenderer.drawComboBadge(canvas, view);
     }
 
+    _juice.render(canvas);
+    canvas.restore();
+
+    // Screen-space overlays (after the world transform is restored so they are
+    // never shaken or zoomed by the camera punch): the wind banner + FRENZY
+    // banner + the cinematic flash/banner from bigMoment.
     ArcherRenderer.drawWindBanner(canvas, size, _windX);
     if (_isFrenzy) {
       ArcherFx.drawFrenzyBanner(canvas, size, 1.0, _animClock);
     }
-
-    _juice.render(canvas);
-    canvas.restore();
-
-    // Screen-space cinematic overlays (flash + banner) — drawn after the world
-    // transform is restored so they are not shaken or zoomed.
     _juice.renderOverlay(canvas, size);
   }
 

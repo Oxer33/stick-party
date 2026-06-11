@@ -749,6 +749,12 @@ class BumperBalls extends MiniGameBase {
     _drawBalls(canvas);
     _drawImpacts(canvas);
 
+    _juice.render(canvas);
+    canvas.restore();
+
+    // Screen-space overlays (after the world transform is restored so they are
+    // never shaken or zoomed by the camera punch): the SUDDEN DEATH banner +
+    // the cinematic flash/banner from bigMoment.
     if (_isSuddenDeath) {
       BumperFx.drawSuddenDeathBanner(
         canvas,
@@ -757,12 +763,6 @@ class BumperBalls extends MiniGameBase {
         _animClock,
       );
     }
-
-    _juice.render(canvas);
-    canvas.restore();
-
-    // Screen-space cinematic overlays (flash + banner) — drawn after the world
-    // transform is restored so they are not shaken or zoomed.
     _juice.renderOverlay(canvas, size);
   }
 

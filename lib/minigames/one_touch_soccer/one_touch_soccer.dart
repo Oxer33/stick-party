@@ -711,8 +711,14 @@ class OneTouchSoccer extends MiniGameBase {
       squash: _ballSquash,
     );
 
-    SoccerRenderer.drawVignette(canvas, size);
     _drawJoysticks(canvas);
+
+    _juice.render(canvas);
+    canvas.restore();
+
+    // Screen-space HUD + cinematic overlays — drawn AFTER the world transform is
+    // restored so the goal camera-punch never warps the scoreboard / banners.
+    SoccerRenderer.drawVignette(canvas, size);
     _drawScoreboard(canvas);
     SoccerRenderer.drawKickoffBanner(
         canvas, _pitch, 'KICK OFF', _kickoffBannerAlpha());
@@ -721,12 +727,6 @@ class OneTouchSoccer extends MiniGameBase {
     if (_isDoubleGoals && _kickoffPause <= 0) {
       SoccerFx.drawDoubleGoalsBanner(canvas, size, 1.0, _elapsed);
     }
-
-    _juice.render(canvas);
-    canvas.restore();
-
-    // Screen-space cinematic overlays (flash + banner) — drawn after the world
-    // transform is restored so they are not shaken or zoomed.
     _juice.renderOverlay(canvas, size);
   }
 

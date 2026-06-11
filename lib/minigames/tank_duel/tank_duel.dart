@@ -536,6 +536,11 @@ class TankDuel extends MiniGameBase {
   int? _hitTank(Offset pos, int ownerId) {
     for (final t in _tanks) {
       if (t.playerId == ownerId) continue;
+      // A downed tank (hp 0) is no longer a target: it isn't removed from the
+      // list and its post-down invuln expires, so without this it would keep
+      // absorbing shells once a round runs on past a pre-[_minRoundSec] down —
+      // re-firing the 'DIRECT HIT!' big-moment and re-scoring on a corpse.
+      if (t.hp <= 0) continue;
       if (t.invuln > 0) continue;
       final reach = _baseR * _scale * _hitRadius + _shellRadius;
       if ((_turretPivotOf(t) - pos).distance <= reach) return t.playerId;
@@ -562,16 +567,22 @@ class TankDuel extends MiniGameBase {
     victim.flash = _flashSec;
     victim.invuln = _invulnSec;
     addScore(shooterId, damage);
-    TankFx.explode(_juice, at, shooter.color, heavy: true);
     _scorches.add(_Scorch(at: at));
 
     // The signature beat is a DIRECT HIT that DOWNS a tank (its last pip): a
     // single big-moment (burst + heavy shake + slow-mo + zoom toward the hit +
     // flash + 'DIRECT HIT!' banner + haptic). A non-downing clinch keeps the KO
-    // flourish; ordinary chip-hits keep the snappy HIT! popup.
-    if (victim.hp <= 0) {
+    // flourish; ordinary chip-hits keep the snappy HIT! popup. The explosion
+    // particles fire on every hit, but its screen-jolt is suppressed on the
+    // down/KO branches because bigMoment/ko already own a heavier shake +
+    // hit-stop — stacking explode's jolt too would double the screen-shake.
+    final downed = victim.hp <= 0;
+    final clinch = !downed && scoreOf(shooterId) >= _hitsToWin;
+    TankFx.explode(_juice, at, shooter.color,
+        heavy: true, jolt: !(downed || clinch));
+    if (downed) {
       _juice.bigMoment(at, shooter.color, banner: 'DIRECT HIT!');
-    } else if (scoreOf(shooterId) >= _hitsToWin) {
+    } else if (clinch) {
       _juice.ko(at, shooter.color);
     } else {
       _juice.popup(at.translate(0, -_baseR * _scale), 'HIT!', shooter.color,
@@ -715,15 +726,15 @@ class TankDuel extends MiniGameBase {
       TankRenderer.drawShell(canvas, s.view());
     }
 
-    if (_isFrenzy) {
-      TankFx.drawFrenzyBanner(canvas, size, 1.0, _animClock);
-    }
-
     _juice.render(canvas);
     canvas.restore();
 
-    // Screen-space cinematic overlays (flash + banner) — drawn after the world
-    // transform is restored so they are not shaken or zoomed.
+    // Screen-space overlays (after the world transform is restored so they are
+    // never shaken or zoomed by the camera punch): the FRENZY banner + the
+    // cinematic flash/banner from bigMoment.
+    if (_isFrenzy) {
+      TankFx.drawFrenzyBanner(canvas, size, 1.0, _animClock);
+    }
     _juice.renderOverlay(canvas, size);
   }
 
