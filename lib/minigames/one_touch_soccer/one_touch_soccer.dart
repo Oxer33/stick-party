@@ -711,14 +711,15 @@ class OneTouchSoccer extends MiniGameBase {
       squash: _ballSquash,
     );
 
-    _drawJoysticks(canvas);
-
     _juice.render(canvas);
     canvas.restore();
 
     // Screen-space HUD + cinematic overlays — drawn AFTER the world transform is
-    // restored so the goal camera-punch never warps the scoreboard / banners.
+    // restored so the goal camera-punch never warps fixed UI. Joysticks map
+    // normalized touch points through _toPixels (full-screen px), independent of
+    // the world transform, so they land correctly here too.
     SoccerRenderer.drawVignette(canvas, size);
+    _drawJoysticks(canvas);
     _drawScoreboard(canvas);
     SoccerRenderer.drawKickoffBanner(
         canvas, _pitch, 'KICK OFF', _kickoffBannerAlpha());
