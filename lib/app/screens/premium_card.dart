@@ -46,10 +46,20 @@ class _Card {
   static const double borderActive = 0.85;
 
   /// Outer accent-glow shadow parameters.
-  static const double glowBlur = 22;
+  static const double glowBlur = 28;
   static const double glowSpread = -6;
-  static const Offset glowOffset = Offset(0, 10);
-  static const double glowAlpha = 0.34;
+  static const Offset glowOffset = Offset(0, 12);
+  static const double glowAlpha = 0.42;
+
+  // ── Decorative depth layer (turns the flat tint into a lit, glassy surface) ──
+  /// Diagonal accent wash, strongest at the top-left corner.
+  static const double washTop = 0.24;
+
+  /// Glassy white highlight along the very top edge.
+  static const double sheen = 0.12;
+
+  /// Soft accent bloom blooming out of the bottom-right corner.
+  static const double bloom = 0.22;
 }
 
 /// Wraps [child] so it shrinks to [GlassTokens.pressScale] on tap-down and
@@ -193,12 +203,19 @@ class PremiumPanel extends StatelessWidget {
         alpha: highlight ? _Card.borderActive : _Card.border,
       ),
       padding: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
+      child: Stack(
         children: <Widget>[
-          if (showEdge) AccentEdge(accent: accent, radius: radius),
-          Padding(padding: padding ?? EdgeInsets.zero, child: child),
+          // Lit, dimensional surface behind the content (accent wash + top
+          // sheen + corner bloom). Cheap: layered gradients, no blur.
+          Positioned.fill(child: _CardDecor(accent: accent, radius: radius)),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (showEdge) AccentEdge(accent: accent, radius: radius),
+              Padding(padding: padding ?? EdgeInsets.zero, child: child),
+            ],
+          ),
         ],
       ),
     );
@@ -207,6 +224,72 @@ class PremiumPanel extends StatelessWidget {
       radius: radius,
       enabled: glow,
       child: panel,
+    );
+  }
+}
+
+/// Decorative depth behind a [PremiumPanel]'s content: a diagonal accent wash,
+/// a glassy top sheen, and a soft corner bloom — layered gradients (no blur)
+/// that turn the flat accent tint into a lit, three-dimensional surface.
+class _CardDecor extends StatelessWidget {
+  const _CardDecor({required this.accent, required this.radius});
+
+  final Color accent;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final BorderRadius br = BorderRadius.circular(radius);
+    return IgnorePointer(
+      child: Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          // Diagonal accent wash — strongest at the top-left, fading out.
+          DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: br,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[
+                  accent.withValues(alpha: _Card.washTop),
+                  accent.withValues(alpha: 0),
+                ],
+                stops: const <double>[0, 0.6],
+              ),
+            ),
+          ),
+          // Glassy top sheen.
+          DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: br,
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: <Color>[
+                  Colors.white.withValues(alpha: _Card.sheen),
+                  Colors.white.withValues(alpha: 0),
+                ],
+                stops: const <double>[0, 0.3],
+              ),
+            ),
+          ),
+          // Soft accent bloom out of the bottom-right corner.
+          DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: br,
+              gradient: RadialGradient(
+                center: const Alignment(1.0, 1.1),
+                radius: 0.95,
+                colors: <Color>[
+                  accent.withValues(alpha: _Card.bloom),
+                  accent.withValues(alpha: 0),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
