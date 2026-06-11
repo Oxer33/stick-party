@@ -44,8 +44,12 @@ void main() {
     });
   }
 
-  test('all-bot round outlasts the warmup and resolves before the time cap '
-      '(climax surge converges it)', () {
+  test('SCORED RUN: an all-bot round runs the FULL timer and never ends early '
+      '(anti-instant-win)', () {
+    // The rework makes this a scored run, not last-one-standing: caught climbers
+    // respawn, so the round plays the whole [timeLimit] and is ranked by peak
+    // height. It must NEVER resolve in the first couple of seconds (the old
+    // "instant win when the rival fell" bug) — it always reaches the time cap.
     final g = ChickenJump()..init(ctxFor(4, seed: 5));
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
@@ -53,10 +57,41 @@ void main() {
     }
     expect(g.status, MiniGameStatus.finished);
     final simSeconds = n / 60.0;
-    // Floor: never an instant finish (warmup ~1.9s is held). Ceiling: the climax
-    // lava surge in the final phase guarantees it resolves under the 30s cap.
-    expect(simSeconds, greaterThan(1.5));
-    expect(simSeconds, lessThan(30.0));
+    // Anti-instant-win floor: a real round, well past any "one left" moment.
+    expect(simSeconds, greaterThan(8.0));
+    // Ceiling: the full timer (30s) plus a small resolution buffer.
+    expect(simSeconds, lessThan(31.0));
+  });
+
+  test('SCORED RUN: a 1v1 where the bot is caught still runs the full timer '
+      '(no instant win when the rival falls)', () {
+    // The core complaint: in 1v1 the round used to end the instant the lone bot
+    // died. Now the human plays the WHOLE run for height. Drive a human that
+    // taps steadily vs one medium bot; assert the round lasts a real minimum
+    // regardless of when the bot first gets caught.
+    final players = [
+      PlayerSlot.defaults(0),
+      PlayerSlot.defaults(1, isBot: true),
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(17),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = ChickenJump()..init(ctx);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+      if (n % 22 == 0) {
+        g.onInput(PlayerInput.down(0));
+        g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+      }
+    }
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.winResult!.ranking.toSet(), {0, 1});
+    expect(n / 60.0, greaterThan(8.0),
+        reason: '1v1 must play a real run, not end when the bot is caught');
   });
 
   test('all-bot rounds finish across difficulties and seeds within the cap', () {
@@ -206,5 +241,51 @@ void main() {
     }
     expect(g.heightLaneOf(0), lessThan(peak),
         reason: 'a lingered cracked rung must crumble and drop the climber');
+  });
+
+  test('SCORED RUN: the double-leap holder out-SCORES the safe masher over a '
+      'full run (skill beats spam)', () {
+    // Anti-spam guarantee against the final score model: two identical humans,
+    // one mashing safe single hops, one holding each press to gamble the double
+    // leap. Both press the same number of times, then the round plays out to the
+    // finish. Ranked by peak height, the holder must finish with a score >= the
+    // masher (and the holder must lead the ranking) — so safe single-hop mashing
+    // can never out-score the risky leap. Deterministic via the seeded context.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(3),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = ChickenJump()..init(ctx);
+    for (var i = 0; i < 130; i++) {
+      g.update(1 / 60);
+    }
+    // Player 0 mashes safe single taps; player 1 holds each press to leap.
+    for (var press = 0; press < 6; press++) {
+      g.onInput(PlayerInput.down(0));
+      g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+      g.onInput(PlayerInput.down(1));
+      for (var f = 0; f < 16; f++) {
+        g.update(1 / 60);
+      }
+      g.onInput(const PlayerInput(playerId: 1, phase: InputPhase.up));
+      for (var f = 0; f < 12; f++) {
+        g.update(1 / 60);
+      }
+    }
+    // Run the rest of the round out to the finish (no further input).
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished);
+    final scores = g.winResult!.finalScores;
+    final holder = (scores[1] ?? 0).toDouble();
+    final masher = (scores[0] ?? 0).toDouble();
+    expect(holder, greaterThanOrEqualTo(masher),
+        reason: 'the bold leaper must not score below the safe masher');
+    expect(g.winResult!.ranking.first, 1,
+        reason: 'the higher-climbing leaper should top the ranking');
   });
 }

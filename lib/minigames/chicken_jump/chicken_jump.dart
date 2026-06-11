@@ -101,9 +101,22 @@ class _Tuning {
   static const double flingX = 130; // horizontal fling / figure scale
   static const double flingY = 200; // upward fling / figure scale
 
-  // Scoring: survivors get a tower-height + survival bonus so they always
-  // outrank the eliminated on score as well as placement.
-  static const double survivePerSec = 2;
+  // ── SCORED RUN: full timer + respawn (no instant "last alive" win) ──────────
+  // The round ALWAYS runs the full [timeLimit]; a climber caught by the lava is
+  // NOT eliminated — it RESPAWNS [respawnSec] later on a safe rung a few rungs
+  // ABOVE the lava (a checkpoint that keeps the run going for more score) with a
+  // brief [respawnInvulnSec] grace so the lava can't immediately re-catch it. A
+  // lone climber therefore plays the WHOLE run, scored on how high it ever got —
+  // never an instant win because the other player died.
+  static const double respawnSec = 1.2; // delay before a caught climber returns
+  static const double respawnInvulnSec = 0.9; // post-respawn grace (no re-catch)
+  static const int respawnRungsAboveLava =
+      3; // checkpoint rungs above the lava surface on respawn
+
+  // Scoring: the run is ranked by the PEAK rung a climber ever reached over the
+  // whole round (height = progress). Each rung is worth [scorePerRung] so the
+  // double-leap gamble — which reaches strictly higher than safe mashing — wins.
+  static const double scorePerRung = 10;
 }
 
 /// One climber: occupies a rung in its own tower and hops upward to outrun the
@@ -122,7 +135,9 @@ class _Climber {
   bool alive = true;
   double jumpHold = 0; // jump pose timer after a hop
   double landHold = 0; // squash timer after landing
-  int topReached = 0; // highest rung touched (for ranking)
+  int topReached = 0; // highest rung EVER touched this run (the progress score)
+  double respawnTimer = 0; // seconds until a caught climber returns (0 = none)
+  double invuln = 0; // post-respawn grace: lava can't catch (seconds)
   double sinceShake = _Tuning.nearCatchShakeGap; // throttle near-catch shakes
   double lavaY = 0; // lava surface y for this column (rising = decreasing y)
   ReactionClock? clock;
@@ -164,10 +179,16 @@ class _Climber {
 /// dropping you a rung; the leap can also misfire and only manage the single
 /// rung. So every press is a real decision: play it safe, or gamble height
 /// against the lava. Lava floods up from the bottom of every tower,
-/// accelerating so the round always converges. The rung directly above always
-/// shows a glowing "hop here next" cue. Get caught by the lava (fall behind) →
-/// ragdoll fling + KO and you're out. Last climber standing wins; on the time
-/// limit the survivors are ranked by height.
+/// accelerating so the round always converges.
+///
+/// SCORED RUN (not last-one-standing): the round runs the FULL [_Tuning.timeLimit]
+/// and your SCORE is the PEAK rung you ever reach (height = how far you got). A
+/// climber caught by the lava is NOT out — it RESPAWNS ~[_Tuning.respawnSec]
+/// later on a safe rung above the lava (a checkpoint) with a brief grace, so a
+/// lone climber plays the whole run for more height instead of instantly
+/// "winning" because the rival fell. Most height over the run wins; because the
+/// double-leap gamble reaches strictly higher than safe single-hop mashing, the
+/// bold climber out-scores the masher.
 ///
 /// Bots read the same rising lava and hop on a [BotProfile]-timed reaction
 /// clock: better accuracy keeps a larger safety buffer, while [errorRate] makes
@@ -187,7 +208,6 @@ class ChickenJump extends MiniGameBase {
 
   late Juice _juice;
   final List<_Climber> _climbers = <_Climber>[];
-  final List<int> _eliminationOrder = <int>[]; // worst→best as they fall
   double _elapsed = 0;
   double _animClock = 0; // real-time clock for ambient FX (never scaled)
   double _lavaSpeed = _Tuning.lavaRiseStart;
@@ -409,11 +429,81 @@ class ChickenJump extends MiniGameBase {
     // COMEBACK: the single living climber on the lowest rung gets held lava.
     final trailingId = _trailingClimberId();
 
+    _tickRespawns(dt);
     _driveBots(dt);
     for (final c in _climbers) {
       _stepClimber(c, dt, sdt, comeback: c.playerId == trailingId);
     }
     _checkEnd();
+  }
+
+  /// Count down each caught climber's respawn timer; when it elapses bring the
+  /// climber back on a safe checkpoint rung above the lava. Keeps the run going
+  /// for the full timer so a lone climber never wins by the rival merely falling.
+  void _tickRespawns(double dt) {
+    for (final c in _climbers) {
+      if (c.alive) continue;
+      if (c.respawnTimer <= 0) continue; // already resolved / not queued
+      c.respawnTimer -= dt;
+      if (c.respawnTimer <= 0) _respawn(c);
+    }
+  }
+
+  /// Bring a caught climber back on a safe rung a few rungs ABOVE the current
+  /// lava surface (clamped into the tower), upright and briefly invulnerable so
+  /// the lava cannot re-catch it the instant it lands. Its peak height
+  /// ([topReached]) is preserved — the respawn only lets it keep climbing for
+  /// more, never resets the score it already banked.
+  void _respawn(_Climber c) {
+    final lavaLane = _laneAtOrAboveLava(c);
+    final safeLane =
+        (lavaLane + _Tuning.respawnRungsAboveLava).clamp(0, c.rungs.count - 1);
+    c.alive = true;
+    c.respawnTimer = 0;
+    c.invuln = _Tuning.respawnInvulnSec;
+    c.hopper.hopTo(safeLane);
+    c.hopper.snapVisual();
+    // NOTE: the respawn does NOT bump [topReached]. The score is how high the
+    // climber actually CLIMBED, not where the safety net dropped it — so a late
+    // checkpoint near the top (when the lava floods the tower) can never inflate
+    // a score, and skill (active climbing) stays the only way up the ranking.
+    // Clear any gamble / pose state carried from before the catch.
+    c.holdActive = false;
+    c.holdSec = 0;
+    c.leapPending = false;
+    c.crackedRung = -1;
+    c.crackTimer = 0;
+    c.crackPanicked = false;
+    c.jumpHold = 0;
+    c.landHold = 0;
+    c.figure.exitRagdoll();
+    c.figure.setLoco(LocoState.idle);
+    final at = Offset(c.columnX, c.visualRungY() - c.figureLift);
+    _juice.particles.burst(
+      at: at,
+      count: 12,
+      color: c.color,
+      speed: 200,
+      size: 6,
+      gravity: 120,
+      life: 0.5,
+    );
+    _juice.popup(
+      Offset(c.columnX, c.visualRungY() - c.figureLift - 12),
+      'BACK!',
+      c.color,
+      size: 24,
+    );
+  }
+
+  /// The lowest rung whose top is still ABOVE the lava surface in [c]'s column
+  /// (i.e. a rung the climber would be safe standing on right now). Falls back to
+  /// the lowest rung when the lava is below the whole tower.
+  int _laneAtOrAboveLava(_Climber c) {
+    for (var lane = 0; lane < c.rungs.count; lane++) {
+      if (c.rungYOf(lane) < c.lavaY) return lane; // rung top above the lava
+    }
+    return c.rungs.count - 1;
   }
 
   /// True once the round passes the climax fraction of its life — the lava
@@ -460,6 +550,7 @@ class ChickenJump extends MiniGameBase {
       c.lavaY -= _lavaSpeed * mul * sdt;
     }
     c.sinceShake += dt;
+    if (c.invuln > 0) c.invuln = math.max(0, c.invuln - dt);
 
     if (!c.alive) {
       c.figure.update(dt);
@@ -570,8 +661,10 @@ class ChickenJump extends MiniGameBase {
       c.sinceShake = 0;
     }
 
-    // Caught once the lava surface reaches the logical rung the climber owns.
-    if (c.lavaY <= c.rungYOf(c.hopper.lane)) {
+    // Caught once the lava surface reaches the logical rung the climber owns —
+    // unless it is in its post-respawn grace, so a fresh checkpoint is never an
+    // instant re-catch.
+    if (c.invuln <= 0 && c.lavaY <= c.rungYOf(c.hopper.lane)) {
       _eliminate(c);
     }
   }
@@ -620,9 +713,18 @@ class ChickenJump extends MiniGameBase {
 
   // ── Elimination / outcome ────────────────────────────────────────────────────
 
+  /// The lava catches a climber: it ragdolls + KOs, but this is NOT a permanent
+  /// elimination — its peak height ([topReached]) is already banked as the score
+  /// and it is queued to RESPAWN on a safe checkpoint after [respawnSec], so the
+  /// run continues for the full timer. Guarded against a double-catch in one
+  /// frame (already-dead / mid-respawn climbers are skipped).
   void _eliminate(_Climber c) {
+    if (!c.alive) return;
     c.alive = false;
-    _eliminationOrder.add(c.playerId);
+    c.respawnTimer = _Tuning.respawnSec;
+    c.holdActive = false;
+    c.leapPending = false;
+    c.crackedRung = -1;
     final rungY = c.visualRungY();
     final at = Offset(c.columnX, rungY);
     final away = ctx.rng.sign();
@@ -633,48 +735,42 @@ class ChickenJump extends MiniGameBase {
           -_Tuning.flingY * c.figureScale),
     );
     _juice.ko(at, c.color);
-    _juice.popup(Offset(c.columnX, rungY - 34), 'OUT!', c.color, size: 30);
+    _juice.popup(Offset(c.columnX, rungY - 34), 'CAUGHT!', c.color, size: 30);
   }
 
   void _checkEnd() {
-    final timeUp = _elapsed >= _Tuning.timeLimit;
-    // Count survivors without allocating a list every frame; only materialize
-    // the survivor list on the single frame the round actually resolves.
-    var aliveCount = 0;
-    for (final c in _climbers) {
-      if (c.alive) aliveCount++;
-    }
-    if (aliveCount > 1 && !timeUp) return;
-    _finish(_climbers.where((c) => c.alive).toList());
+    // SCORED RUN: the round runs the FULL timer (caught climbers respawn), so it
+    // NEVER ends early just because one climber is left — a lone player plays the
+    // whole run and is scored on how high it got. Only the time cap resolves it.
+    if (_elapsed >= _Tuning.timeLimit) _finish();
   }
 
-  void _finish(List<_Climber> alive) {
-    // Survival bonus first so a survivor always outranks the eliminated on
-    // score as well as on placement.
-    final surviveBonus =
-        (_Tuning.platformCount + _Tuning.timeLimit * _Tuning.survivePerSec)
-            .round();
+  void _finish() {
+    // SCORED RUN: rank by the PEAK rung each climber ever reached (progress),
+    // highest first; a lone player is scored on how far it got over the whole
+    // run, never on merely outliving a fallen rival. Each rung is worth
+    // [scorePerRung]. The double-leap gamble reaches strictly higher than safe
+    // single-hop mashing, so the bold climber out-scores the masher.
     for (final c in _climbers) {
-      setScore(c.playerId, c.topReached + (c.alive ? surviveBonus : 0));
+      setScore(c.playerId, c.topReached * _Tuning.scorePerRung);
     }
-    // Survivors (highest rung first) rank above the eliminated; eliminated are
-    // ordered most-recent-first (they lasted longest).
-    final survivors = alive.toList()
-      ..sort((a, b) => b.topReached.compareTo(a.topReached));
-    // Charm: the TOP survivor reacts atop the tower instead of freezing — a
-    // full-body arms-up cheer (fist-pump). Fires once; fallers already use the
-    // fall loco / ragdoll, so only a living climber celebrates.
-    if (!_winnerCheered && survivors.isNotEmpty) {
+    // Rank by peak height, highest first; ties break by id so the full set is
+    // always preserved in a stable order.
+    final ranked = _climbers.toList()
+      ..sort((a, b) {
+        final byHeight = b.topReached.compareTo(a.topReached);
+        return byHeight != 0 ? byHeight : a.playerId.compareTo(b.playerId);
+      });
+    // Charm: the highest climber reacts atop the tower instead of freezing — a
+    // full-body arms-up cheer. Fires once; a climber mid-fall / caught is a
+    // ragdoll, so only an upright winner celebrates.
+    if (!_winnerCheered && ranked.isNotEmpty) {
       _winnerCheered = true;
-      final top = survivors.first;
+      final top = ranked.first;
       if (!top.figure.isRagdoll) top.figure.victory();
     }
-    final ranking = <int>[
-      for (final c in survivors) c.playerId,
-      ..._eliminationOrder.reversed,
-    ];
     _juice.confetti(ctx.arena);
-    finishByOrder(_dedupe(ranking));
+    finishByOrder(_dedupe([for (final c in ranked) c.playerId]));
   }
 
   /// Ensure every player id appears exactly once, preserving [order] first.

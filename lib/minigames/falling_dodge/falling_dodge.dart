@@ -111,6 +111,17 @@ class _Tuning {
   static const double botWarmupSec = 1.5;
 
   static const double scrollPerSec = 220; // band texture scroll rate (visual)
+
+  // ── SCORED RUN: full timer + respawn (no instant "last alive" win) ──────────
+  // The round ALWAYS runs the full [timeLimit]; a crushed runner is NOT
+  // eliminated — it RESPAWNS [respawnSec] later in the SAFEST lane (the one with
+  // no imminent hazard) with a brief [respawnInvulnSec] grace so it can't be
+  // re-crushed the instant it returns. So a lone runner plays the WHOLE run,
+  // banking graze points the entire time, instead of "winning" the moment the
+  // rival is crushed. Ranking is by banked graze score, so the daredevil who
+  // grazes wins — a timid runner who only flees still loses.
+  static const double respawnSec = 1.2; // delay before a crushed runner returns
+  static const double respawnInvulnSec = 0.9; // post-respawn grace (no re-crush)
 }
 
 /// Falling Dodge: telegraphed hazards (boulders, anvils, spike-crates) rain
@@ -124,9 +135,15 @@ class _Tuning {
 ///    nothing auto-aims a "safe" lane for them.
 ///
 /// A stylish near-miss rewards brief slow-mo + sparks + a "NICE!" popup; getting
-/// crushed ragdolls + eliminates you. Fall speed and spawn rate escalate so the
-/// round always converges — last runner standing wins, with a time-limit
-/// fallback ranked by survival score.
+/// crushed ragdolls you.
+///
+/// SCORED RUN (not last-one-standing): the round runs the FULL [_Tuning.timeLimit]
+/// and your SCORE is your banked GRAZE points. A crushed runner is NOT out — it
+/// RESPAWNS ~[_Tuning.respawnSec] later in the safest lane with a brief grace, so
+/// a lone runner plays the whole run banking grazes instead of instantly
+/// "winning" because the rival was crushed. Most banked grazes wins; because the
+/// close dodge is the only thing that scores (over-fleeing snaps the chain), the
+/// daring grazer out-scores the timid runner who only flees.
 ///
 /// Fairness: a warmup delays the first hazard, and for an early grace window the
 /// spawner never targets a runner's current lane, so an idle player survives the
@@ -317,7 +334,9 @@ class FallingDodge extends MiniGameBase {
     _maybeFireDanger();
 
     for (final t in _tracks) {
+      if (t.invuln > 0) t.invuln = math.max(0, t.invuln - dt);
       if (t.alive) {
+        t.aliveSec += dt; // cumulative alive time (gentle tiebreaker)
         _spawnTick(t, sdt);
         _stepHazards(t, sdt);
         _tickTokens(t, sdt);
@@ -325,8 +344,75 @@ class FallingDodge extends MiniGameBase {
       _tickFigure(t, dt, sdt);
       _tickFlashes(t, dt);
     }
+    _tickRespawns(dt);
     _driveBots(dt);
     _checkEnd();
+  }
+
+  /// Count down each crushed runner's respawn timer; when it elapses bring the
+  /// runner back in the safest lane. Keeps the run going for the full timer so a
+  /// lone runner never wins just because the rival was crushed.
+  void _tickRespawns(double dt) {
+    for (final t in _tracks) {
+      if (t.alive || t.respawnTimer <= 0) continue;
+      t.respawnTimer -= dt;
+      if (t.respawnTimer <= 0) _respawn(t);
+    }
+  }
+
+  /// Bring a crushed runner back in the SAFEST lane (the one whose nearest
+  /// approaching hazard is furthest away), upright and briefly invulnerable so it
+  /// cannot be re-crushed the instant it returns. The graze chain restarts from
+  /// zero — banked points already stand; a fresh run must re-earn its streak.
+  void _respawn(TrackFx t) {
+    final lane = _safestLane(t);
+    t.alive = true;
+    t.respawnTimer = 0;
+    t.invuln = _Tuning.respawnInvulnSec;
+    t.grazeChain = 0;
+    t.grazeBannerAt = 0;
+    t.hopHold = 0;
+    t.hopper.hopTo(lane);
+    t.hopper.snapVisual();
+    t.figure.exitRagdoll();
+    t.figure.setLoco(LocoState.run);
+    final at = Offset(t.lanes.coordOf(lane), t.runnerY);
+    _juice.particles.burst(
+      at: at,
+      count: 12,
+      color: t.color,
+      speed: 200,
+      size: 6,
+      gravity: 120,
+      life: 0.5,
+    );
+    _juice.popup(
+      Offset(t.lanes.coordOf(lane), t.runnerY - 30),
+      'BACK!',
+      t.color,
+      size: 24,
+    );
+  }
+
+  /// The lane whose nearest approaching hazard is FURTHEST away (or has none) —
+  /// the safest place to drop a respawn. Ties resolve to the lower lane index.
+  int _safestLane(TrackFx t) {
+    var bestLane = 0;
+    var bestEta = double.negativeInfinity;
+    for (var lane = 0; lane < _Tuning.laneCount; lane++) {
+      var eta = double.infinity; // no hazard in this lane → maximally safe
+      for (final h in t.hazards) {
+        if (h.lane != lane || h.y > t.runnerY) continue;
+        final speed = _fallSpeed * h.speedMul;
+        if (speed <= 0) continue;
+        eta = math.min(eta, (t.runnerY - h.y) / speed);
+      }
+      if (eta > bestEta) {
+        bestEta = eta;
+        bestLane = lane;
+      }
+    }
+    return bestLane;
   }
 
   /// True once the round enters sudden death (two lanes threatened at once) —
@@ -473,8 +559,10 @@ class FallingDodge extends MiniGameBase {
   }
 
   /// A hit requires the same lane AND the runner's visual position close enough
-  /// horizontally that it has not cleared the falling body yet.
+  /// horizontally that it has not cleared the falling body yet. A just-respawned
+  /// runner in its grace window is never crushed (so a fresh spawn is safe).
   bool _isHit(TrackFx t, HazardFx h) {
+    if (t.invuln > 0) return false;
     if (h.lane != t.hopper.lane) return false;
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final hazardX = t.lanes.coordOf(h.lane);
@@ -606,12 +694,17 @@ class FallingDodge extends MiniGameBase {
 
   // ── Elimination / outcome ────────────────────────────────────────────────────
 
+  /// A hazard crushes a runner: it ragdolls + KOs, but this is NOT a permanent
+  /// elimination — its banked graze score already stands and it is queued to
+  /// RESPAWN in the safest lane after [respawnSec], so the run continues for the
+  /// full timer. Guarded against a double-crush in one frame.
   void _eliminate(TrackFx t, HazardFx h) {
+    if (!t.alive) return;
     t.alive = false;
-    t.eliminatedAt = _elapsed; // banked for the survival-time tiebreaker
+    t.respawnTimer = _Tuning.respawnSec;
     t.hazards.clear();
     t.grazeChain = 0; // a crush ends the streak (no posthumous links)
-    t.grazeBannerAt = 0; // re-arm (moot post-crush, but keeps state consistent)
+    t.grazeBannerAt = 0; // re-arm for the streak banner on the next run
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final at = Offset(runnerX, t.runnerY);
     // Crush: fling away from the impact lane, with an upward stomp component.
@@ -623,30 +716,24 @@ class FallingDodge extends MiniGameBase {
           -_Tuning.flingY * t.figureScale),
     );
     _juice.ko(at, t.color);
-    _juice.popup(Offset(runnerX, t.runnerY - 34), 'OUT!', t.color, size: 30);
+    _juice.popup(Offset(runnerX, t.runnerY - 34), 'CRUSHED!', t.color, size: 30);
   }
 
   void _checkEnd() {
-    final timeUp = _elapsed >= _Tuning.timeLimit;
-    // Count survivors without allocating a list every frame; only materialize
-    // the survivor list on the single frame the round actually resolves.
-    var aliveCount = 0;
-    for (final t in _tracks) {
-      if (t.alive) aliveCount++;
-    }
-    if (aliveCount > 1 && !timeUp) return;
-    _finish();
+    // SCORED RUN: the round runs the FULL timer (crushed runners respawn), so it
+    // NEVER ends early just because one runner is left — a lone player plays the
+    // whole run banking grazes. Only the time cap resolves it.
+    if (_elapsed >= _Tuning.timeLimit) _finish();
   }
 
   void _finish() {
     // Banked GRAZE points are the whole story; survival is only a gentle
-    // tiebreaker (time alive × a small rate) added on top. A survivor banks the
-    // full round's worth, an eliminated runner banks up to when they fell — but
-    // either bonus is tiny next to a real graze chain, so a bold daredevil who
-    // racked up a streak outranks a timid runner who only ran away.
+    // tiebreaker (cumulative time alive × a small rate) added on top. Because
+    // crushed runners respawn, time-alive is accrued in [aliveSec] across the
+    // whole run; either way the bonus is tiny next to a real graze chain, so a
+    // bold daredevil who racked up streaks outranks a timid runner who only fled.
     for (final t in _tracks) {
-      final timeAlive = t.alive ? _elapsed : t.eliminatedAt;
-      addScore(t.playerId, timeAlive * _Tuning.survivePerSec);
+      addScore(t.playerId, t.aliveSec * _Tuning.survivePerSec);
     }
     // Rank everyone by total score (graze-dominated), highest first; ties break
     // by player id so the order is always stable and the full set is preserved.

@@ -42,6 +42,53 @@ void main() {
     });
   }
 
+  test('SCORED RUN: an all-bot round runs the FULL timer and never ends early '
+      '(anti-instant-win)', () {
+    // The rework makes this a scored run, not last-one-standing: crushed runners
+    // respawn, so the round plays the whole [timeLimit] (~26s) and is ranked by
+    // banked grazes. It must NEVER resolve early (the old "instant win when the
+    // rival was crushed" bug) — it always reaches the time cap.
+    final g = FallingDodge()..init(ctxFor(4, seed: 5));
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished);
+    final simSeconds = n / 60.0;
+    // Anti-instant-win floor: a real round, well past any "one left" moment.
+    expect(simSeconds, greaterThan(8.0));
+    // Ceiling: the full timer (26s) plus a small resolution buffer.
+    expect(simSeconds, lessThan(27.0));
+  });
+
+  test('SCORED RUN: a 1v1 where the bot is crushed still runs the full timer '
+      '(no instant win when the rival falls)', () {
+    // The core complaint: in 1v1 the round used to end the instant the lone bot
+    // was crushed. Now the human plays the WHOLE run banking grazes. Drive a
+    // human that taps steadily vs one medium bot; assert the round lasts a real
+    // minimum regardless of when the bot first gets crushed, with no throw.
+    final players = [
+      PlayerSlot.defaults(0),
+      PlayerSlot.defaults(1, isBot: true),
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(19),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = FallingDodge()..init(ctx);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+      if (n % 17 == 0) g.onInput(PlayerInput.down(0, const Offset(0.9, 0.5)));
+    }
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.winResult!.ranking.toSet(), {0, 1});
+    expect(n / 60.0, greaterThan(8.0),
+        reason: '1v1 must play a real run, not end when the bot is crushed');
+  });
+
   test('golden token: a runner sharing the lane scoops it; a different lane '
       'misses it', () {
     // Catch case: runner in lane 1, token spawns in lane 1, ticked until it

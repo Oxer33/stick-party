@@ -195,7 +195,9 @@ class TrackFx {
   double hopHold = 0; // brief jump-pose timer after a hop
   int grazeChain = 0; // consecutive close-dodge streak (resets on over-fleeing)
   int grazeBannerAt = 0; // highest chain that has fired a STREAK banner (latch)
-  double eliminatedAt = 0; // elapsed time this runner was crushed (0 = alive)
+  double respawnTimer = 0; // seconds until a crushed runner returns (0 = none)
+  double invuln = 0; // post-respawn grace: can't be crushed (seconds)
+  double aliveSec = 0; // cumulative seconds spent alive this run (tiebreaker)
   ReactionClock? clock;
 
   TrackFx({
