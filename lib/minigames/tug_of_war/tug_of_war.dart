@@ -99,6 +99,16 @@ class TugOfWar extends MiniGameBase {
   // without ever out-pulling a steady on-beat lead on its own.
   static const double _comebackMaxBonus = 0.4; // up to +40% HEAVE pull when far behind
 
+  // ── Uneven-teams fairness (a lone puller vs two) ─────────────────────────────
+  // With an odd seat count one side has FEWER pullers (3p ⇒ 1-vs-2). That side's
+  // every HEAVE is multiplied so the rope contest stays fair regardless of side
+  // sizes: each missing body is worth [_underdogPullPerDeficit] extra pull, so a
+  // 1-vs-2 lone puller heaves ~1.9x (≈ matching two opponents). The multiplier is
+  // exactly 1.0 when the sides are even (1v1 / 2v2), so balanced modes are
+  // untouched. This stacks on top of the marker-based comeback bonus.
+  static const double _underdogPullPerDeficit = 0.9; // +90% HEAVE per missing teammate
+  static const double _underdogMaxDeficit = 2.0; // cap the deficit it scales with
+
   // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
   static const double _botWarmupSec = 1.0; // grace before bots engage
   static const double _botBaseInterval = 0.22;
@@ -374,6 +384,7 @@ class TugOfWar extends MiniGameBase {
         (1.0 + 0.25 * effort + precBonus);
     if (_inClimax) pull *= _climaxHeaveMul; // CLIMAX: finale pulls harder
     pull *= 1.0 + _comebackBonusFor(pl.side); // COMEBACK: help the trailing side
+    pull *= _underdogPullMul(pl.side); // FAIRNESS: a short-handed side pulls harder
     _marker += pl.side == _Side.top ? -pull : pull;
     _marker = clampD(_marker, -_winThreshold, _winThreshold);
   }
@@ -412,6 +423,18 @@ class TugOfWar extends MiniGameBase {
     final behind = side == _Side.top ? math.max(0.0, _marker) : math.max(0.0, -_marker);
     final t = (behind / _winThreshold).clamp(0.0, 1.0);
     return _comebackMaxBonus * t;
+  }
+
+  /// HEAVE-pull MULTIPLIER (>= 1) for the short-handed [side], so a lone puller
+  /// matches a bigger opposing team. Scales with the seat DEFICIT (opponent count
+  /// minus own count, capped): 1-vs-2 ⇒ ~1.9x, even sides ⇒ exactly 1.0. Unlike
+  /// the marker-based comeback bonus this depends only on roster sizes, so it is
+  /// steady all round and keeps even-team modes untouched.
+  double _underdogPullMul(_Side side) {
+    final deficit = _countOnSide(_other(side)) - _countOnSide(side);
+    if (deficit <= 0) return 1.0;
+    final scaled = deficit.toDouble().clamp(0.0, _underdogMaxDeficit);
+    return 1.0 + _underdogPullPerDeficit * scaled;
   }
 
   /// Fire the one-shot "FINAL HEAVE!" climax cue when the finale begins.

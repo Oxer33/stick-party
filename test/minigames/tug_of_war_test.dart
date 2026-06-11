@@ -190,4 +190,62 @@ void main() {
     expect(disciplined, greaterThan(greedy),
         reason: 'over-holding must slip and forfeit ground vs a clean release');
   });
+
+  // ── Uneven-teams fairness (a lone puller vs two) ──────────────────────────
+  //
+  // A single top-side human (id 0, even → top) does ONE on-beat dig, measured
+  // before the bot warmup ends (so the bots never pull and the marker moves only
+  // on the human's heave). With two bottom-side opponents (3p ⇒ 1-vs-2) the lone
+  // puller's HEAVE is multiplied (~1.9x), so its single dig drags the marker
+  // markedly FURTHER than the same dig with no opponents (an even 1-side roster).
+
+  /// One on-beat dig for top-side id 0 with [players], returning its advantage
+  /// (how far the marker was dragged toward the top goal). The whole dig lands
+  /// inside the 1.0s bot warmup, so any bot opponents stay idle and only the
+  /// human moves the rope — isolating the underdog pull multiplier.
+  double oneDigAdvantage(List<PlayerSlot> players) {
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(7),
+      zones: ZoneLayout.forPlayers(players.length),
+    );
+    final g = TugOfWar()..init(ctx);
+    advanceToWindow(g); // reach the sweet-spot (well within warmup)
+    g.onInput(PlayerInput.down(0)); // press on the beat → start a dig
+    for (var f = 0; f < 4; f++) {
+      g.update(1 / 60); // a short charge, safely inside the window + grace
+    }
+    g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up)); // release
+    g.update(1 / 60); // let the fired heave settle into the marker
+    return g.scores.of(0).toDouble();
+  }
+
+  test('fairness: a lone puller (1-vs-2) out-pulls the same dig with no opponent',
+      () {
+    // Even roster: a single top-side puller with no opponent ⇒ multiplier 1.0.
+    final solo = oneDigAdvantage([PlayerSlot.defaults(0)]);
+    // Short-handed roster: id 0 (top) vs two bottom bots (ids 1, 3) ⇒ deficit 1,
+    // so the lone puller's heave is boosted ~1.9x.
+    final underdog = oneDigAdvantage([
+      PlayerSlot.defaults(0), // human, top
+      PlayerSlot.defaults(1, isBot: true), // bot, bottom
+      PlayerSlot.defaults(3, isBot: true), // bot, bottom
+    ]);
+    expect(solo, greaterThan(0), reason: 'a clean dig must move the marker');
+    expect(underdog, greaterThan(solo * 1.5),
+        reason: 'the short-handed side must pull markedly harder per heave');
+  });
+
+  test('fairness: even teams (1v1) keep the neutral pull multiplier', () {
+    // A balanced split (id 0 top vs id 1 bottom) has zero deficit, so the lone
+    // dig pulls exactly as far as the no-opponent baseline — even modes untouched.
+    final solo = oneDigAdvantage([PlayerSlot.defaults(0)]);
+    final even = oneDigAdvantage([
+      PlayerSlot.defaults(0), // human, top
+      PlayerSlot.defaults(1, isBot: true), // bot, bottom (idle during warmup)
+    ]);
+    expect(even, closeTo(solo, 1e-9),
+        reason: 'an even split must not change the pull multiplier');
+  });
 }

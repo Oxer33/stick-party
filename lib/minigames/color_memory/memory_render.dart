@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import '../../art/stick/stick_figure.dart';
+
 /// Pure-Canvas rendering for `ColorMemory` — a glowing arcade Simon stage.
 ///
 /// Holds NO game state and never mutates the simulation: callers pass plain
@@ -51,6 +53,13 @@ class MemoryRenderer {
   static const double _pipRadiusFactor = 0.010; // progress pip radius / blockW
   static const double _bannerFontFrac = 0.052; // phase banner font / width
   static const double _roundFontFrac = 0.030; // round counter font / width
+
+  // Player mascot standing beside a cluster (reacts to the round).
+  static const double _mascotSkeletonH = 52; // approx hero skeleton height (px)
+  static const double _mascotHeightFrac = 0.34; // mascot height / plate side
+  static const double _mascotGapFrac = 0.10; // gap from plate edge / plate side
+  static const double _mascotFootInsetFrac = 0.06; // foot line up from block bot
+  static const double _mascotPelvisRise = 44; // pelvis above feet (local px)
 
   // ── Background: console gradient + faint grid + vignette ────────────────────
   static void drawBackground(Canvas canvas, Size size) {
@@ -521,6 +530,50 @@ class MemoryRenderer {
     _drawText(canvas, 'ROUND $round', center, font,
         _white.withValues(alpha: 0.7),
         weight: FontWeight.w700);
+  }
+
+  // ── Player mascot beside a cluster ─────────────────────────────────────────
+
+  /// Draw a player's reacting MASCOT standing beside their Simon cluster: idle
+  /// while watching the light show, an arm swing on a correct tap, a flinch on a
+  /// KO, a cheer on the winner (all driven by [figure]'s own anim state). It
+  /// stands just outside the [block], scaled to the plate, facing in toward the
+  /// pads. [mountOnLeft] picks the side (so a 2x2 grid mounts each mascot toward
+  /// its own screen edge and never overlaps the colored quadrants). [figure]
+  /// owns its pose/clock; this only resolves + paints it. Side-effect free
+  /// beyond the canvas; never throws.
+  static void drawMascot(
+    Canvas canvas,
+    Rect block,
+    StickFigure figure, {
+    required bool alive,
+    bool mountOnLeft = true,
+  }) {
+    if (block.width <= 2 || block.height <= 2) return;
+    final side = math.min(block.width, block.height);
+    // ~52px-tall hero skeleton → scale so the mascot stands about a third of the
+    // plate height, a readable sidekick that never crowds the pads.
+    final scale =
+        (side * _mascotHeightFrac / _mascotSkeletonH).clamp(0.45, 2.2);
+
+    // Stand just outside the chosen edge of the plate, facing in toward it.
+    final footX = mountOnLeft
+        ? block.left - side * _mascotGapFrac
+        : block.right + side * _mascotGapFrac;
+    final footY = block.bottom - side * _mascotFootInsetFrac;
+    figure.facing = mountOnLeft ? 1.0 : -1.0; // face inward toward the pads
+
+    canvas.save();
+    canvas.translate(footX, footY);
+    canvas.scale(scale, scale);
+    // Contact shadow grounds the sidekick on the stage floor.
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(0, 2), width: 36, height: 9),
+      Paint()..color = _black.withValues(alpha: alive ? 0.26 : 0.12),
+    );
+    // Root the pelvis above the foot line so the figure stands on the floor.
+    figure.render(canvas, const Offset(0, -_mascotPelvisRise));
+    canvas.restore();
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────

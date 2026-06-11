@@ -527,16 +527,25 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
-  /// Award this round's points to its winner (double in the lightning final).
-  /// Idempotent per round via [_roundScored] so a tally + safety-net can't
-  /// double-count.
+  /// Award this round's DESCENDING placement points to the WHOLE field (1st=N-1,
+  /// 2nd=N-2, … last=0), so every duelist races for position instead of only the
+  /// fastest tap scoring — see [roundPlacementPoints]. The points are scaled by
+  /// the round's value ([_normalRoundPoints], or the doubled [_lightningPoints]
+  /// in the LIGHTNING final, so the finale still swings the match). Idempotent per
+  /// round via [_roundScored] so a tally + safety-net can't double-count.
   void _tallyRound() {
     if (_roundScored) return;
     _roundScored = true;
-    final winner = _gate.winner;
-    if (winner == null) return;
-    final award = _isLightning ? _lightningPoints : _normalRoundPoints;
-    _points[winner] = (_points[winner] ?? 0) + award;
+    final scale = _isLightning ? _lightningPoints : _normalRoundPoints;
+    final placement = roundPlacementPoints(
+      ctx.players.map((p) => p.id).toList(),
+      _gate.winner,
+      _gate.reactionTimes,
+      pointsScale: scale,
+    );
+    placement.forEach((id, pts) {
+      _points[id] = (_points[id] ?? 0) + pts;
+    });
   }
 
   /// Open the inter-round beat; [update] times it out then arms the next round.

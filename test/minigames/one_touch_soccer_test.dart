@@ -176,6 +176,68 @@ void main() {
     });
   });
 
+  group('uneven-teams fairness handicap', () {
+    OneTouchSoccer buildRoster(List<PlayerSlot> players) {
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(3),
+        zones: ZoneLayout.forPlayers(players.length),
+      );
+      return OneTouchSoccer()..init(ctx);
+    }
+
+    test('3p (1-vs-2) boosts the short-handed side and weakens the big keeper',
+        () {
+      // Even ids attack TOP, odd ids attack BOTTOM: ids 0 & 2 → top (2 players),
+      // id 1 → bottom (alone). So BOTTOM is short-handed and must run faster +
+      // shoot harder, while the larger TOP side's keeper tracks softer.
+      final g = buildRoster([
+        PlayerSlot.defaults(0, isBot: true), // top
+        PlayerSlot.defaults(1, isBot: true), // bottom (lone underdog)
+        PlayerSlot.defaults(2, isBot: true), // top
+      ]);
+
+      // The lone bottom striker is handicapped UP; the 2-strong top side is not.
+      expect(g.speedFactorForTest(1), greaterThan(1.0),
+          reason: 'short-handed striker runs faster');
+      expect(g.shotFactorForTest(1), greaterThan(1.0),
+          reason: 'short-handed striker shoots harder');
+      expect(g.speedFactorForTest(0), 1.0,
+          reason: 'the larger side gets no speed boost');
+      expect(g.shotFactorForTest(2), 1.0,
+          reason: 'the larger side gets no shot boost');
+
+      // The bigger (top) side's keeper is weaker; the short side's keeper is not.
+      expect(g.keeperLaneGainForTest(true), lessThan(0.7),
+          reason: 'the bigger side defends a softer net');
+      expect(g.keeperLaneGainForTest(false), 0.7,
+          reason: 'the short side keeper is unchanged');
+    });
+
+    test('balanced rosters (1+CPU 1v1, 2v2) keep every factor neutral', () {
+      // 1v1 (id 0 top, id 1 bottom) and 2v2 (ids 0,2 top, 1,3 bottom) are even,
+      // so the handicap is exactly neutral — balanced modes are untouched.
+      final duel = buildRoster([
+        PlayerSlot.defaults(0, isBot: true),
+        PlayerSlot.defaults(1, isBot: true),
+      ]);
+      expect(duel.speedFactorForTest(0), 1.0);
+      expect(duel.shotFactorForTest(1), 1.0);
+      expect(duel.keeperLaneGainForTest(true), 0.7);
+      expect(duel.keeperLaneGainForTest(false), 0.7);
+
+      final team = buildRoster([
+        for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)
+      ]);
+      expect(team.speedFactorForTest(0), 1.0);
+      expect(team.speedFactorForTest(1), 1.0);
+      expect(team.shotFactorForTest(2), 1.0);
+      expect(team.keeperLaneGainForTest(true), 0.7);
+      expect(team.keeperLaneGainForTest(false), 0.7);
+    });
+  });
+
   group('SpeedPadController (chaos pickup)', () {
     final field = const Rect.fromLTRB(40, 60, 760, 1140);
     SpeedPadController make() => SpeedPadController(

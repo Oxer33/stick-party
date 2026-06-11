@@ -3,6 +3,8 @@ import 'dart:ui';
 
 import '../../art/fx/juice.dart';
 import '../../art/fx/particles.dart';
+import '../../art/stick/stick_figure.dart';
+import '../../art/stick/stick_style.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/area_fill_grid.dart';
 import '../../engine/mini_game.dart';
@@ -84,6 +86,9 @@ class _Tuning {
   // Bot target search: sample stride over the zone's cells when hunting the
   // largest unpainted pocket (every cell is overkill for a coarse target).
   static const int botSampleStride = 1;
+
+  // Mascot: per-frame brush travel (norm units) above which the rider runs.
+  static const double mascotMoveThreshold = 0.0015;
 }
 
 /// A player's paint cursor. Unlike the old auto-bouncing reticle, this is driven
@@ -97,6 +102,10 @@ class _Cursor {
   final Rect zone; // this player's paintable region (normalized arena space)
   final ReactionClock? clock; // bots re-pick a target on this cadence
 
+  /// The painter mascot riding this brush (purely visual; reacts to motion +
+  /// spray + win). Owns its own pose/anim clock, advanced each frame.
+  final StickFigure figure;
+
   Offset pos; // where the brush currently is
   Offset target; // where it is steering toward (clamped into [zone])
   bool spraying = false; // a touch (or bot intent) is currently held
@@ -105,6 +114,8 @@ class _Cursor {
   double dwell = 0; // 0..1 how long the brush has lingered near one spot
   double flash = 0; // recent-splat flash timer (visual)
   Offset _botGoal; // bot's current coverage goal (normalized)
+  Offset _prevPos; // last frame's position, to read motion for the mascot loco
+  bool _facingRight = true; // mascot facing, flipped by horizontal travel
 
   _Cursor({
     required this.playerId,
@@ -112,9 +123,32 @@ class _Cursor {
     required this.isRoller,
     required this.zone,
     required this.pos,
+    required this.figure,
     this.clock,
   })  : target = pos,
-        _botGoal = pos;
+        _botGoal = pos,
+        _prevPos = pos;
+
+  /// Drive the mascot's locomotion + facing from how far the brush moved this
+  /// frame, and advance its animation clock. Purely visual — no sim effect.
+  /// [moveNormThreshold] is the per-frame travel (norm units) above which the
+  /// painter reads as running rather than idling.
+  void updateMascot(double dt, double moveNormThreshold) {
+    final delta = pos - _prevPos;
+    final moved = delta.distance;
+    if (moved > moveNormThreshold) {
+      figure.setLoco(LocoState.run);
+      if (delta.dx.abs() > moveNormThreshold * 0.5) {
+        _facingRight = delta.dx >= 0;
+      }
+    } else {
+      figure.setLoco(LocoState.idle);
+    }
+    _prevPos = pos;
+    figure.update(dt);
+  }
+
+  bool get facingRight => _facingRight;
 
   bool get isBot => clock != null;
 
@@ -242,16 +276,35 @@ class PaintSplash extends MiniGameBase {
       final zone = ctx.zones.forPlayer(p.id)?.normRect ??
           _fallbackZone(i, count); // robustness if zones are missing
       final start = zone.center;
+      final color = Color(p.colorArgb);
       _cursors.add(_Cursor(
         playerId: p.id,
-        color: Color(p.colorArgb),
+        color: color,
         isRoller: p.id.isOdd,
         zone: zone,
         pos: start,
+        figure: StickFigure(style: _mascotStyle(color))
+          ..setLoco(LocoState.idle),
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
     }
   }
+
+  /// Bright painter-mascot style in the player's color: color fill, brightened
+  /// neon outline, soft glow. Mirrors the sprinter style in tap_sprint so the
+  /// cast reads consistently across games.
+  StickStyle _mascotStyle(Color color) => StickStyle(
+        fill: color,
+        outline: _brighten(color, 0.5),
+        glowSigma: 4,
+        lineWidth: 1.0,
+        rimAlpha: 0.28,
+        shadowAlpha: 0.0, // the renderer draws its own contact shadow
+        gradientBottom: 0.55,
+      );
+
+  static Color _brighten(Color c, double t) =>
+      Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
 
   /// Horizontal-strip fallback so the game still works if a context arrives
   /// without a matching zone for a player id.
@@ -309,6 +362,8 @@ class PaintSplash extends MiniGameBase {
     _grid.paintCircle(c.playerId, at, radius);
     _recordStamp(at, radius, c.color);
     _burstDroplets(at, radius, c.color, c.dwell);
+    // The mascot swings its arm on each splat so it visibly paints.
+    c.figure.attack(0);
   }
 
   /// True once the round enters its final DOUBLE INK burst window.
@@ -403,6 +458,8 @@ class PaintSplash extends MiniGameBase {
       c.steer(sdt);
       c.tickTimers(dt);
       _tickSpray(c, sdt);
+      // Advance the painter mascot: run while the brush travels, idle when still.
+      c.updateMascot(sdt, _Tuning.mascotMoveThreshold);
     }
     for (final s in _stamps) {
       s.age += dt;
@@ -558,6 +615,9 @@ class PaintSplash extends MiniGameBase {
     final winnerColor = _leaderColor();
     _juice.bigBanner('WINNER!', color: winnerColor);
     _juice.confetti(_lastSize, colors: [winnerColor]);
+    // The winning painter cheers on the final board.
+    final winnerId = _leaderId();
+    if (winnerId != null) _cursorOf(winnerId)?.figure.victory();
     finishByScore();
   }
 
@@ -646,15 +706,24 @@ class PaintSplash extends MiniGameBase {
       final pulse = c.flash <= 0
           ? 0.0
           : (c.flash / (_Tuning.spraySec * 2)).clamp(0.0, 1.0);
+      final center = _toPixelsIn(c.pos, size);
       PaintRenderer.drawReticle(
         canvas,
         size,
-        _toPixelsIn(c.pos, size),
+        center,
         c.color,
         charge: c.charge,
         isRoller: c.isRoller,
         pulse: pulse,
         spraying: c.spraying,
+      );
+      // The painter mascot rides on top of the reticle, showing WHO is painting.
+      PaintRenderer.drawMascot(
+        canvas,
+        size,
+        center,
+        c.figure,
+        facingRight: c.facingRight,
       );
     }
   }

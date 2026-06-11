@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
@@ -123,6 +125,18 @@ class OneTouchSoccer extends MiniGameBase {
   static const double _botSteerErrorRad = 0.4; // heading jitter at accuracy 0
   static const double _botGoalPushRangeFactor = 5.0; // push toward goal within
 
+  // ── Uneven-teams fairness (e.g. a lone human vs a 2-bot side) ────────────────
+  // With an odd seat count one side is short-handed (3p ⇒ 1-vs-2). The short
+  // side gets a per-extra-opponent handicap so a lone player is never hopelessly
+  // outnumbered: its strikers run FASTER and its shots fly HARDER, while the
+  // bigger side's keeper tracks the ball SOFTER (an easier net to beat). The
+  // factor scales with the seat deficit and is exactly neutral (1.0) whenever the
+  // two sides are even (1v1 / 2v2 / 1+CPU), so balanced modes are untouched.
+  static const double _fairnessSpeedPerExtra = 0.22; // +22% striker speed / extra foe
+  static const double _fairnessShotPerExtra = 0.30; // +30% shot power / extra foe
+  static const double _fairnessKeeperPerExtra = 0.30; // big side keeper laneGain × (1-this)
+  static const double _fairnessMaxExtra = 2.0; // cap the deficit the handicap scales with
+
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _topAccent = Color(0xFFFF5A5A); // top goal / side A
   static const Color _bottomAccent = Color(0xFF4D9BFF); // bottom goal / side B
@@ -168,6 +182,8 @@ class OneTouchSoccer extends MiniGameBase {
   double _bottomLine = 0;
   bool _hasTopSide = false; // someone defends/attacks each goal
   bool _hasBottomSide = false;
+  int _topCount = 0; // seats on each side (drives the uneven-teams handicap)
+  int _bottomCount = 0;
 
   @override
   void init(MiniGameContext ctx) {
@@ -239,8 +255,10 @@ class OneTouchSoccer extends MiniGameBase {
       _attacksTop[p.id] = attacksTop;
       if (attacksTop) {
         _hasTopSide = true;
+        _topCount++;
       } else {
         _hasBottomSide = true;
+        _bottomCount++;
       }
 
       // Spawn each player on its own defending half, stacked horizontally.
@@ -289,6 +307,52 @@ class OneTouchSoccer extends MiniGameBase {
     if (p.team == Team.b) return false;
     return p.id.isEven;
   }
+
+  // ── Uneven-teams fairness factors ────────────────────────────────────────────
+
+  /// Seat count on the side opposite [attacksTop].
+  int _opponentCountOf(bool attacksTop) => attacksTop ? _bottomCount : _topCount;
+
+  /// Seat count on the side [attacksTop].
+  int _ownCountOf(bool attacksTop) => attacksTop ? _topCount : _bottomCount;
+
+  /// How many EXTRA opponents the side [attacksTop] faces (0 when even or when it
+  /// is the larger side), capped by [_fairnessMaxExtra]. This is the lever every
+  /// fairness factor scales off, so a balanced split yields 0 (neutral handicap).
+  double _extraFoesFor(bool attacksTop) {
+    final deficit = _opponentCountOf(attacksTop) - _ownCountOf(attacksTop);
+    if (deficit <= 0) return 0.0;
+    return deficit.toDouble().clamp(0.0, _fairnessMaxExtra);
+  }
+
+  /// Striker speed multiplier for [id]: >1 on the short-handed side so a lone
+  /// player covers the pitch faster, exactly 1 on even teams or the larger side.
+  double _speedFactorOf(int id) =>
+      1.0 + _fairnessSpeedPerExtra * _extraFoesFor(_attacksTop[id] ?? true);
+
+  /// Shot-power multiplier for [id]: >1 on the short-handed side so its shots fly
+  /// harder, exactly 1 on even teams or the larger side.
+  double _shotFactorOf(int id) =>
+      1.0 + _fairnessShotPerExtra * _extraFoesFor(_attacksTop[id] ?? true);
+
+  /// Keeper lane-tracking gain for the side [attacksTop]: the LARGER side's keeper
+  /// tracks the ball softer (an easier net for the short-handed side to beat),
+  /// scaled by the deficit the OPPONENT faces; unchanged on even teams.
+  double _keeperLaneGainOf(bool attacksTop) {
+    final opponentExtra = _extraFoesFor(!attacksTop); // the short side's deficit
+    final weaken = (_fairnessKeeperPerExtra * opponentExtra).clamp(0.0, 0.9);
+    return _botGuardLaneGain * (1.0 - weaken);
+  }
+
+  /// Test-only views of the uneven-teams fairness handicap so deterministic tests
+  /// can assert a short-handed side runs faster / shoots harder / faces a softer
+  /// keeper without driving a whole noisy bot match. Not used by gameplay.
+  @visibleForTesting
+  double speedFactorForTest(int id) => _speedFactorOf(id);
+  @visibleForTesting
+  double shotFactorForTest(int id) => _shotFactorOf(id);
+  @visibleForTesting
+  double keeperLaneGainForTest(bool attacksTop) => _keeperLaneGainOf(attacksTop);
 
   // ── Input: virtual joystick (press / drag / release) ─────────────────────────
 
@@ -384,11 +448,13 @@ class OneTouchSoccer extends MiniGameBase {
   /// release. This is the full-2-D agency — nothing homes onto the ball.
   void _steerStrikers(double dt) {
     if (dt <= 0) return;
-    final maxSpeed = _pitch.height * _maxSpeedFactor;
+    final baseSpeed = _pitch.height * _maxSpeedFactor;
     for (final entry in _joysticks.entries) {
       final id = entry.key;
       final body = _bodyOf(id);
       if (body == null) continue;
+      // Short-handed strikers run faster (factor > 1); even teams are neutral.
+      final maxSpeed = baseSpeed * _speedFactorOf(id);
       final desired = _desiredVelocity(id, entry.value, maxSpeed);
 
       // Frame-rate-independent exponential approach toward the target velocity.
@@ -473,7 +539,8 @@ class OneTouchSoccer extends MiniGameBase {
     final charge = joy.touchChargeFrac(_kickChargeFullSec);
     final powerFrac = _kickMinPowerFrac + (1 - _kickMinPowerFrac) * charge;
     // Replace the ball's drift with a clean shot so the kick reads crisply.
-    _ball.vel = dir * (kickBase * powerFrac);
+    // Short-handed strikers shoot harder (factor > 1); even teams are neutral.
+    _ball.vel = dir * (kickBase * powerFrac * _shotFactorOf(id));
 
     joy.consumeKick();
     joy.armKick(_touchCooldownSec);
@@ -552,14 +619,16 @@ class OneTouchSoccer extends MiniGameBase {
     }
 
     if (_isKeeper(playerId)) {
+      final attacksTop = _attacksTop[playerId] ?? true;
       _botHeading[playerId] = SoccerFx.guardHeading(
-        attacksTop: _attacksTop[playerId] ?? true,
+        attacksTop: attacksTop,
         selfPos: self.pos,
         ballPos: _ball.pos,
         pitch: _pitch,
         playerRadius: _playerRadius,
         depthFactor: _botGuardDepthFactor,
-        laneGain: _botGuardLaneGain,
+        // The larger side's keeper tracks softer so the short side can score.
+        laneGain: _keeperLaneGainOf(attacksTop),
       );
       joy?.consumeKick(); // a keeper clears by trapping, never a wild shot
       return;

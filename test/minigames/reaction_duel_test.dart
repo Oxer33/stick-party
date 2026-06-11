@@ -164,6 +164,48 @@ void main() {
     expect(buildDuelRanking([0, 1], {0: 1, 1: 1}, {1: 0.25}), [1, 0]);
   });
 
+  group('roundPlacementPoints (descending finish-order scoring)', () {
+    test('4-field pays 3/2/1/0 by finish order, not winner-take-all', () {
+      // FAIRNESS core: every duelist scores by PLACE. Winner = id 2 (the first
+      // valid draw); the rest rank fastest-first by reaction time. So no one is
+      // an idle spectator — 2nd and 3rd still bank points, only last gets 0.
+      final pts = roundPlacementPoints(
+        [0, 1, 2, 3],
+        2, // winner (first valid tap)
+        {2: 0.20, 0: 0.30, 3: 0.45}, // id 1 never reacted
+      );
+      expect(pts[2], 3, reason: 'winner takes top placement points');
+      expect(pts[0], 2, reason: '2nd-fastest reactor still scores');
+      expect(pts[3], 1, reason: '3rd-fastest reactor still scores');
+      expect(pts[1], 0, reason: 'the non-reactor places last with 0');
+    });
+
+    test('the LIGHTNING final scales every placement award (double points)', () {
+      // The climax must still swing the match: a x2 scale doubles the whole
+      // descending ladder (6/4/2/0 for four), so the finale winner gains more
+      // than any normal round could award.
+      final normal = roundPlacementPoints(
+          [0, 1, 2, 3], 0, {0: 0.20, 1: 0.30, 2: 0.40, 3: 0.50});
+      final lightning = roundPlacementPoints(
+          [0, 1, 2, 3], 0, {0: 0.20, 1: 0.30, 2: 0.40, 3: 0.50},
+          pointsScale: 2);
+      expect(normal[0], 3);
+      expect(lightning[0], 6, reason: 'the lightning winner earns double');
+      expect(lightning[1], 4);
+      expect(lightning[2], 2);
+      expect(lightning[3], 0);
+    });
+
+    test('a no-winner round still ranks reactors above non-reactors', () {
+      // Even with no first-valid winner (a timed-out GO), reactors out-place the
+      // silent field by their speed; everyone still gets an entry (0 if unplaced).
+      final pts = roundPlacementPoints([0, 1, 2], null, {1: 0.25, 0: 0.40});
+      expect(pts[1], 2, reason: 'fastest reactor leads');
+      expect(pts[0], 1);
+      expect(pts[2], 0, reason: 'the non-reactor places last');
+    });
+  });
+
   test('plays a full best-of-2 (spans more than a single round)', () {
     // The match is now two rounds; an all-bot 4p game must therefore take longer
     // than one round's worst-case (well past the single ~3.6s max GO delay +

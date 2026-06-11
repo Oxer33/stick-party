@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import '../../art/stick/stick_figure.dart';
+
 /// Pure-Canvas rendering for [PaintSplash]. Holds NO game state and never
 /// mutates the simulation — callers pass plain value snapshots. Kept in its own
 /// file so the gameplay module stays lean and the drawing stays cohesive.
@@ -41,6 +43,13 @@ class PaintRenderer {
   static const double _reticleRingFactor = 0.052; // marker reach / min side
   static const double _barHeightFactor = 0.018; // coverage bar height / height
   static const double _barInsetFactor = 0.03; // bar inset from edges / width
+
+  // Painter mascot riding the brush (drawn above the reticle, scaled to unit).
+  static const double _mascotUnitRef = 18; // reticle unit that maps to scale 1
+  static const double _mascotScaleMin = 0.5;
+  static const double _mascotScaleMax = 1.4;
+  static const double _mascotLift = 0.6; // pelvis perch above center / unit
+  static const double _mascotFootDrop = 28; // contact-shadow drop (local px)
 
   // ── Background: studio wall + primed canvas + woven texture + frame ─────────
 
@@ -392,6 +401,39 @@ class PaintRenderer {
     } else {
       _drawSprayCan(canvas, center, unit, color);
     }
+  }
+
+  /// The painter MASCOT riding a player's brush. Drawn just above the reticle so
+  /// it clearly shows WHO is painting and reacts (run while steering, idle when
+  /// still, an arm swing on each spray, a cheer on the winner). [figure] owns its
+  /// own pose/anim state; this only resolves + paints it at [center] scaled to
+  /// the reticle [unit]. Side-effect free beyond the canvas; never throws.
+  static void drawMascot(
+    Canvas canvas,
+    Size size,
+    Offset center,
+    StickFigure figure, {
+    required bool facingRight,
+  }) {
+    if (!center.dx.isFinite || !center.dy.isFinite) return;
+    final unit = math.min(size.width, size.height) * _reticleRingFactor;
+    if (unit <= 0) return;
+    figure.facing = facingRight ? 1.0 : -1.0;
+
+    // Scale the ~52px-tall hero skeleton so the mascot reads at brush size, and
+    // perch its pelvis just above the reticle so the painter "rides" the brush.
+    final scale = (unit / _mascotUnitRef).clamp(_mascotScaleMin, _mascotScaleMax);
+    canvas.save();
+    canvas.translate(center.dx, center.dy - unit * _mascotLift);
+    canvas.scale(scale, scale);
+    // A soft contact shadow under the feet grounds the rider on the brush.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset(0, _mascotFootDrop), width: 34, height: 9),
+      Paint()..color = _black.withValues(alpha: 0.22),
+    );
+    figure.render(canvas, Offset.zero);
+    canvas.restore();
   }
 
   /// A soft puff of colored mist at the brush centre while it is actively

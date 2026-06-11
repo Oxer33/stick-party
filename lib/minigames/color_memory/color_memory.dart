@@ -2,6 +2,8 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import '../../art/fx/juice.dart';
+import '../../art/stick/stick_figure.dart';
+import '../../art/stick/stick_style.dart';
 import '../../engine/bots.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
@@ -26,6 +28,11 @@ class _Pad {
   double oopsFlash = 0; // 0..1 gentle "wrong, try again" flash on a forgiven miss
   final ReactionClock? clock;
 
+  /// The reacting mascot standing beside this cluster (purely visual). Owns its
+  /// own pose/anim clock, advanced each frame; idles while watching, swings on a
+  /// correct tap, flinches on a KO, cheers on the win.
+  final StickFigure figure;
+
   /// Bot only: the step index at which this bot will deliberately slip THIS
   /// round (or -1 = it will reproduce the whole pattern correctly). Decided once
   /// per round so a single slip ends a bot's run — instead of re-rolling the
@@ -37,7 +44,12 @@ class _Pad {
   /// decay for an afterglow; purely cosmetic so it never affects logic.
   final List<double> bloom = <double>[0, 0, 0, 0];
 
-  _Pad({required this.playerId, required this.accent, this.clock});
+  _Pad({
+    required this.playerId,
+    required this.accent,
+    required this.figure,
+    this.clock,
+  });
 
   void bumpBloom(int slot) {
     if (slot >= 0 && slot < bloom.length) bloom[slot] = 1.0;
@@ -177,9 +189,12 @@ class ColorMemory extends MiniGameBase {
     prepare(ctx);
     _juice = Juice(rng: ctx.rng);
     for (final p in ctx.players) {
+      final accent = Color(p.colorArgb);
       _pads.add(_Pad(
         playerId: p.id,
-        accent: Color(p.colorArgb),
+        accent: accent,
+        figure: StickFigure(style: _mascotStyle(accent))
+          ..setLoco(LocoState.idle),
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
     }
@@ -332,8 +347,12 @@ class ColorMemory extends MiniGameBase {
     if (color == expected) {
       pad.progress += 1;
       _juice.hit(_padCenter(pad.playerId), pad.accent, sparks: 6);
+      // The mascot swings on each correct color so the cluster reacts.
+      pad.figure.attack(0);
       if (pad.progress >= _sequence.length) {
         pad.done = true;
+        // Cleared the whole pattern this round → a flourish to mark it.
+        pad.figure.special();
         // First player to clear the whole pattern WINS the round and earns the
         // right to append the next color (call-and-response). Latched once.
         final justWon = _appenderId == null;
@@ -383,6 +402,8 @@ class ColorMemory extends MiniGameBase {
     pad.koFlash = _koFlashSec;
     _outOrder.add(pad.playerId);
     _juice.ko(_padCenter(pad.playerId), pad.accent);
+    // The mascot flinches as its player is knocked out.
+    pad.figure.hurt();
   }
 
   @override
@@ -397,6 +418,8 @@ class ColorMemory extends MiniGameBase {
 
     for (final pad in _pads) {
       pad.decay(dt, _bloomDecayPerSec);
+      // Advance the mascot's animation clock so its reactions play out.
+      pad.figure.update(dt);
     }
 
     switch (_phase) {
@@ -623,6 +646,8 @@ class ColorMemory extends MiniGameBase {
     for (final p in ctx.players) {
       if (seen.add(p.id)) full.add(p.id);
     }
+    // The winning player's mascot cheers on the final board.
+    if (full.isNotEmpty) _padOf(full.first)?.figure.victory();
     finishByOrder(full);
   }
 
@@ -736,6 +761,18 @@ class ColorMemory extends MiniGameBase {
           : 1.0;
       MemoryRenderer.drawEliminated(canvas, block, stamp);
     }
+
+    // The reacting mascot stands beside the cluster. In a 2x2 grid each one
+    // mounts toward its own screen edge (even ids left, odd ids right) so it
+    // faces in and never overlaps a neighbour's plate; with fewer players the
+    // single column reads fine mounted on the left.
+    MemoryRenderer.drawMascot(
+      canvas,
+      block,
+      pad.figure,
+      alive: pad.alive,
+      mountOnLeft: index.isEven,
+    );
   }
 
   // ---- Layout helpers -------------------------------------------------------
@@ -785,4 +822,20 @@ class ColorMemory extends MiniGameBase {
     if (index < 0) return Offset(_lastSize.width / 2, _lastSize.height / 2);
     return _padBlockRect(_playerRegion(index, _pads.length)).center;
   }
+
+  /// Bright mascot style in the player's accent: color fill, brightened neon
+  /// outline, soft glow. Mirrors the sprinter style in tap_sprint so the cast
+  /// reads consistently across games.
+  StickStyle _mascotStyle(Color color) => StickStyle(
+        fill: color,
+        outline: _brighten(color, 0.5),
+        glowSigma: 4,
+        lineWidth: 1.0,
+        rimAlpha: 0.28,
+        shadowAlpha: 0.0, // the renderer draws its own contact shadow
+        gradientBottom: 0.55,
+      );
+
+  static Color _brighten(Color c, double t) =>
+      Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
 }
