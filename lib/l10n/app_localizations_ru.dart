@@ -186,4 +186,111 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get hint_drag => 'ТЯНИ';
+
+  @override
+  String get cupSetupTitle => 'НАСТРОЙКА КУБКА';
+
+  @override
+  String get playersTitle => 'ИГРОКИ';
+
+  @override
+  String playersAddUpTo(int max) {
+    return 'Добавьте до $max';
+  }
+
+  @override
+  String get seatHuman => 'ЧЕЛОВЕК';
+
+  @override
+  String get seatCpu => 'ИИ';
+
+  @override
+  String get modeLabel => 'РЕЖИМ';
+
+  @override
+  String get modeFreeForAll => 'КАЖДЫЙ ЗА СЕБЯ';
+
+  @override
+  String get modeDuel1v1 => '1 на 1';
+
+  @override
+  String get modeTeam2v2 => '2 на 2';
+
+  @override
+  String get modeTeam3v3 => '3 на 3';
+
+  @override
+  String get actionStart => 'СТАРТ';
+
+  @override
+  String get startCup => 'НАЧАТЬ КУБОК';
+
+  @override
+  String get shopStickSkins => 'СКИНЫ';
+
+  @override
+  String get shopMapThemes => 'ТЕМЫ КАРТ';
+
+  @override
+  String get shopStore => 'МАГАЗИН';
+
+  @override
+  String get shopStickSkinEyebrow => 'СКИН';
+
+  @override
+  String get shopMapThemeEyebrow => 'ТЕМА КАРТЫ';
+
+  @override
+  String get shopCoinPack => 'НАБОР МОНЕТ';
+
+  @override
+  String get shopUnlockEyebrow => 'РАЗБЛОКИРОВКА';
+
+  @override
+  String get shopFreeAlwaysYours => 'Бесплатно • навсегда ваше';
+
+  @override
+  String get shopEquipped => 'Выбрано';
+
+  @override
+  String get shopOwned => 'В наличии';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '$count монет';
+  }
+
+  @override
+  String get shopTopUpCoins => 'Пополните монеты';
+
+  @override
+  String get shopOneTimeUnlock => 'Разовая разблокировка';
+
+  @override
+  String get shopBuy => 'КУПИТЬ';
+
+  @override
+  String get shopUse => 'ВЫБРАТЬ';
+
+  @override
+  String shopUnlocked(String name) {
+    return '$name разблокировано!';
+  }
+
+  @override
+  String get shopNotEnoughCoins => 'Недостаточно монет.';
+
+  @override
+  String shopPurchased(String title) {
+    return '$title куплено.';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return 'Не удалось купить: $error';
+  }
+
+  @override
+  String get shopEthicsNote =>
+      'Покупки носят только косметический характер и никогда не влияют на игровой процесс. Показанные цены реальны и устанавливаются магазином приложений.';
 }

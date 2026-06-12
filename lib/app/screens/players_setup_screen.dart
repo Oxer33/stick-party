@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../engine/bots.dart';
 import '../../engine/player_manager.dart';
+import '../../l10n/app_localizations.dart';
 import '../providers.dart';
 import '../router.dart';
 import '../widgets/glass_kit.dart';
@@ -28,13 +29,14 @@ class PlayersSetupScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final PlayerManager manager = ref.watch(playersSetupProvider);
     final PlayersSetupController controller =
         ref.read(playersSetupProvider.notifier);
     final BotDifficulty difficulty = ref.watch(difficultyProvider);
 
     return GlassScaffold(
-      title: isCup ? 'CUP SETUP' : 'PLAYERS',
+      title: isCup ? l10n.cupSetupTitle : l10n.playersTitle,
       scroll: false,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -50,10 +52,10 @@ class PlayersSetupScreen extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
-                    Text('PLAYERS', style: GlassText.label),
+                    Text(l10n.playersTitle, style: GlassText.label),
                     const SizedBox(height: 2),
                     Text(
-                      'Add up to $_maxPlayers',
+                      l10n.playersAddUpTo(_maxPlayers),
                       style: GlassText.body.copyWith(fontSize: 11),
                     ),
                   ],
@@ -117,7 +119,7 @@ class PlayersSetupScreen extends ConsumerWidget {
           ),
           const SizedBox(height: GlassTokens.gap),
           GlassButton(
-            label: isCup ? 'START CUP' : 'START',
+            label: isCup ? l10n.startCup : l10n.actionStart,
             icon: Icons.play_arrow_rounded,
             primary: true,
             onTap: () => _start(context),
@@ -149,6 +151,7 @@ class _SeatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Color color = Color(slot.colorArgb);
     return PremiumPanel(
       accent: color,
@@ -170,7 +173,7 @@ class _SeatTile extends StatelessWidget {
                 ),
                 const SizedBox(height: 5),
                 AccentTag(
-                  label: slot.isBot ? 'CPU' : 'HUMAN',
+                  label: slot.isBot ? l10n.seatCpu : l10n.seatHuman,
                   accent: color,
                   icon: slot.isBot ? Icons.smart_toy : Icons.person,
                 ),
@@ -180,7 +183,7 @@ class _SeatTile extends StatelessWidget {
           const SizedBox(width: GlassTokens.gapSmall),
           // Human / CPU toggle (logic unchanged).
           _Segmented(
-            options: const <String>['HUMAN', 'CPU'],
+            options: <String>[l10n.seatHuman, l10n.seatCpu],
             selectedIndex: slot.isBot ? 1 : 0,
             onSelected: (_) => onToggleBot(),
             accent: color,
@@ -285,6 +288,7 @@ class _ModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final List<GameMode> modes = _modesFor(count);
     if (modes.length <= 1) return const SizedBox.shrink();
     final int index = modes.indexOf(selected).clamp(0, modes.length - 1);
@@ -293,10 +297,12 @@ class _ModeSelector extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text('MODE', style: GlassText.label),
+          Text(l10n.modeLabel, style: GlassText.label),
           const SizedBox(height: 8),
           _Segmented(
-            options: <String>[for (final GameMode m in modes) _modeLabel(m)],
+            options: <String>[
+              for (final GameMode m in modes) _modeLabel(l10n, m),
+            ],
             selectedIndex: index,
             onSelected: (int i) => onChanged(modes[i]),
             expand: true,
@@ -321,16 +327,16 @@ class _ModeSelector extends StatelessWidget {
     }
   }
 
-  static String _modeLabel(GameMode m) {
+  static String _modeLabel(AppLocalizations l10n, GameMode m) {
     switch (m) {
       case GameMode.ffa:
-        return 'FREE FOR ALL';
+        return l10n.modeFreeForAll;
       case GameMode.duel1v1:
-        return '1 v 1';
+        return l10n.modeDuel1v1;
       case GameMode.team2v2:
-        return '2 v 2';
+        return l10n.modeTeam2v2;
       case GameMode.team3v3:
-        return '3 v 3';
+        return l10n.modeTeam3v3;
     }
   }
 }
@@ -343,13 +349,18 @@ class _DifficultySelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Text('CPU DIFFICULTY', style: GlassText.label),
+        Text(l10n.cpuDifficulty, style: GlassText.label),
         const SizedBox(height: 8),
         _Segmented(
-          options: const <String>['EASY', 'MEDIUM', 'HARD'],
+          options: <String>[
+            l10n.difficultyEasy,
+            l10n.difficultyMedium,
+            l10n.difficultyHard,
+          ],
           selectedIndex: BotDifficulty.values.indexOf(selected),
           onSelected: (int i) => onChanged(BotDifficulty.values[i]),
           expand: true,

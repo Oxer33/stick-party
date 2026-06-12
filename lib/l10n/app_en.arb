@@ -236,5 +236,158 @@
   "hint_drag": "DRAG",
   "@hint_drag": {
     "description": "Input-hint chip meaning the player drags a finger. Shown in all caps; keep very short."
+  },
+  "cupSetupTitle": "CUP SETUP",
+  "@cupSetupTitle": {
+    "description": "Title of the players setup screen when configuring a cup / tournament. Shown in all caps."
+  },
+  "playersTitle": "PLAYERS",
+  "@playersTitle": {
+    "description": "Header of the seat-count panel on the players setup screen. Shown in all caps."
+  },
+  "playersAddUpTo": "Add up to {max}",
+  "@playersAddUpTo": {
+    "description": "Helper line under the PLAYERS header telling the user the maximum number of seats.",
+    "placeholders": {
+      "max": {
+        "type": "int"
+      }
+    }
+  },
+  "seatHuman": "HUMAN",
+  "@seatHuman": {
+    "description": "Label for a seat controlled by a human player. Shown in all caps; keep short."
+  },
+  "seatCpu": "CPU",
+  "@seatCpu": {
+    "description": "Label for a seat controlled by the computer (bot). Shown in all caps; keep short."
+  },
+  "modeLabel": "MODE",
+  "@modeLabel": {
+    "description": "Header over the match-mode selector on the players setup screen. Shown in all caps."
+  },
+  "modeFreeForAll": "FREE FOR ALL",
+  "@modeFreeForAll": {
+    "description": "Match-mode option: everyone competes against everyone. Shown in all caps."
+  },
+  "modeDuel1v1": "1 v 1",
+  "@modeDuel1v1": {
+    "description": "Match-mode option: a one-versus-one duel. Keep the digits and 'v' spacing as-is."
+  },
+  "modeTeam2v2": "2 v 2",
+  "@modeTeam2v2": {
+    "description": "Match-mode option: two-versus-two teams. Keep the digits and 'v' spacing as-is."
+  },
+  "modeTeam3v3": "3 v 3",
+  "@modeTeam3v3": {
+    "description": "Match-mode option: three-versus-three teams. Keep the digits and 'v' spacing as-is."
+  },
+  "actionStart": "START",
+  "@actionStart": {
+    "description": "Primary button that starts a quick-play match from the setup screen. Shown in all caps."
+  },
+  "startCup": "START CUP",
+  "@startCup": {
+    "description": "Primary button that starts a cup / tournament from the setup screen. Shown in all caps."
+  },
+  "shopStickSkins": "STICK SKINS",
+  "@shopStickSkins": {
+    "description": "Section header in the shop for stickman character skins. Shown in all caps."
+  },
+  "shopMapThemes": "MAP THEMES",
+  "@shopMapThemes": {
+    "description": "Section header in the shop for arena / map themes. Shown in all caps."
+  },
+  "shopStore": "STORE",
+  "@shopStore": {
+    "description": "Section header in the shop for the real-money in-app purchase catalog. Shown in all caps."
+  },
+  "shopStickSkinEyebrow": "STICK SKIN",
+  "@shopStickSkinEyebrow": {
+    "description": "Small eyebrow label above a single stick-skin item in the shop. Shown in all caps."
+  },
+  "shopMapThemeEyebrow": "MAP THEME",
+  "@shopMapThemeEyebrow": {
+    "description": "Small eyebrow label above a single map-theme item in the shop. Shown in all caps."
+  },
+  "shopCoinPack": "COIN PACK",
+  "@shopCoinPack": {
+    "description": "Eyebrow label for a consumable in-app purchase that grants coins. Shown in all caps."
+  },
+  "shopUnlockEyebrow": "UNLOCK",
+  "@shopUnlockEyebrow": {
+    "description": "Eyebrow label for a non-consumable one-time in-app purchase. Shown in all caps."
+  },
+  "shopFreeAlwaysYours": "Free • always yours",
+  "@shopFreeAlwaysYours": {
+    "description": "Status line for a cosmetic that is free and permanently owned. Keep the • separator."
+  },
+  "shopEquipped": "Equipped",
+  "@shopEquipped": {
+    "description": "Status line for the cosmetic skin currently selected / equipped."
+  },
+  "shopOwned": "Owned",
+  "@shopOwned": {
+    "description": "Status line for a cosmetic the player owns but has not equipped."
+  },
+  "shopPriceCoins": "{count} coins",
+  "@shopPriceCoins": {
+    "description": "Price of a cosmetic shown as a number of coins, e.g. '500 coins'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "shopTopUpCoins": "Top up your coins",
+  "@shopTopUpCoins": {
+    "description": "Supporting line for a coin-pack in-app purchase."
+  },
+  "shopOneTimeUnlock": "One-time unlock",
+  "@shopOneTimeUnlock": {
+    "description": "Supporting line for a non-consumable one-time in-app purchase."
+  },
+  "shopBuy": "BUY",
+  "@shopBuy": {
+    "description": "Button to buy a cosmetic with coins. Shown in all caps; keep short."
+  },
+  "shopUse": "USE",
+  "@shopUse": {
+    "description": "Button to equip an owned cosmetic skin. Shown in all caps; keep short."
+  },
+  "shopUnlocked": "Unlocked {name}!",
+  "@shopUnlocked": {
+    "description": "Snackbar confirming a cosmetic was bought, e.g. 'Unlocked Lava Skin!'.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "shopNotEnoughCoins": "Not enough coins.",
+  "@shopNotEnoughCoins": {
+    "description": "Snackbar shown when the player cannot afford a cosmetic."
+  },
+  "shopPurchased": "Purchased {title}.",
+  "@shopPurchased": {
+    "description": "Snackbar confirming a real-money in-app purchase succeeded, e.g. 'Purchased Coin Pack.'.",
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "shopPurchaseFailed": "Purchase failed: {error}",
+  "@shopPurchaseFailed": {
+    "description": "Snackbar shown when a real-money in-app purchase fails, with the error reason.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "shopEthicsNote": "Purchases are cosmetic only and never affect gameplay. Prices shown are real and set by the app store.",
+  "@shopEthicsNote": {
+    "description": "Reassurance note at the bottom of the shop that purchases are cosmetic-only and prices are honest."
   }
 }

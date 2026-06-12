@@ -461,6 +461,198 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'DRAG'**
   String get hint_drag;
+
+  /// Title of the players setup screen when configuring a cup / tournament. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'CUP SETUP'**
+  String get cupSetupTitle;
+
+  /// Header of the seat-count panel on the players setup screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'PLAYERS'**
+  String get playersTitle;
+
+  /// Helper line under the PLAYERS header telling the user the maximum number of seats.
+  ///
+  /// In en, this message translates to:
+  /// **'Add up to {max}'**
+  String playersAddUpTo(int max);
+
+  /// Label for a seat controlled by a human player. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'HUMAN'**
+  String get seatHuman;
+
+  /// Label for a seat controlled by the computer (bot). Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'CPU'**
+  String get seatCpu;
+
+  /// Header over the match-mode selector on the players setup screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'MODE'**
+  String get modeLabel;
+
+  /// Match-mode option: everyone competes against everyone. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'FREE FOR ALL'**
+  String get modeFreeForAll;
+
+  /// Match-mode option: a one-versus-one duel. Keep the digits and 'v' spacing as-is.
+  ///
+  /// In en, this message translates to:
+  /// **'1 v 1'**
+  String get modeDuel1v1;
+
+  /// Match-mode option: two-versus-two teams. Keep the digits and 'v' spacing as-is.
+  ///
+  /// In en, this message translates to:
+  /// **'2 v 2'**
+  String get modeTeam2v2;
+
+  /// Match-mode option: three-versus-three teams. Keep the digits and 'v' spacing as-is.
+  ///
+  /// In en, this message translates to:
+  /// **'3 v 3'**
+  String get modeTeam3v3;
+
+  /// Primary button that starts a quick-play match from the setup screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'START'**
+  String get actionStart;
+
+  /// Primary button that starts a cup / tournament from the setup screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'START CUP'**
+  String get startCup;
+
+  /// Section header in the shop for stickman character skins. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'STICK SKINS'**
+  String get shopStickSkins;
+
+  /// Section header in the shop for arena / map themes. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'MAP THEMES'**
+  String get shopMapThemes;
+
+  /// Section header in the shop for the real-money in-app purchase catalog. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'STORE'**
+  String get shopStore;
+
+  /// Small eyebrow label above a single stick-skin item in the shop. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'STICK SKIN'**
+  String get shopStickSkinEyebrow;
+
+  /// Small eyebrow label above a single map-theme item in the shop. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'MAP THEME'**
+  String get shopMapThemeEyebrow;
+
+  /// Eyebrow label for a consumable in-app purchase that grants coins. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'COIN PACK'**
+  String get shopCoinPack;
+
+  /// Eyebrow label for a non-consumable one-time in-app purchase. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'UNLOCK'**
+  String get shopUnlockEyebrow;
+
+  /// Status line for a cosmetic that is free and permanently owned. Keep the • separator.
+  ///
+  /// In en, this message translates to:
+  /// **'Free • always yours'**
+  String get shopFreeAlwaysYours;
+
+  /// Status line for the cosmetic skin currently selected / equipped.
+  ///
+  /// In en, this message translates to:
+  /// **'Equipped'**
+  String get shopEquipped;
+
+  /// Status line for a cosmetic the player owns but has not equipped.
+  ///
+  /// In en, this message translates to:
+  /// **'Owned'**
+  String get shopOwned;
+
+  /// Price of a cosmetic shown as a number of coins, e.g. '500 coins'.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} coins'**
+  String shopPriceCoins(int count);
+
+  /// Supporting line for a coin-pack in-app purchase.
+  ///
+  /// In en, this message translates to:
+  /// **'Top up your coins'**
+  String get shopTopUpCoins;
+
+  /// Supporting line for a non-consumable one-time in-app purchase.
+  ///
+  /// In en, this message translates to:
+  /// **'One-time unlock'**
+  String get shopOneTimeUnlock;
+
+  /// Button to buy a cosmetic with coins. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'BUY'**
+  String get shopBuy;
+
+  /// Button to equip an owned cosmetic skin. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'USE'**
+  String get shopUse;
+
+  /// Snackbar confirming a cosmetic was bought, e.g. 'Unlocked Lava Skin!'.
+  ///
+  /// In en, this message translates to:
+  /// **'Unlocked {name}!'**
+  String shopUnlocked(String name);
+
+  /// Snackbar shown when the player cannot afford a cosmetic.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enough coins.'**
+  String get shopNotEnoughCoins;
+
+  /// Snackbar confirming a real-money in-app purchase succeeded, e.g. 'Purchased Coin Pack.'.
+  ///
+  /// In en, this message translates to:
+  /// **'Purchased {title}.'**
+  String shopPurchased(String title);
+
+  /// Snackbar shown when a real-money in-app purchase fails, with the error reason.
+  ///
+  /// In en, this message translates to:
+  /// **'Purchase failed: {error}'**
+  String shopPurchaseFailed(String error);
+
+  /// Reassurance note at the bottom of the shop that purchases are cosmetic-only and prices are honest.
+  ///
+  /// In en, this message translates to:
+  /// **'Purchases are cosmetic only and never affect gameplay. Prices shown are real and set by the app store.'**
+  String get shopEthicsNote;
 }
 
 class _AppLocalizationsDelegate

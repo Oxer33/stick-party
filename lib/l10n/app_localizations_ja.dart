@@ -184,4 +184,111 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get hint_drag => 'ドラッグ';
+
+  @override
+  String get cupSetupTitle => 'カップ設定';
+
+  @override
+  String get playersTitle => 'プレイヤー';
+
+  @override
+  String playersAddUpTo(int max) {
+    return '最大$max人まで追加';
+  }
+
+  @override
+  String get seatHuman => '人間';
+
+  @override
+  String get seatCpu => 'CPU';
+
+  @override
+  String get modeLabel => 'モード';
+
+  @override
+  String get modeFreeForAll => '全員対戦';
+
+  @override
+  String get modeDuel1v1 => '1対1';
+
+  @override
+  String get modeTeam2v2 => '2対2';
+
+  @override
+  String get modeTeam3v3 => '3対3';
+
+  @override
+  String get actionStart => 'スタート';
+
+  @override
+  String get startCup => 'カップ開始';
+
+  @override
+  String get shopStickSkins => 'スキン';
+
+  @override
+  String get shopMapThemes => 'マップテーマ';
+
+  @override
+  String get shopStore => 'ストア';
+
+  @override
+  String get shopStickSkinEyebrow => 'スキン';
+
+  @override
+  String get shopMapThemeEyebrow => 'マップテーマ';
+
+  @override
+  String get shopCoinPack => 'コインパック';
+
+  @override
+  String get shopUnlockEyebrow => 'アンロック';
+
+  @override
+  String get shopFreeAlwaysYours => '無料 • ずっとあなたのもの';
+
+  @override
+  String get shopEquipped => '装備中';
+
+  @override
+  String get shopOwned => '所持済み';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '$countコイン';
+  }
+
+  @override
+  String get shopTopUpCoins => 'コインをチャージ';
+
+  @override
+  String get shopOneTimeUnlock => '買い切り';
+
+  @override
+  String get shopBuy => '購入';
+
+  @override
+  String get shopUse => '使う';
+
+  @override
+  String shopUnlocked(String name) {
+    return '$nameをアンロックしました！';
+  }
+
+  @override
+  String get shopNotEnoughCoins => 'コインが足りません。';
+
+  @override
+  String shopPurchased(String title) {
+    return '$titleを購入しました。';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return '購入に失敗しました：$error';
+  }
+
+  @override
+  String get shopEthicsNote =>
+      '購入はすべて見た目だけのもので、ゲームプレイには一切影響しません。表示価格は実際の金額で、アプリストアが設定しています。';
 }

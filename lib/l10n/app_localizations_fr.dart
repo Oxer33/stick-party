@@ -186,4 +186,111 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get hint_drag => 'GLISSE';
+
+  @override
+  String get cupSetupTitle => 'CONFIG. DE COUPE';
+
+  @override
+  String get playersTitle => 'JOUEURS';
+
+  @override
+  String playersAddUpTo(int max) {
+    return 'Ajoutez jusqu\'à $max';
+  }
+
+  @override
+  String get seatHuman => 'HUMAIN';
+
+  @override
+  String get seatCpu => 'IA';
+
+  @override
+  String get modeLabel => 'MODE';
+
+  @override
+  String get modeFreeForAll => 'CHACUN POUR SOI';
+
+  @override
+  String get modeDuel1v1 => '1 c 1';
+
+  @override
+  String get modeTeam2v2 => '2 c 2';
+
+  @override
+  String get modeTeam3v3 => '3 c 3';
+
+  @override
+  String get actionStart => 'DÉMARRER';
+
+  @override
+  String get startCup => 'LANCER LA COUPE';
+
+  @override
+  String get shopStickSkins => 'APPARENCES';
+
+  @override
+  String get shopMapThemes => 'THÈMES DE CARTE';
+
+  @override
+  String get shopStore => 'BOUTIQUE';
+
+  @override
+  String get shopStickSkinEyebrow => 'APPARENCE';
+
+  @override
+  String get shopMapThemeEyebrow => 'THÈME DE CARTE';
+
+  @override
+  String get shopCoinPack => 'PACK DE PIÈCES';
+
+  @override
+  String get shopUnlockEyebrow => 'DÉBLOCAGE';
+
+  @override
+  String get shopFreeAlwaysYours => 'Gratuit • toujours à vous';
+
+  @override
+  String get shopEquipped => 'Équipé';
+
+  @override
+  String get shopOwned => 'Possédé';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '$count pièces';
+  }
+
+  @override
+  String get shopTopUpCoins => 'Rechargez vos pièces';
+
+  @override
+  String get shopOneTimeUnlock => 'Déblocage unique';
+
+  @override
+  String get shopBuy => 'ACHETER';
+
+  @override
+  String get shopUse => 'UTILISER';
+
+  @override
+  String shopUnlocked(String name) {
+    return '$name débloqué !';
+  }
+
+  @override
+  String get shopNotEnoughCoins => 'Pas assez de pièces.';
+
+  @override
+  String shopPurchased(String title) {
+    return '$title acheté.';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return 'Échec de l\'achat : $error';
+  }
+
+  @override
+  String get shopEthicsNote =>
+      'Les achats sont purement cosmétiques et n\'affectent jamais le jeu. Les prix affichés sont réels et fixés par la boutique d\'applications.';
 }

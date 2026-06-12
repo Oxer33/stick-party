@@ -185,4 +185,111 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get hint_drag => '드래그';
+
+  @override
+  String get cupSetupTitle => '컵 설정';
+
+  @override
+  String get playersTitle => '플레이어';
+
+  @override
+  String playersAddUpTo(int max) {
+    return '최대 $max명까지 추가';
+  }
+
+  @override
+  String get seatHuman => '사람';
+
+  @override
+  String get seatCpu => 'CPU';
+
+  @override
+  String get modeLabel => '모드';
+
+  @override
+  String get modeFreeForAll => '각자도생';
+
+  @override
+  String get modeDuel1v1 => '1대1';
+
+  @override
+  String get modeTeam2v2 => '2대2';
+
+  @override
+  String get modeTeam3v3 => '3대3';
+
+  @override
+  String get actionStart => '시작';
+
+  @override
+  String get startCup => '컵 시작';
+
+  @override
+  String get shopStickSkins => '스킨';
+
+  @override
+  String get shopMapThemes => '맵 테마';
+
+  @override
+  String get shopStore => '스토어';
+
+  @override
+  String get shopStickSkinEyebrow => '스킨';
+
+  @override
+  String get shopMapThemeEyebrow => '맵 테마';
+
+  @override
+  String get shopCoinPack => '코인 팩';
+
+  @override
+  String get shopUnlockEyebrow => '잠금 해제';
+
+  @override
+  String get shopFreeAlwaysYours => '무료 • 영원히 내 것';
+
+  @override
+  String get shopEquipped => '장착됨';
+
+  @override
+  String get shopOwned => '보유 중';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '코인 $count개';
+  }
+
+  @override
+  String get shopTopUpCoins => '코인 충전';
+
+  @override
+  String get shopOneTimeUnlock => '일회성 잠금 해제';
+
+  @override
+  String get shopBuy => '구매';
+
+  @override
+  String get shopUse => '사용';
+
+  @override
+  String shopUnlocked(String name) {
+    return '$name 잠금 해제!';
+  }
+
+  @override
+  String get shopNotEnoughCoins => '코인이 부족합니다.';
+
+  @override
+  String shopPurchased(String title) {
+    return '$title 구매 완료.';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return '구매 실패: $error';
+  }
+
+  @override
+  String get shopEthicsNote =>
+      '구매 항목은 외형 전용이며 게임플레이에 전혀 영향을 주지 않습니다. 표시된 가격은 실제 금액이며 앱 스토어가 정합니다.';
 }

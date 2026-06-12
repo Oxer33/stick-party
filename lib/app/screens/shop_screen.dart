@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/result.dart';
+import '../../l10n/app_localizations.dart';
 import '../../meta/cosmetics.dart';
 import '../../meta/progress_store.dart';
 import '../../services/analytics_service.dart';
@@ -23,6 +24,7 @@ class ShopScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Progress progress = ref.watch(progressProvider);
     final List<IapProduct> products = ref.watch(iapServiceProvider).products;
 
@@ -39,15 +41,15 @@ class ShopScreen extends ConsumerWidget {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const SectionHeader(title: 'STICK SKINS'),
+          SectionHeader(title: l10n.shopStickSkins),
           ...skins.map(
               (Cosmetic c) => _CosmeticTile(cosmetic: c, progress: progress)),
           const SizedBox(height: 24),
-          const SectionHeader(title: 'MAP THEMES', color: GlassColors.cyan),
+          SectionHeader(title: l10n.shopMapThemes, color: GlassColors.cyan),
           ...themes.map(
               (Cosmetic c) => _CosmeticTile(cosmetic: c, progress: progress)),
           const SizedBox(height: 24),
-          const SectionHeader(title: 'STORE', color: GlassColors.amber),
+          SectionHeader(title: l10n.shopStore, color: GlassColors.amber),
           ...products.map((IapProduct p) => _IapTile(product: p)),
           const SizedBox(height: GlassTokens.gapSmall),
           const _EthicsNote(),
@@ -65,6 +67,7 @@ class _CosmeticTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final bool owned = isOwned(progress.ownedCosmetics, cosmetic);
     final bool isSkin = cosmetic.type == CosmeticType.stickSkin;
     final bool selected = isSkin && progress.selectedSkinId == cosmetic.id;
@@ -74,9 +77,9 @@ class _CosmeticTile extends ConsumerWidget {
     final Color accent = Color(iconArgb);
     final String status = owned
         ? (cosmetic.isFree
-            ? 'Free • always yours'
-            : (selected ? 'Equipped' : 'Owned'))
-        : '${cosmetic.priceCoins} coins';
+            ? l10n.shopFreeAlwaysYours
+            : (selected ? l10n.shopEquipped : l10n.shopOwned))
+        : l10n.shopPriceCoins(cosmetic.priceCoins);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: GlassTokens.gapSmall),
@@ -85,7 +88,7 @@ class _CosmeticTile extends ConsumerWidget {
         highlight: selected,
         leading: ProceduralIcon(label: cosmetic.name, colorArgb: iconArgb),
         title: cosmetic.name,
-        eyebrow: isSkin ? 'STICK SKIN' : 'MAP THEME',
+        eyebrow: isSkin ? l10n.shopStickSkinEyebrow : l10n.shopMapThemeEyebrow,
         supporting: status,
         trailing: _action(context, ref, owned, selected, isSkin),
       ),
@@ -99,6 +102,7 @@ class _CosmeticTile extends ConsumerWidget {
     bool selected,
     bool isSkin,
   ) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     if (!owned) {
       final bool affordable = progress.coins >= cosmetic.priceCoins;
       return FilledButton(
@@ -108,7 +112,7 @@ class _CosmeticTile extends ConsumerWidget {
           backgroundColor: GlassColors.amber,
           foregroundColor: GlassColors.base,
         ),
-        child: const Text('BUY'),
+        child: Text(l10n.shopBuy),
       );
     }
     if (isSkin) {
@@ -127,7 +131,7 @@ class _CosmeticTile extends ConsumerWidget {
                   color: GlassColors.frost.withValues(alpha: 0.3),
                 ),
               ),
-              child: const Text('USE'),
+              child: Text(l10n.shopUse),
             );
     }
     return const Padding(
@@ -140,9 +144,12 @@ class _CosmeticTile extends ConsumerWidget {
     final bool ok =
         await ref.read(progressProvider.notifier).buyCosmetic(cosmetic.id);
     if (!context.mounted) return;
+    final AppLocalizations l10n = AppLocalizations.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok ? 'Unlocked ${cosmetic.name}!' : 'Not enough coins.'),
+        content: Text(
+          ok ? l10n.shopUnlocked(cosmetic.name) : l10n.shopNotEnoughCoins,
+        ),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -156,6 +163,7 @@ class _IapTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final IconData glyph =
         product.consumable ? Icons.monetization_on : Icons.lock_open;
     return Padding(
@@ -164,9 +172,10 @@ class _IapTile extends ConsumerWidget {
         accent: GlassColors.amber,
         leading: _IapBadge(icon: glyph),
         title: product.title,
-        eyebrow: product.consumable ? 'COIN PACK' : 'UNLOCK',
-        supporting:
-            product.consumable ? 'Top up your coins' : 'One-time unlock',
+        eyebrow: product.consumable ? l10n.shopCoinPack : l10n.shopUnlockEyebrow,
+        supporting: product.consumable
+            ? l10n.shopTopUpCoins
+            : l10n.shopOneTimeUnlock,
         trailing: FilledButton(
           onPressed: () => _buy(context, ref),
           style: FilledButton.styleFrom(
@@ -185,6 +194,7 @@ class _IapTile extends ConsumerWidget {
     final IapService iap = ref.read(iapServiceProvider);
     final Result<String> result = await iap.buy(product.id);
     if (!context.mounted) return;
+    final AppLocalizations l10n = AppLocalizations.of(context);
 
     await result.fold(
       (String id) async {
@@ -198,7 +208,7 @@ class _IapTile extends ConsumerWidget {
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Purchased ${product.title}.'),
+            content: Text(l10n.shopPurchased(product.title)),
             duration: const Duration(seconds: 2),
           ),
         );
@@ -206,7 +216,7 @@ class _IapTile extends ConsumerWidget {
       (Err<String> err) async {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Purchase failed: ${err.message}'),
+            content: Text(l10n.shopPurchaseFailed(err.message)),
             duration: const Duration(seconds: 2),
           ),
         );
@@ -257,11 +267,11 @@ class _EthicsNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Text(
-        'Purchases are cosmetic only and never affect gameplay. '
-        'Prices shown are real and set by the app store.',
+        l10n.shopEthicsNote,
         textAlign: TextAlign.center,
         style: GlassText.body.copyWith(fontSize: 12),
       ),

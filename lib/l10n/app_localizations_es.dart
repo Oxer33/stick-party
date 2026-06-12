@@ -186,4 +186,111 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get hint_drag => 'ARRASTRA';
+
+  @override
+  String get cupSetupTitle => 'CONFIG. DE COPA';
+
+  @override
+  String get playersTitle => 'JUGADORES';
+
+  @override
+  String playersAddUpTo(int max) {
+    return 'Añade hasta $max';
+  }
+
+  @override
+  String get seatHuman => 'HUMANO';
+
+  @override
+  String get seatCpu => 'CPU';
+
+  @override
+  String get modeLabel => 'MODO';
+
+  @override
+  String get modeFreeForAll => 'TODOS CONTRA TODOS';
+
+  @override
+  String get modeDuel1v1 => '1 vs 1';
+
+  @override
+  String get modeTeam2v2 => '2 vs 2';
+
+  @override
+  String get modeTeam3v3 => '3 vs 3';
+
+  @override
+  String get actionStart => 'EMPEZAR';
+
+  @override
+  String get startCup => 'EMPEZAR COPA';
+
+  @override
+  String get shopStickSkins => 'ASPECTOS';
+
+  @override
+  String get shopMapThemes => 'TEMAS DE MAPA';
+
+  @override
+  String get shopStore => 'TIENDA';
+
+  @override
+  String get shopStickSkinEyebrow => 'ASPECTO';
+
+  @override
+  String get shopMapThemeEyebrow => 'TEMA DE MAPA';
+
+  @override
+  String get shopCoinPack => 'PACK DE MONEDAS';
+
+  @override
+  String get shopUnlockEyebrow => 'DESBLOQUEO';
+
+  @override
+  String get shopFreeAlwaysYours => 'Gratis • siempre tuyo';
+
+  @override
+  String get shopEquipped => 'Equipado';
+
+  @override
+  String get shopOwned => 'En posesión';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '$count monedas';
+  }
+
+  @override
+  String get shopTopUpCoins => 'Recarga tus monedas';
+
+  @override
+  String get shopOneTimeUnlock => 'Desbloqueo único';
+
+  @override
+  String get shopBuy => 'COMPRAR';
+
+  @override
+  String get shopUse => 'USAR';
+
+  @override
+  String shopUnlocked(String name) {
+    return '¡$name desbloqueado!';
+  }
+
+  @override
+  String get shopNotEnoughCoins => 'No tienes monedas suficientes.';
+
+  @override
+  String shopPurchased(String title) {
+    return '$title comprado.';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return 'Compra fallida: $error';
+  }
+
+  @override
+  String get shopEthicsNote =>
+      'Las compras son solo cosméticas y nunca afectan al juego. Los precios mostrados son reales y los fija la tienda de aplicaciones.';
 }

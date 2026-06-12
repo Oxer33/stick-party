@@ -185,4 +185,111 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hint_drag => 'DRAG';
+
+  @override
+  String get cupSetupTitle => 'CUP SETUP';
+
+  @override
+  String get playersTitle => 'PLAYERS';
+
+  @override
+  String playersAddUpTo(int max) {
+    return 'Add up to $max';
+  }
+
+  @override
+  String get seatHuman => 'HUMAN';
+
+  @override
+  String get seatCpu => 'CPU';
+
+  @override
+  String get modeLabel => 'MODE';
+
+  @override
+  String get modeFreeForAll => 'FREE FOR ALL';
+
+  @override
+  String get modeDuel1v1 => '1 v 1';
+
+  @override
+  String get modeTeam2v2 => '2 v 2';
+
+  @override
+  String get modeTeam3v3 => '3 v 3';
+
+  @override
+  String get actionStart => 'START';
+
+  @override
+  String get startCup => 'START CUP';
+
+  @override
+  String get shopStickSkins => 'STICK SKINS';
+
+  @override
+  String get shopMapThemes => 'MAP THEMES';
+
+  @override
+  String get shopStore => 'STORE';
+
+  @override
+  String get shopStickSkinEyebrow => 'STICK SKIN';
+
+  @override
+  String get shopMapThemeEyebrow => 'MAP THEME';
+
+  @override
+  String get shopCoinPack => 'COIN PACK';
+
+  @override
+  String get shopUnlockEyebrow => 'UNLOCK';
+
+  @override
+  String get shopFreeAlwaysYours => 'Free • always yours';
+
+  @override
+  String get shopEquipped => 'Equipped';
+
+  @override
+  String get shopOwned => 'Owned';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '$count coins';
+  }
+
+  @override
+  String get shopTopUpCoins => 'Top up your coins';
+
+  @override
+  String get shopOneTimeUnlock => 'One-time unlock';
+
+  @override
+  String get shopBuy => 'BUY';
+
+  @override
+  String get shopUse => 'USE';
+
+  @override
+  String shopUnlocked(String name) {
+    return 'Unlocked $name!';
+  }
+
+  @override
+  String get shopNotEnoughCoins => 'Not enough coins.';
+
+  @override
+  String shopPurchased(String title) {
+    return 'Purchased $title.';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return 'Purchase failed: $error';
+  }
+
+  @override
+  String get shopEthicsNote =>
+      'Purchases are cosmetic only and never affect gameplay. Prices shown are real and set by the app store.';
 }

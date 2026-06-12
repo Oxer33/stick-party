@@ -184,4 +184,110 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get hint_drag => '拖动';
+
+  @override
+  String get cupSetupTitle => '锦标赛设置';
+
+  @override
+  String get playersTitle => '玩家';
+
+  @override
+  String playersAddUpTo(int max) {
+    return '最多添加 $max 名';
+  }
+
+  @override
+  String get seatHuman => '真人';
+
+  @override
+  String get seatCpu => '电脑';
+
+  @override
+  String get modeLabel => '模式';
+
+  @override
+  String get modeFreeForAll => '自由混战';
+
+  @override
+  String get modeDuel1v1 => '1 对 1';
+
+  @override
+  String get modeTeam2v2 => '2 对 2';
+
+  @override
+  String get modeTeam3v3 => '3 对 3';
+
+  @override
+  String get actionStart => '开始';
+
+  @override
+  String get startCup => '开始锦标赛';
+
+  @override
+  String get shopStickSkins => '角色皮肤';
+
+  @override
+  String get shopMapThemes => '地图主题';
+
+  @override
+  String get shopStore => '商城';
+
+  @override
+  String get shopStickSkinEyebrow => '角色皮肤';
+
+  @override
+  String get shopMapThemeEyebrow => '地图主题';
+
+  @override
+  String get shopCoinPack => '金币包';
+
+  @override
+  String get shopUnlockEyebrow => '解锁';
+
+  @override
+  String get shopFreeAlwaysYours => '免费 • 永久拥有';
+
+  @override
+  String get shopEquipped => '已装备';
+
+  @override
+  String get shopOwned => '已拥有';
+
+  @override
+  String shopPriceCoins(int count) {
+    return '$count 金币';
+  }
+
+  @override
+  String get shopTopUpCoins => '补充金币';
+
+  @override
+  String get shopOneTimeUnlock => '一次性解锁';
+
+  @override
+  String get shopBuy => '购买';
+
+  @override
+  String get shopUse => '使用';
+
+  @override
+  String shopUnlocked(String name) {
+    return '已解锁$name！';
+  }
+
+  @override
+  String get shopNotEnoughCoins => '金币不足。';
+
+  @override
+  String shopPurchased(String title) {
+    return '已购买$title。';
+  }
+
+  @override
+  String shopPurchaseFailed(String error) {
+    return '购买失败：$error';
+  }
+
+  @override
+  String get shopEthicsNote => '所有购买仅为外观，绝不影响游戏玩法。所示价格真实有效，由应用商店设定。';
 }
