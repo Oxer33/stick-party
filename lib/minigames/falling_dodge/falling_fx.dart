@@ -193,12 +193,20 @@ class TrackFx {
   int hopDir = 1; // last hop direction (bounces at the ends)
   double spawnTimer = 0;
   double hopHold = 0; // brief jump-pose timer after a hop
-  int grazeChain = 0; // consecutive close-dodge streak (resets on over-fleeing)
+  int grazeChain = 0; // consecutive EARNED-dodge streak (resets on over-fleeing)
   int grazeBannerAt = 0; // highest chain that has fired a STREAK banner (latch)
   double respawnTimer = 0; // seconds until a crushed runner returns (0 = none)
   double invuln = 0; // post-respawn grace: can't be crushed (seconds)
   double aliveSec = 0; // cumulative seconds spent alive this run (tiebreaker)
   ReactionClock? clock;
+
+  // ── Earned-dodge bookkeeping (what makes a graze SKILL, not proximity) ──────
+  // When the runner hops AWAY from a lane that had an imminent hazard, we stamp
+  // that lane + a short claim window here. A passing hazard only banks a graze
+  // if it crosses the lane the runner just vacated UNDER THREAT within the
+  // window — i.e. the player genuinely read the danger and stepped off in time.
+  int dodgeFromLane = -1; // the threatened lane the runner just left (-1 = none)
+  double dodgeClaimSec = 0; // remaining seconds to cash that dodge as a graze
 
   TrackFx({
     required this.playerId,

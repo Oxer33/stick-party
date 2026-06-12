@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
@@ -46,6 +48,19 @@ class _Tuning {
   static const double spawnWarmupSec = 1.6;
   static const double idleGraceSec = 8.0;
 
+  // ── CHASE PRESSURE (calibrated difficulty that INTERPOSES) ─────────────────
+  // After grace, hazards increasingly TARGET the runner's CURRENT lane instead
+  // of a random one. This is the lever that makes the law hold both ways:
+  //  * A STILL player is now actively hunted — stand in one lane and a hazard
+  //    drops on YOU, so doing nothing gets you crushed (it no longer "survives").
+  //  * A READER is fed a steady supply of in-lane threats to dodge off, so
+  //    skilled play has constant chances to bank earned grazes.
+  // The chase probability ramps from [chaseProbStart] to [chaseProbMax] across
+  // the round, so pressure escalates. A telegraphed drop in your lane that you
+  // must read and step off is the whole skill test.
+  static const double chaseProbStart = 0.45; // P(target current lane) at grace end
+  static const double chaseProbMax = 0.85; // P(target current lane) at climax
+
   // Sudden death: once the round is this far along, every spawn drops a SECOND
   // hazard in a different lane, so two of the four lanes are threatened at once
   // and even a perfectly-timed dodge can get pinched — this resolves the round
@@ -72,27 +87,64 @@ class _Tuning {
   static const double figureScaleHiBand = 1300; // band px at max scale
 
   static const double hitPadFactor = 0.42; // collision slack / hazard size
+  // Extra body half-width (in lane-spacing fractions) the runner occupies for
+  // collision while it is still gliding between lanes. This is what STOPS the
+  // flailer exploit: a hazard that crosses while the runner is mid-hop through
+  // its lane still connects — the rendered body physically overlapped the fall.
+  static const double hitBodyHalfFrac = 0.34; // runner half-width / lane spacing
 
-  // ── GRAZE CHAIN (the heart of the rework) ──────────────────────────────────
-  // A hazard that crosses the runner line ONE lane away is a GRAZE — the only
-  // real way to score. Consecutive grazes stack a multiplier, so hugging danger
-  // pays exponentially. Over-fleeing — being 2+ lanes from a passing hazard —
-  // is cowardice: it banks nothing AND snaps the chain back to zero. So the
-  // close dodge is the whole game; bolting to a far safe lane throws away points.
-  static const double grazeBaseScore = 6; // points for the 1st graze in a chain
-  static const double grazeStep = 0.85; // extra multiplier per chained graze
+  // ── EARNED GRAZE CHAIN (the heart of the rework) ───────────────────────────
+  // A graze is NOT mere proximity to any passing hazard (that would pay a STILL
+  // player for free and let a flailer collect by accident). A graze is an
+  // EARNED DODGE: a hazard was bearing down on the lane the runner WAS in, the
+  // runner stepped exactly ONE lane off it inside the reaction window, and the
+  // hazard then whistled past the lane just vacated. You must (a) be threatened
+  // and (b) move out in time — reading + timing — to score. Sitting still in an
+  // unthreatened lane banks nothing; flailing rarely lines up the threatened→
+  // adjacent step so it banks almost nothing and gets crushed instead.
+  //
+  // Consecutive earned dodges stack a multiplier, so reading a dense barrage and
+  // threading it pays exponentially. Over-fleeing (jumping 2+ lanes, or bolting
+  // when nothing threatened you) banks nothing AND snaps the chain to zero.
+  static const double grazeBaseScore = 6; // points for the 1st dodge in a chain
+  static const double grazeStep = 0.85; // extra multiplier per chained dodge
   static const int grazeMaxMult = 6; // multiplier cap (keeps scores sane)
   static const int grazeStreakMilestone = 4; // chain length that earns a banner
 
-  // Survival is now only a gentle tiebreaker so a daredevil's banked grazes
-  // dominate the ranking: a chicken who survives but never grazes still loses to
-  // a bold runner who racked up a chain (even one who got crushed a bit early).
-  static const double survivePerSec = 0.4; // small passive survival score / sec
+  // A dodge only counts as EARNED if the hazard that ends up adjacent was a real,
+  // imminent threat to the lane the runner just left, at the moment it left. We
+  // record, per runner, the lane it was threatened in and how recently it hopped
+  // off a threatened lane; a graze must cash in within this window or it is just
+  // ambient proximity (no score). The threat lead is set a hair WIDER than the
+  // sharpest bot's reaction lead (~0.77s at accuracy 1) so any legitimate
+  // reactive dodge — human OR bot — is recognized and credited; the CLAIM WINDOW
+  // (the real timing gate) is just as wide so a hazard read early still cashes
+  // when it finally crosses, while a premature flee (hazard not yet a threat)
+  // stamps nothing and loitering one lane over never qualifies.
+  static const double dodgeThreatLeadSec = 0.85; // lookahead that marks a "threat"
+  static const double dodgeClaimWindowSec = 0.85; // grace to cash a dodge after hopping
+
+  // Survival is only a gentle tiebreaker so EARNED dodges dominate the ranking:
+  // a chicken who survives but never dodges-under-threat still loses to a bold
+  // reader who threaded barrages (even one who got crushed a bit early).
+  // Survival is a NEGLIGIBLE tiebreak only — the score is driven by EARNED
+  // grazes (skill), never by passively existing. Kept tiny so a still player who
+  // merely outlasts the clock banks almost nothing and always loses to a reader
+  // who threads barrages (and so a crush-slowed clock can't inflate it either).
+  static const double survivePerSec = 0.1; // tiny passive survival score / sec
 
   // Near-miss reward feel.
   static const double nearMissSlowMo = 0.22; // hitStop duration
   static const double nearMissTimeScale = 0.4; // sim time scale during slow-mo
   static const double nearMissFlashSec = 0.35;
+
+  // Knife-edge near-miss: a dodge stamped with at least this fraction of its
+  // claim window still left was a last-instant escape → escalate to the full
+  // cinematic (deeper slow-mo + zoom-punch + screen flash).
+  static const double knifeEdgeFrac = 0.72; // claim-left fraction => knife-edge
+  static const double knifeEdgeSlowMo = 0.3; // deeper hitStop on a knife-edge
+  static const double knifeEdgeTimeScale = 0.22; // harder time dip
+  static const double knifeEdgeFlash = 0.34; // screen-flash strength
 
   // Hop feel.
   static const double hopHoldSec = 0.16; // jump pose hold after a hop
@@ -109,6 +161,16 @@ class _Tuning {
   // Grace before any bot reacts, mirroring the human's read time so bots never
   // dodge a hazard the player has not even seen yet (keeps them beatable).
   static const double botWarmupSec = 1.5;
+
+  // Bot mistake shape (drives the easy→hard skill gradient). When a bot fumbles
+  // (probability [BotProfile.errorRate]) it does ONE of two REAL mistakes:
+  //  * FREEZE — it fails to dodge at all and eats the hazard (a true crush), OR
+  //  * WRONG WAY — it steps the wrong direction (may still survive, may not).
+  // Easy bots fumble often → they mistime straight into hazards. Hard bots
+  // fumble rarely → they thread the barrage. [botFreezeShare] splits a fumble
+  // between the two so a chunk of mistakes are outright crushes, not just a
+  // harmless wrong step — that is what lets a skilled human out-survive them.
+  static const double botFreezeShare = 0.5; // fraction of fumbles that freeze
 
   static const double scrollPerSec = 220; // band texture scroll rate (visual)
 
@@ -162,12 +224,16 @@ class FallingDodge extends MiniGameBase {
         inputHint: 'TAP',
       );
 
+  /// Cyan accent for the knife-edge near-miss flash + popup (matches the near-
+  /// miss sparks so the whole beat reads as one cohesive cue).
+  static const Color _knifeEdgeColor = Color(0xFF35E0FF);
+
   late Juice _juice;
   final List<TrackFx> _tracks = <TrackFx>[];
   double _elapsed = 0;
   double _animClock = 0; // real-time clock for spin/scroll (never scaled)
   double _fallSpeed = _Tuning.fallSpeedStart;
-  bool _dangerFired = false; // one-shot sudden-death "DANGER!" climax cue latch
+  bool _dangerFired = false; // one-shot FINAL BARRAGE climax cue latch
   bool _winnerFired = false; // one-shot final-survivor bigMoment latch
 
   @override
@@ -286,6 +352,19 @@ class FallingDodge extends MiniGameBase {
     t.hopper.hop(dir);
     t.hopDir = dir;
     if (t.hopper.lane == before) return;
+    // Earned-dodge stamp: if the lane we just LEFT had an imminent hazard, mark
+    // it as a claimable dodge. A graze only banks if a hazard then crosses THAT
+    // vacated-under-threat lane within the claim window — so points require a
+    // real read+step, never loitering one lane away from an unrelated hazard.
+    if (_laneThreatened(t, before)) {
+      t.dodgeFromLane = before;
+      t.dodgeClaimSec = _Tuning.dodgeClaimWindowSec;
+    } else {
+      // Hopping when nothing threatened the old lane is not a dodge — and
+      // jumping around for no reason should not keep a stale claim alive.
+      t.dodgeFromLane = -1;
+      t.dodgeClaimSec = 0;
+    }
     // Lean/hop pose + a take-off dust kick at the source lane.
     t.hopHold = _Tuning.hopHoldSec;
     t.figure.facing = dir >= 0 ? 1.0 : -1.0;
@@ -337,6 +416,15 @@ class FallingDodge extends MiniGameBase {
       if (t.invuln > 0) t.invuln = math.max(0, t.invuln - dt);
       if (t.alive) {
         t.aliveSec += dt; // cumulative alive time (gentle tiebreaker)
+        // Expire the earned-dodge claim on sim time (matches hazard motion) so a
+        // dodge only banks if the hazard crosses the vacated lane while fresh.
+        if (t.dodgeClaimSec > 0) {
+          t.dodgeClaimSec -= sdt;
+          if (t.dodgeClaimSec <= 0) {
+            t.dodgeClaimSec = 0;
+            t.dodgeFromLane = -1;
+          }
+        }
         _spawnTick(t, sdt);
         _stepHazards(t, sdt);
         _tickTokens(t, sdt);
@@ -415,22 +503,28 @@ class FallingDodge extends MiniGameBase {
     return bestLane;
   }
 
-  /// True once the round enters sudden death (two lanes threatened at once) —
-  /// the finale visibly ramps. Mirrors the spawner's sudden-death gate.
+  /// True once the round enters its FINAL BARRAGE (sudden death): two lanes
+  /// threatened at once and the spawn rate spikes. The finale visibly ramps.
+  /// Mirrors the spawner's gate.
   bool get _inSuddenDeath =>
       _elapsed >= _Tuning.timeLimit * _Tuning.suddenDeathFrac;
 
-  /// Fire the one-shot "DANGER!" climax cue when sudden death begins, over every
-  /// live runner, with a shake — an unmistakable "it just got harder" beat.
+  /// Fire the one-shot FINAL BARRAGE climax when sudden death begins: a big
+  /// center banner + red screen flash + heavy shake + a slow-mo dip, plus a
+  /// "DANGER!" popup over every live runner. An unmistakable, cinematic "the
+  /// hardest stretch is HERE" beat — rising tension into the finish.
   void _maybeFireDanger() {
     if (_dangerFired || !_inSuddenDeath) return;
     _dangerFired = true;
+    _juice.bigBanner('FINAL BARRAGE!', color: TokenTuning.dangerColor);
+    _juice.flashScreen(TokenTuning.dangerColor, strength: 0.42);
+    _juice.shake.heavy();
+    _juice.slowMo();
     for (final t in _tracks) {
       if (!t.alive) continue;
       final x = t.lanes.coordOfVisual(t.hopper.visualLane);
       FallingFx.dangerPopup(_juice, Offset(x, t.runnerY - t.figureLift - 16));
     }
-    _juice.shake.medium();
   }
 
   /// Advance this track's golden token: spawn on cadence, fall, and resolve a
@@ -509,16 +603,30 @@ class FallingDodge extends MiniGameBase {
 
   /// Choose the target lane for a new hazard. During the early grace window the
   /// runner's CURRENT lane is never targeted, so an idle player cannot be crushed
-  /// in the first [idleGraceSec]; once grace ends every lane is fair game and the
-  /// escalation forces a decision. After grace it's a flat random lane.
+  /// in the first [idleGraceSec]. AFTER grace the spawner hunts: with a ramping
+  /// probability ([_chaseProb]) it drops the hazard squarely on the runner's
+  /// CURRENT lane (so standing still gets you crushed and a reader gets a threat
+  /// to dodge off), otherwise a flat random lane to keep the board varied.
   int _spawnLaneFor(TrackFx t) {
-    if (_elapsed >= _Tuning.idleGraceSec) {
-      return ctx.rng.intRange(0, _Tuning.laneCount);
+    final current = t.hopper.lane;
+    if (_elapsed < _Tuning.idleGraceSec) {
+      // Grace: never the current lane — pick uniformly among the others.
+      final pick = ctx.rng.intRange(0, _Tuning.laneCount - 1);
+      return pick < current ? pick : pick + 1;
     }
-    final avoid = t.hopper.lane;
-    // Pick uniformly among the lanes that are not the runner's current lane.
-    final pick = ctx.rng.intRange(0, _Tuning.laneCount - 1);
-    return pick < avoid ? pick : pick + 1;
+    if (ctx.rng.chance(_chaseProb())) return current; // hunt the runner
+    return ctx.rng.intRange(0, _Tuning.laneCount); // otherwise anywhere
+  }
+
+  /// Probability a post-grace hazard targets the runner's current lane, ramping
+  /// from [chaseProbStart] at grace-end to [chaseProbMax] at the time cap so the
+  /// hunt tightens as the round climaxes.
+  double _chaseProb() {
+    final span = _Tuning.timeLimit - _Tuning.idleGraceSec;
+    final f = span <= 0
+        ? 1.0
+        : ((_elapsed - _Tuning.idleGraceSec) / span).clamp(0.0, 1.0);
+    return lerpD(_Tuning.chaseProbStart, _Tuning.chaseProbMax, f);
   }
 
   HazardKind _pickKind() {
@@ -558,35 +666,59 @@ class FallingDodge extends MiniGameBase {
       ..addAll(survivors);
   }
 
-  /// A hit requires the same lane AND the runner's visual position close enough
-  /// horizontally that it has not cleared the falling body yet. A just-respawned
-  /// runner in its grace window is never crushed (so a fresh spawn is safe).
+  /// A hit is decided by REAL physical overlap, locked to the logical lane the
+  /// runner committed to (instant), NOT the lagging visual lane — this is what
+  /// closes the flailer exploit. A runner still gliding between lanes physically
+  /// straddles BOTH, so a hazard landing in the lane it is leaving OR the lane it
+  /// is entering connects if its body still overlaps the fall horizontally. So
+  /// hammering taps every frame makes the runner a WIDER, ever-mid-hop target
+  /// (more likely to be clipped), never a teleporting one that slips the test. A
+  /// just-respawned runner in its invuln grace is never crushed.
   bool _isHit(TrackFx t, HazardFx h) {
     if (t.invuln > 0) return false;
-    if (h.lane != t.hopper.lane) return false;
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final hazardX = t.lanes.coordOf(h.lane);
-    final pad = h.size * (_Tuning.hitPadFactor + 0.5);
-    return (runnerX - hazardX).abs() <= pad;
+    // Logical-lane gate first: a hazard 2+ logical lanes off can never reach the
+    // body. Within 1 lane we fall through to a true horizontal overlap test so a
+    // committed step that fully cleared the lane is safe but a mid-glide is not.
+    if ((h.lane - t.hopper.lane).abs() > 1) return false;
+    final spacing = t.lanes.spacing.abs();
+    final bodyHalf = spacing * _Tuning.hitBodyHalfFrac;
+    final hazardHalf = h.size * (_Tuning.hitPadFactor + 0.5);
+    return (runnerX - hazardX).abs() <= bodyHalf + hazardHalf;
   }
 
   /// Resolve a hazard that just crossed the runner line WITHOUT crushing the
-  /// runner — the moment the graze chain lives or dies:
-  ///  * EXACTLY one lane away → a clean GRAZE: bump the chain and bank
-  ///    base × the (capped) chain multiplier, so each link is worth more than
-  ///    the last. Slow-mo + spark + a "x2/x3…" popup sell the building streak.
-  ///  * Two or more lanes away → the player bolted to safety: bank nothing and
-  ///    RESET the chain to zero. Fleeing is the only thing that breaks a streak.
-  ///  * Same lane but slipped through (a mid-hop horizontal miss) → neutral:
-  ///    keep the chain, score nothing.
+  /// runner — the moment the EARNED-dodge chain lives or dies. A graze is NOT
+  /// awarded for merely being one lane from a passing hazard (that paid a STILL
+  /// player and a flailer for free). It is awarded ONLY when the hazard crosses
+  /// the exact lane the runner DODGED OFF UNDER THREAT, while that dodge claim is
+  /// still live ([dodgeFromLane] / [dodgeClaimSec], stamped in [_commitHop]):
+  ///  * Hazard crosses the just-vacated, formerly-threatened lane in time →
+  ///    a clean EARNED dodge: bump the chain and bank base × the (capped) chain
+  ///    multiplier. Slow-mo + spark + an "x2/x3…" popup sell the building streak.
+  ///  * Hazard is 2+ lanes from the runner with NO live dodge claim → the player
+  ///    bolted / was never near danger: bank nothing and RESET the chain.
+  ///  * Anything else (ambient pass one lane over, dead-on slip-through) →
+  ///    neutral: no score, chain preserved. Loitering beside hazards pays zero.
   void _registerNearMiss(TrackFx t, HazardFx h) {
-    final laneGap = (h.lane - t.hopper.lane).abs();
-    if (laneGap >= 2) {
-      t.grazeChain = 0; // over-fled — cowardice snaps the streak
-      t.grazeBannerAt = 0; // re-arm the streak banner for a fresh chain
-      return;
+    final earned = h.lane == t.dodgeFromLane && t.dodgeClaimSec > 0;
+    if (!earned) {
+      // Over-fled: far from every hazard AND not mid-claim → snap the streak.
+      if ((h.lane - t.hopper.lane).abs() >= 2 && t.dodgeClaimSec <= 0) {
+        t.grazeChain = 0;
+        t.grazeBannerAt = 0;
+      }
+      return; // ambient proximity earns nothing — the dodge must be deliberate
     }
-    if (laneGap != 1) return; // dead-on slip-through: neutral, keep the chain
+    // How LATE was the escape? A claim stamped this very instant still has
+    // almost the whole window left → the runner stepped off at the last possible
+    // moment: a knife-edge near-miss worthy of an extra cinematic kick.
+    final knifeEdge =
+        t.dodgeClaimSec >= _Tuning.dodgeClaimWindowSec * _Tuning.knifeEdgeFrac;
+    // Consume the claim so one stamped dodge cannot double-score off two hazards.
+    t.dodgeFromLane = -1;
+    t.dodgeClaimSec = 0;
 
     t.grazeChain += 1;
     final mult = t.grazeChain.clamp(1, _Tuning.grazeMaxMult);
@@ -620,6 +752,24 @@ class FallingDodge extends MiniGameBase {
       size: 22 + 8 * t.figureScale,
     );
     t.flashes.add(FlashFx(lane: h.lane, life: _Tuning.nearMissFlashSec));
+
+    // KNIFE-EDGE: a last-instant escape gets the full cinematic — a deeper
+    // slow-mo, a zoom-punch toward the runner, and a cyan screen flash. The
+    // signature "HOW did that miss?!" beat the owner wants on a true near-miss.
+    if (knifeEdge) {
+      final runnerPos = Offset(
+          t.lanes.coordOfVisual(t.hopper.visualLane), t.runnerY - t.figureLift);
+      _juice.slowMo(
+          dur: _Tuning.knifeEdgeSlowMo, scale: _Tuning.knifeEdgeTimeScale);
+      _juice.cameraPunch(runnerPos);
+      _juice.flashScreen(_knifeEdgeColor, strength: _Tuning.knifeEdgeFlash);
+      _juice.popup(
+        Offset(runnerPos.dx, t.runnerY - 52),
+        'CLOSE!',
+        _knifeEdgeColor,
+        size: 20 + 8 * t.figureScale,
+      );
+    }
 
     // Signature beat: crossing a big streak milestone earns a one-shot banner +
     // zoom-punch toward this runner. Latched per-track so it fires once per
@@ -657,9 +807,11 @@ class FallingDodge extends MiniGameBase {
 
   /// Bots read the same ground telegraph and make a REAL directional choice on
   /// their reaction clock — just like the player picks a side. Better accuracy →
-  /// react with more lead time. On a mistake ([errorRate]) the bot commits the
-  /// WRONG way instead of the safe way, so a weak bot can dodge straight into a
-  /// hazard — they feel fallible, not scripted, and stay beatable on easy.
+  /// react with more lead time (hard bots thread the barrage). On a fumble
+  /// ([errorRate]) the bot makes a REAL mistake: it either FREEZES and eats the
+  /// hazard, or steps the WRONG way. Easy bots fumble often, so they mistime
+  /// straight into hazards and a skilled human out-survives them; hard bots
+  /// fumble rarely and dodge cleanly. No human-vs-bot branch beyond "is bot".
   void _driveBots(double dt) {
     if (_elapsed < _Tuning.botWarmupSec) return; // mirror the human's read time
     for (final t in _tracks) {
@@ -669,25 +821,38 @@ class FallingDodge extends MiniGameBase {
       clock.arm(ctx.botProfile, ctx.rng);
 
       if (!_botThreatImminent(t)) continue;
-      var dir = _botDodgeDir(t);
-      // A fumbled reaction flips the choice → the bot dives the wrong way.
-      if (ctx.rng.chance(ctx.botProfile.errorRate)) dir = -dir;
-      _commitHop(t, dir);
+      // A fumble: half the time freeze (no dodge → take the crush), else step
+      // the wrong way. Either is a genuine mistake a sharp player avoids.
+      if (ctx.rng.chance(ctx.botProfile.errorRate)) {
+        if (ctx.rng.chance(_Tuning.botFreezeShare)) continue; // freeze → eats it
+        _commitHop(t, -_botDodgeDir(t)); // wrong way
+        continue;
+      }
+      _commitHop(t, _botDodgeDir(t)); // clean dodge off the threatened lane
     }
   }
 
   /// True when a hazard is bearing down on the bot's current lane within its
   /// (accuracy-scaled) lead window — i.e. the moment a real player would react.
   bool _botThreatImminent(TrackFx t) {
-    final lane = t.hopper.lane;
     final lead = _Tuning.botLeadBase +
         _Tuning.botLeadPerAccuracy * ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    return _laneThreatened(t, t.hopper.lane, lead: lead);
+  }
+
+  /// True when an un-counted hazard is bearing down on [lane] within [lead]
+  /// seconds of the runner line — the definition of "this lane is dangerous
+  /// RIGHT NOW". Used both to decide a bot should react and to validate that a
+  /// human's hop was a genuine dodge OFF a threatened lane (the earned-graze
+  /// gate). A hazard already past the runner line no longer threatens.
+  bool _laneThreatened(TrackFx t, int lane,
+      {double lead = _Tuning.dodgeThreatLeadSec}) {
     for (final h in t.hazards) {
       if (h.lane != lane || h.counted || h.y > t.runnerY) continue;
       final speed = _fallSpeed * h.speedMul;
       if (speed <= 0) continue;
       final eta = (t.runnerY - h.y) / speed;
-      if (eta <= lead) return true;
+      if (eta >= 0 && eta <= lead) return true;
     }
     return false;
   }
@@ -824,4 +989,43 @@ class FallingDodge extends MiniGameBase {
 
   static Color _brighten(Color c, double t) =>
       Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
+
+  // ── Test seams (deterministic gameplay tests + smart-play reference) ─────────
+  // These expose exactly the read a careful PLAYER makes by eye, so a test can
+  // pilot a genuinely-reading "measured dodger" and prove a blind flailer ends
+  // below it. Read-only; never mutate the sim.
+
+  /// The hop direction (-1 left / +1 right) that steps [id] OFF a threatened
+  /// lane onto an ADJACENT lane that is itself currently clear — exactly the
+  /// skilled "read the telegraph and dodge the right way" choice, which also
+  /// banks an earned graze. Returns 0 when not threatened (no need to move) or
+  /// when no adjacent lane is safe (pinned — any step is a gamble). Read-only.
+  @visibleForTesting
+  int debugSafeHopDir(int id) {
+    final t = _trackOf(id);
+    if (t == null || !t.alive) return 0;
+    final lane = t.hopper.lane;
+    if (!_laneThreatened(t, lane)) return 0; // nothing to dodge right now
+    // Prefer a clear neighbour; if both are clear, keep the lean direction so
+    // the runner weaves naturally instead of dithering.
+    final canLeft = lane > 0 && !_laneThreatened(t, lane - 1);
+    final canRight =
+        lane < _Tuning.laneCount - 1 && !_laneThreatened(t, lane + 1);
+    if (canLeft && canRight) return t.hopDir != 0 ? t.hopDir : 1;
+    if (canLeft) return -1;
+    if (canRight) return 1;
+    return 0; // pinned this frame
+  }
+
+  /// A full-screen normalized touch x that [_dirFromTouch] resolves to [dir],
+  /// so a test can drive a deliberate dodge faithfully through [onInput] (not a
+  /// back door). [dir] < 0 → left of the runner; > 0 → right. The band spans the
+  /// full width, so an extreme x reads as that side regardless of the lane.
+  @visibleForTesting
+  Offset debugTouchForDir(int dir) => Offset(dir < 0 ? 0.01 : 0.99, 0.5);
+
+  /// Cumulative seconds [id] has spent alive this run (the survival tiebreaker).
+  /// A blind flailer, crushed often, accrues far less than a clean dodger.
+  @visibleForTesting
+  double debugAliveSec(int id) => _trackOf(id)?.aliveSec ?? 0;
 }

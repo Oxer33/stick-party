@@ -1,4 +1,5 @@
-import 'package:flutter/widgets.dart';
+import 'dart:ui';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
 import 'package:stick_party/engine/mini_game.dart';
@@ -234,5 +235,146 @@ void main() {
     final finalScore = (g.winResult!.finalScores[0] ?? 0).toDouble();
     expect(finalScore, greaterThanOrEqualTo(prev - 1e-9));
     expect(finalScore, greaterThanOrEqualTo(0));
+  });
+
+  test('DESIGN LAW: a blind flailer ends BELOW a measured dodger '
+      '(spam loses to reading + timing)', () {
+    // The whole hardening, proven deterministically across several shared 1v1
+    // rounds (both runners face the SAME hazard board per seed, via ctx.rng):
+    //
+    //  * P0 MEASURED DODGER: reads the telegraph via [debugSafeHopDir] and steps
+    //    exactly one lane OFF a threatened lane onto a clear one, and only when
+    //    threatened. That is the earned dodge — it survives the chase and banks a
+    //    graze chain.
+    //  * P1 BLIND FLAILER: taps a RANDOM side EVERY frame (its own rng, so the
+    //    sim stays deterministic). It is perpetually mid-hop (a wider hitbox),
+    //    walks into chase hazards, and almost never lines up a threatened→clear
+    //    step, so it is crushed often and banks almost nothing.
+    //
+    // On EVERY seed the flailer must end with a LOWER score, LESS time alive, and
+    // a WORSE rank — requiring it across seeds makes the proof robust, not a
+    // lucky board, and would surface any real hole in the law.
+    for (final seed in [31, 12, 57, 88]) {
+      final players = [
+        PlayerSlot.defaults(0), // measured dodger (human-driven)
+        PlayerSlot.defaults(1), // blind flailer (human-driven)
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+      );
+      final g = FallingDodge()..init(ctx);
+      final flail = SeededRng(seed * 7 + 1); // drives the flailer, NOT the sim
+
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        // Measured: act only when threatened, and only in a safe direction.
+        final dir = g.debugSafeHopDir(0);
+        if (dir != 0) g.onInput(PlayerInput.down(0, g.debugTouchForDir(dir)));
+        // Blind flailer: random side, every single frame.
+        g.onInput(PlayerInput.down(1, Offset(flail.next(), 0.5)));
+        g.update(1 / 60);
+      }
+
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      final win = g.winResult!;
+      final dodgerScore = (win.finalScores[0] ?? 0).toDouble();
+      final flailerScore = (win.finalScores[1] ?? 0).toDouble();
+
+      expect(flailerScore, lessThan(dodgerScore),
+          reason: 'seed $seed: blind flailing must score below a measured '
+              'dodger (dodger=$dodgerScore flailer=$flailerScore)');
+      expect(g.debugAliveSec(1), lessThan(g.debugAliveSec(0)),
+          reason: 'seed $seed: the flailer is crushed more, surviving less');
+      // Worse rank = appears LATER in the best→worst ranking.
+      expect(win.ranking.indexOf(1), greaterThan(win.ranking.indexOf(0)),
+          reason: 'seed $seed: the flailer must rank below the dodger');
+    }
+  });
+
+  test('DESIGN LAW: a STILL player scores ~nothing (no free proximity grazes)',
+      () {
+    // A runner that NEVER moves earns no grazes: a graze requires a deliberate
+    // step OFF a threatened lane, which a still player never makes. It banks at
+    // most the tiny survival bonus and nowhere near a real graze chain. Solo so
+    // there is no rival to muddy the read; seed-robust across a few boards.
+    for (final seed in [2, 17, 44]) {
+      final ctx = MiniGameContext(
+        players: [PlayerSlot.defaults(0)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(1),
+      );
+      final g = FallingDodge()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        g.update(1 / 60); // never tap — pure stillness
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      final score = (g.winResult!.finalScores[0] ?? 0).toDouble();
+      // A still player earns ZERO grazes (a graze requires a deliberate dodge
+      // OFF a threatened lane — gated in _registerNearMiss). It banks only the
+      // odd token that happens to fall in its fixed lane plus a tiny survival
+      // sliver — far below a reader's graze chain (the sibling tests show a
+      // reader banks a real chain and a flailer loses head-to-head). Bound this
+      // well under that so a still player can never "win" by doing nothing.
+      expect(score, lessThan(40.0),
+          reason: 'a still player banked a real graze chain for free (seed '
+              '$seed, score=$score)');
+    }
+  });
+
+  test('a measured dodger actually banks a real graze chain (reading pays)', () {
+    // The positive half of the law: a runner that reads + dodges should bank
+    // well ABOVE the survival-only ceiling, proving the earned-graze path is
+    // reachable by skill (not just that spam fails). Solo, seed-robust.
+    var sawRealChain = false;
+    for (final seed in [3, 8, 21, 50]) {
+      final ctx = MiniGameContext(
+        players: [PlayerSlot.defaults(0)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(1),
+      );
+      final g = FallingDodge()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        final dir = g.debugSafeHopDir(0);
+        if (dir != 0) g.onInput(PlayerInput.down(0, g.debugTouchForDir(dir)));
+        g.update(1 / 60);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      final score = (g.winResult!.finalScores[0] ?? 0).toDouble();
+      if (score > 11.0) sawRealChain = true; // above survival-only
+    }
+    expect(sawRealChain, isTrue,
+        reason: 'a reading dodger never banked a graze chain on any seed');
+  });
+
+  test('render never throws across the whole run (incl. FINAL BARRAGE climax)',
+      () {
+    // A no-throw guard over the full round on a real canvas, exercising the
+    // climax cinematic (banner + flash + slow-mo) and a live graze chain.
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+    const size = Size(800, 1200);
+    final ctx = MiniGameContext(
+      players: [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)],
+      arena: size,
+      rng: SeededRng(64),
+      zones: ZoneLayout.forPlayers(4),
+    );
+    final g = FallingDodge()..init(ctx);
+    var n = 0;
+    expect(() {
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        g.update(1 / 60);
+        g.render(canvas, size);
+      }
+      g.render(canvas, size); // one more after finish (winner cinematic)
+    }, returnsNormally);
+    expect(g.status, MiniGameStatus.finished);
   });
 }
