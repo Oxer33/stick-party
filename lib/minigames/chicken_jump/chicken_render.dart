@@ -21,6 +21,9 @@ class ChickenRenderer {
   /// Warning accent for the gamble's downside cues ("SLIP!" / "CRUMBLE!").
   static const Color slipColor = Color(0xFFFF5A4A);
 
+  /// Hot accent for the spike-trap hit cue ("SPIKED!") and the spikes themselves.
+  static const Color spikeColor = Color(0xFFFF3B2F);
+
   // ── Palette (no magic colors inline elsewhere) ─────────────────────────────
   static const Color _skyTop = Color(0xFF1A1230); // upper cave sky
   static const Color _skyMid = Color(0xFF241733);
@@ -342,6 +345,74 @@ class ChickenRenderer {
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(1.5, h * 0.2 * (0.6 + 0.6 * crk))
         ..color = _crackWarn.withValues(alpha: 0.3 + 0.5 * crk),
+    );
+  }
+
+  /// A row of SPIKES rising from a gated rung — the interposing hazard. [level]
+  /// in 0..1 is the spike "armed-ness": 0 fully retracted (nothing drawn), the
+  /// mid-range is the telegraphed WARN beat (stubs creep up from the stone with a
+  /// hot warning rim), and 1 is fully OUT and lethal (tall barbed teeth + a
+  /// danger glow). Drawn in world space, centered on the platform at [center], so
+  /// the trap reads ABOVE the stone and the player can always see the tell.
+  static void drawSpikes(
+    Canvas canvas,
+    Offset center,
+    double columnWidth,
+    double level,
+  ) {
+    if (columnWidth <= 1) return;
+    final lvl = level.clamp(0.0, 1.0);
+    if (lvl <= 0.01) return;
+
+    final w = columnWidth * _platWidthFactor;
+    final h = math.max(6.0, columnWidth * _platHeightFactor);
+    final platTop = center.dy - h * 0.5;
+    final live = lvl >= 0.999; // fully out → lethal styling
+
+    // Teeth span the rung; each extends from the stone top to a height scaled by
+    // [lvl] so they visibly creep up through the warn beat and stand tall when
+    // live.
+    const teeth = 6;
+    final tipColor = live
+        ? spikeColor
+        : Color.lerp(_crackWarn, spikeColor, lvl) ?? spikeColor;
+    final fill = Paint()
+      ..style = PaintingStyle.fill
+      ..color = tipColor.withValues(alpha: live ? 0.95 : 0.55 + 0.4 * lvl);
+    final edge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.0, h * 0.12)
+      ..strokeJoin = StrokeJoin.round
+      ..color = _blend(tipColor, _white, 0.35)
+          .withValues(alpha: live ? 0.9 : 0.4 + 0.4 * lvl);
+
+    final span = w * 0.92;
+    final left = center.dx - span * 0.5;
+    final step = span / teeth;
+    final tall = h * (0.9 + 1.7 * lvl); // creep up with arming
+    for (var i = 0; i < teeth; i++) {
+      final cx = left + step * (i + 0.5);
+      final path = Path()
+        ..moveTo(cx - step * 0.42, platTop)
+        ..lineTo(cx, platTop - tall)
+        ..lineTo(cx + step * 0.42, platTop)
+        ..close();
+      canvas.drawPath(path, fill);
+      canvas.drawPath(path, edge);
+    }
+
+    // A hot danger glow over the spike band: a soft warn wash while telegraphing,
+    // a hard lethal band when fully out — so "do NOT land here" reads instantly.
+    final glowRect = Rect.fromLTRB(
+      left,
+      platTop - tall,
+      left + span,
+      platTop,
+    );
+    canvas.drawRect(
+      glowRect,
+      Paint()
+        ..color = spikeColor.withValues(alpha: live ? 0.18 : 0.06 + 0.1 * lvl),
     );
   }
 

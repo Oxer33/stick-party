@@ -52,6 +52,50 @@ class _Tuning {
   static const double jumpHoldSec = 0.22; // how long the jump pose shows
   static const double landHoldSec = 0.12; // brief squash on landing
 
+  // ── THE GAUNTLET: spike-gated rungs (the interposing obstacle) ───────────────
+  // From [spikeStartRung] up, every rung is guarded by a SPIKE that cycles
+  // SAFE → WARN → DEADLY → SAFE on a fixed clock. Hopping ONTO a rung whose
+  // spikes are OUT (deadly) impales the climber: it is knocked DOWN
+  // [spikeKnockbackRungs] rungs and STUNNED ([spikeStunSec]) so its taps are
+  // ignored. A WARN beat ([spikeWarnSec]) flashes the spikes before they arm, so
+  // a reading player always gets a tell and can wait the half-beat for the rung
+  // to go safe. The cycle runs FASTER higher up (a calibrated ramp), so the top
+  // is a real gauntlet. The bottom [spikeStartRung] rungs are an always-safe
+  // run-up so the first hops are never a trap. Phases are STAGGERED per rung so
+  // adjacent rungs are rarely deadly together — a reader always has a path up,
+  // but a blind masher taps straight into an armed spike, gets knocked down, and
+  // taps into it again (it nets negative through the gauntlet and stalls low).
+  static const int spikeStartRung = 3; // rungs below this never spike (run-up)
+  static const double spikeCycleLo = 1.6; // full SAFE→DEADLY→SAFE period, low up
+  static const double spikeCycleHi = 1.0; // period near the top (faster danger)
+  static const double spikeDeadlyFrac = 0.34; // fraction of the cycle spikes are out
+  static const double spikeWarnSec = 0.34; // telegraph beat before spikes arm
+  static const double spikePhaseStep = 0.41; // per-rung phase stagger (cycles)
+  // A spike hit is HEAVY: it must cost a masher MORE rungs than a blind tap can
+  // regain before the next rung's spike catches it, so a frame-spammer nets
+  // negative in the gauntlet and never tops out. A reading climber eats one
+  // ~never.
+  static const int spikeKnockbackRungs = 3; // rungs lost on a spike hit
+  static const double spikeStunSec = 0.5; // taps ignored after a spike hit
+
+  // How reliably a bot HEEDS a spike tell (waits it out) = base + slope·accuracy.
+  // A poor reader steps into spikes; a sharp one threads the safe windows.
+  static const double botSpikeHeedBase = 0.4;
+  static const double botSpikeHeedSlope = 0.6;
+
+  // ── HOP CADENCE: a step takes time (you cannot teleport up the tower) ─────────
+  // A fresh TAP can only fire once [hopCooldownSec] has passed since the last hop
+  // — the climber has to plant a foot before the next step. This is the linchpin
+  // that makes spam LOSE: it caps the climb rate so a frame-masher CANNOT
+  // front-run the spike gauntlet while the rungs happen to be safe; instead it
+  // steps in cadence straight into rungs whose spikes have rotated out, eating
+  // hit after hit and stalling LOW. A measured player taps in the same cadence
+  // but only into SAFE rungs, so it climbs clean and holds high. The DOUBLE-LEAP
+  // bonus hop is part of one press gesture, so it is exempt from this gate.
+  // ~0.22s ≈ a brisk but human ~4.5 steps/s — kid-comfortable, well above the
+  // 60 taps/s a masher throws away.
+  static const double hopCooldownSec = 0.22;
+
   // ── THE GAMBLE: safe single hop vs risky DOUBLE LEAP ────────────────────────
   // A plain TAP hops ONE rung and is always safe. KEEP HOLDING past
   // [doubleLeapHoldSec] after that hop and the climber springs a DOUBLE LEAP: a
@@ -106,17 +150,24 @@ class _Tuning {
   // NOT eliminated — it RESPAWNS [respawnSec] later on a safe rung a few rungs
   // ABOVE the lava (a checkpoint that keeps the run going for more score) with a
   // brief [respawnInvulnSec] grace so the lava can't immediately re-catch it. A
-  // lone climber therefore plays the WHOLE run, scored on how high it ever got —
-  // never an instant win because the other player died.
+  // lone climber therefore plays the WHOLE run, scored on how high it CLIMBS AND
+  // HOLDS — never an instant win because the other player died.
   static const double respawnSec = 1.2; // delay before a caught climber returns
   static const double respawnInvulnSec = 0.9; // post-respawn grace (no re-catch)
   static const int respawnRungsAboveLava =
       3; // checkpoint rungs above the lava surface on respawn
 
-  // Scoring: the run is ranked by the PEAK rung a climber ever reached over the
-  // whole round (height = progress). Each rung is worth [scorePerRung] so the
-  // double-leap gamble — which reaches strictly higher than safe mashing — wins.
-  static const double scorePerRung = 10;
+  // ── SCORING: ALTITUDE HELD over the run (height = how high you STAY) ─────────
+  // The score is the time-integral of the climber's rung while alive: each frame
+  // it banks (current rung × dt) × [scoreHeightRate]. This rewards CLIMBING HIGH
+  // AND HOLDING — not a single lucky peak. It is what makes skill beat spam under
+  // the law: a masher battered DOWN the spike gauntlet spends its time low and
+  // banks little; a reader that threads the safe windows climbs clean and holds
+  // near the top, banking far more. The double-leap, by reaching higher sooner,
+  // also banks more dwell-at-altitude — so the bold climber still out-scores the
+  // safe one. (A pure "highest rung ever" metric saturates and can't separate
+  // skill from spam over a long timer; altitude-held does.)
+  static const double scoreHeightRate = 4.0; // score per (rung·second) held alive
 }
 
 /// One climber: occupies a rung in its own tower and hops upward to outrun the
@@ -135,7 +186,10 @@ class _Climber {
   bool alive = true;
   double jumpHold = 0; // jump pose timer after a hop
   double landHold = 0; // squash timer after landing
-  int topReached = 0; // highest rung EVER touched this run (the progress score)
+  double stun = 0; // taps ignored while > 0 (post-spike-hit lockout)
+  double hopCd = 0; // cooldown until the next fresh tap can fire (cadence gate)
+  double heightTime = 0; // ∫ rung·dt while alive — the altitude-held score
+  int topReached = 0; // highest rung EVER touched this run (peak, for cues/tests)
   double respawnTimer = 0; // seconds until a caught climber returns (0 = none)
   double invuln = 0; // post-respawn grace: lava can't catch (seconds)
   double sinceShake = _Tuning.nearCatchShakeGap; // throttle near-catch shakes
@@ -167,28 +221,43 @@ class _Climber {
   double visualRungY() => rungs.coordOfVisual(hopper.visualLane);
 }
 
-/// Chicken Jump — a vertical survival climb a young child reads instantly:
-/// **TAP to hop up one platform, escape the rising lava — or HOLD to gamble a
-/// bigger leap.**
+/// Chicken Jump — a vertical climb a young child reads instantly: **TAP to hop
+/// up one platform, but only step onto a rung when its SPIKES are down — and
+/// outrun the rising lava.**
 ///
-/// Each player owns a tower of clear stone platforms. A plain TAP HOPS the
-/// climber up exactly one rung and is ALWAYS SAFE (a satisfying hop with dust +
-/// squash). KEEP HOLDING after a hop and the climber springs a risky DOUBLE
-/// LEAP: a second rung in one bound that clears more lava — but it lands on a
-/// CRACKED rung that crumbles. Linger on a cracked rung and it gives way,
-/// dropping you a rung; the leap can also misfire and only manage the single
-/// rung. So every press is a real decision: play it safe, or gamble height
-/// against the lava. Lava floods up from the bottom of every tower,
-/// accelerating so the round always converges.
+/// OBJECTIVE (obvious from the scene): climb HIGH and STAY high before the
+/// timer. Your score is the ALTITUDE you HOLD over the run (how high, how long).
+///
+/// INTERPOSING DIFFICULTY — SPIKE-GATED rungs: from a few rungs up, every rung
+/// is guarded by a spike trap that cycles SAFE → (flashing) WARN → DEADLY →
+/// SAFE. Hop ONTO a rung while its spikes are OUT and you are impaled: knocked
+/// DOWN several rungs and briefly STUNNED (taps ignored). Each spike WARNS
+/// (flashes) before it arms, so a reading player gets a tell and waits the
+/// half-beat for the rung to go safe. Spikes cycle FASTER higher up, so the top
+/// is a real gauntlet. A step also takes a beat ([_Tuning.hopCooldownSec]) — you
+/// cannot teleport up — so RAW SPAM can't front-run the gauntlet: a blind masher
+/// steps in cadence straight into armed spikes, is knocked down again and again,
+/// and STALLS LOW (banking little altitude). A player who READS the spikes and
+/// TIMES each hop threads a clean path and HOLDS high. Reading beats mashing.
+///
+/// THE GAMBLE (risk/reward, optional): a plain TAP hops ONE rung. KEEP HOLDING
+/// after a hop and the climber springs a risky DOUBLE LEAP: a second rung in one
+/// bound that clears more lava — but it vaults TWO spike gates at once (so it can
+/// land on an armed spike) and lands on a CRACKED rung that crumbles if you
+/// linger. The leap can also misfire to a single rung. Big height, bigger risk.
+/// Lava floods up from the bottom of every tower, accelerating so the round
+/// always converges — pure pace pressure, never the thing you tap against.
 ///
 /// SCORED RUN (not last-one-standing): the round runs the FULL [_Tuning.timeLimit]
-/// and your SCORE is the PEAK rung you ever reach (height = how far you got). A
-/// climber caught by the lava is NOT out — it RESPAWNS ~[_Tuning.respawnSec]
-/// later on a safe rung above the lava (a checkpoint) with a brief grace, so a
-/// lone climber plays the whole run for more height instead of instantly
-/// "winning" because the rival fell. Most height over the run wins; because the
-/// double-leap gamble reaches strictly higher than safe single-hop mashing, the
-/// bold climber out-scores the masher.
+/// and your SCORE is the ALTITUDE HELD over the run (∫ rung·dt while alive) — it
+/// rewards climbing high AND holding, not a single lucky peak. A climber caught
+/// by the lava is NOT out — it RESPAWNS ~[_Tuning.respawnSec] later on a safe
+/// rung above the lava (a checkpoint) with a brief grace, so a lone climber plays
+/// the whole run instead of instantly "winning" because the rival fell. Most
+/// altitude held over the run wins; a masher battered down the spike gauntlet
+/// spends its time low and banks little, so SKILL out-scores SPAM. (A pure
+/// "highest rung ever" metric saturates over a long timer and can't separate the
+/// two; altitude-held does.)
 ///
 /// Bots read the same rising lava and hop on a [BotProfile]-timed reaction
 /// clock: better accuracy keeps a larger safety buffer, while [errorRate] makes
@@ -293,8 +362,9 @@ class ChickenJump extends MiniGameBase {
     if (status != MiniGameStatus.running) return;
     switch (input.phase) {
       case InputPhase.down:
-        // A TAP always commits the safe SINGLE hop instantly (zero latency, and
-        // the contract a positionless test tap relies on). The press also starts
+        // A TAP commits a SINGLE hop with zero latency — subject only to the
+        // cadence gate (a step needs a planted foot) and the spike gate (a hop
+        // into armed spikes is impaled, not a free climb). The press also starts
         // a hold timer; keep holding and it upgrades into a risky DOUBLE LEAP.
         _jump(input.playerId);
         _beginHold(input.playerId);
@@ -327,17 +397,31 @@ class ChickenJump extends MiniGameBase {
 
   void _jump(int id) {
     final c = _climberOf(id);
-    if (c == null || !c.alive) return;
+    if (c == null || !c.alive || c.stun > 0) return; // stunned → taps ignored
+    if (c.hopCd > 0) return; // cadence gate: a step needs a planted foot first
     _hopOnce(c, cracked: false);
   }
 
   /// Hop the climber up exactly one rung. When [cracked] is set the rung it
   /// lands on is flagged as crumbling (the bonus rung of a DOUBLE LEAP).
+  ///
+  /// THE GATE: if the destination rung's spikes are OUT (deadly), the hop
+  /// IMPALES the climber instead of landing — it is knocked back down and
+  /// stunned (see [_spikeHit]) and gains NO height. This is what makes blind
+  /// mashing lose: a masher taps into armed spikes and nets negative, while a
+  /// reader times the hop to a safe/warning rung and climbs clean.
   void _hopOnce(_Climber c, {required bool cracked}) {
     final before = c.hopper.lane;
+    final target = before + 1;
+    if (target >= c.rungs.count) return; // already at the top rung
+    if (_spikeDeadly(target, c.rungs.count)) {
+      _spikeHit(c, target);
+      return;
+    }
     c.hopper.hop(); // up one platform
     if (c.hopper.lane == before) return; // already at the top rung
 
+    c.hopCd = _Tuning.hopCooldownSec; // plant a foot before the next step
     c.topReached = math.max(c.topReached, c.hopper.lane);
     if (cracked) {
       c.crackedRung = c.hopper.lane;
@@ -364,6 +448,52 @@ class ChickenJump extends MiniGameBase {
       size: ChickenRenderer.dustSize * c.figureScale,
       gravity: 480,
       life: 0.3,
+    );
+  }
+
+  /// A hop landed on an ARMED spike rung: the climber is impaled, knocked DOWN
+  /// [spikeKnockbackRungs] rungs (never below the lowest) and STUNNED so its taps
+  /// are ignored for [spikeStunSec]. It gains no height and is dragged low — this
+  /// is the penalty that makes blind mashing lose: a masher knocked down the
+  /// gauntlet spends its time on low rungs, so its ALTITUDE-HELD score stays
+  /// small, while a reader that times its hops holds high and out-banks it.
+  void _spikeHit(_Climber c, int spikeLane) {
+    final before = c.hopper.lane;
+    final landing =
+        (before - _Tuning.spikeKnockbackRungs).clamp(0, c.rungs.count - 1);
+    c.hopper.hopTo(landing);
+    c.stun = _Tuning.spikeStunSec;
+    c.hopCd = _Tuning.hopCooldownSec; // also re-arm the cadence gate
+    // Knocked off any cracked rung it was on.
+    c.crackedRung = -1;
+    c.crackTimer = 0;
+    c.crackPanicked = false;
+    c.holdActive = false;
+    c.leapPending = false;
+    c.jumpHold = 0;
+    c.landHold = 0;
+    if (!c.figure.isRagdoll) {
+      c.figure.setLoco(LocoState.fall);
+      c.figure.hurt();
+    }
+    _juice.shake.light();
+    final at = Offset(c.columnX, c.rungYOf(spikeLane));
+    _juice.particles.burst(
+      at: at,
+      count: 10,
+      color: ChickenRenderer.spikeColor,
+      speed: 200,
+      baseAngle: -math.pi / 2,
+      spread: math.pi,
+      size: ChickenRenderer.dustSize * c.figureScale,
+      gravity: 360,
+      life: 0.35,
+    );
+    _juice.popup(
+      Offset(c.columnX, c.rungYOf(spikeLane) - c.figureLift - 12),
+      'SPIKED!',
+      ChickenRenderer.spikeColor,
+      size: 22,
     );
   }
 
@@ -404,6 +534,69 @@ class ChickenJump extends MiniGameBase {
       if (c.playerId == id) return c;
     }
     return null;
+  }
+
+  // ── The gauntlet: spike-gated rungs ──────────────────────────────────────────
+
+  /// Whether [lane] is a spike-gated rung at all (the bottom run-up is exempt).
+  /// The very top rung is never gated so the summit is always reachable.
+  bool _isGated(int lane, int rungCount) =>
+      lane >= _Tuning.spikeStartRung && lane < rungCount - 1;
+
+  /// The spike CYCLE period for [lane] — shorter (faster danger) higher up.
+  double _spikeCycle(int lane, int rungCount) {
+    final maxLane = (rungCount - 1).toDouble();
+    final t = maxLane <= 0 ? 0.0 : (lane / maxLane).clamp(0.0, 1.0);
+    return lerpD(_Tuning.spikeCycleLo, _Tuning.spikeCycleHi, t);
+  }
+
+  /// Phase 0..1 through [lane]'s spike cycle right now. Driven by the shared
+  /// post-warmup clock so every column reads the SAME gauntlet (fair race), with
+  /// a per-rung stagger so adjacent rungs are rarely deadly at once.
+  double _spikePhase(int lane, int rungCount) {
+    final cycle = _spikeCycle(lane, rungCount);
+    if (cycle <= 0) return 0;
+    final runT = math.max(0.0, _elapsed - _Tuning.warmupSec);
+    final staggered = runT / cycle + lane * _Tuning.spikePhaseStep;
+    final p = staggered % 1.0;
+    return p < 0 ? p + 1.0 : p;
+  }
+
+  /// True when [lane]'s spikes are OUT (deadly) right now. The deadly window is
+  /// the LAST [spikeDeadlyFrac] of the cycle; the warn beat sits just before it.
+  /// Never deadly during the warmup (the board reads calm first) or on an
+  /// ungated rung.
+  bool _spikeDeadly(int lane, int rungCount) {
+    if (_inWarmup || !_isGated(lane, rungCount)) return false;
+    return _spikePhase(lane, rungCount) >= (1.0 - _Tuning.spikeDeadlyFrac);
+  }
+
+  /// True when [lane]'s spikes are in their WARN beat (telegraphing, still safe
+  /// to land on): the [spikeWarnSec] window immediately before they arm.
+  bool _spikeWarning(int lane, int rungCount) {
+    if (_inWarmup || !_isGated(lane, rungCount)) return false;
+    final cycle = _spikeCycle(lane, rungCount);
+    if (cycle <= 0) return false;
+    final p = _spikePhase(lane, rungCount);
+    final deadlyStart = 1.0 - _Tuning.spikeDeadlyFrac;
+    final warnStart = deadlyStart - (_Tuning.spikeWarnSec / cycle);
+    return p >= warnStart && p < deadlyStart;
+  }
+
+  /// 0..1 spike "armed-ness" of [lane] for the renderer: 0 fully retracted,
+  /// ramps through the warn beat, 1 fully out (deadly). Lets the art telegraph
+  /// the trap and show the spikes physically extend.
+  double _spikeLevel(int lane, int rungCount) {
+    if (_inWarmup || !_isGated(lane, rungCount)) return 0;
+    final cycle = _spikeCycle(lane, rungCount);
+    if (cycle <= 0) return 0;
+    final p = _spikePhase(lane, rungCount);
+    final deadlyStart = 1.0 - _Tuning.spikeDeadlyFrac;
+    if (p >= deadlyStart) return 1.0; // fully out
+    final warnStart = deadlyStart - (_Tuning.spikeWarnSec / cycle);
+    if (p < warnStart) return 0.0; // retracted
+    // Rising through the warn beat: spikes visibly creep out as the tell plays.
+    return ((p - warnStart) / (deadlyStart - warnStart)).clamp(0.0, 1.0);
   }
 
   // ── Update ──────────────────────────────────────────────────────────────────
@@ -451,9 +644,9 @@ class ChickenJump extends MiniGameBase {
 
   /// Bring a caught climber back on a safe rung a few rungs ABOVE the current
   /// lava surface (clamped into the tower), upright and briefly invulnerable so
-  /// the lava cannot re-catch it the instant it lands. Its peak height
-  /// ([topReached]) is preserved — the respawn only lets it keep climbing for
-  /// more, never resets the score it already banked.
+  /// the lava cannot re-catch it the instant it lands. The altitude it already
+  /// banked ([heightTime]) is kept — the respawn only lets it keep climbing for
+  /// more, never refunds the height-time it lost while down.
   void _respawn(_Climber c) {
     final lavaLane = _laneAtOrAboveLava(c);
     final safeLane =
@@ -463,10 +656,11 @@ class ChickenJump extends MiniGameBase {
     c.invuln = _Tuning.respawnInvulnSec;
     c.hopper.hopTo(safeLane);
     c.hopper.snapVisual();
-    // NOTE: the respawn does NOT bump [topReached]. The score is how high the
-    // climber actually CLIMBED, not where the safety net dropped it — so a late
-    // checkpoint near the top (when the lava floods the tower) can never inflate
-    // a score, and skill (active climbing) stays the only way up the ranking.
+    // NOTE: a respawn parks the climber on a checkpoint but does NOT bank that
+    // height for free — score accrues only from rungs the climber HOLDS while
+    // alive (it stopped banking while down). So the safety net keeps a behind
+    // player in the run without ever inflating its score; active climbing stays
+    // the only way up the ranking.
     // Clear any gamble / pose state carried from before the catch.
     c.holdActive = false;
     c.holdSec = 0;
@@ -474,6 +668,8 @@ class ChickenJump extends MiniGameBase {
     c.crackedRung = -1;
     c.crackTimer = 0;
     c.crackPanicked = false;
+    c.stun = 0; // a fresh checkpoint is never still stunned
+    c.hopCd = 0; // free to climb again the instant it lands
     c.jumpHold = 0;
     c.landHold = 0;
     c.figure.exitRagdoll();
@@ -551,10 +747,19 @@ class ChickenJump extends MiniGameBase {
     }
     c.sinceShake += dt;
     if (c.invuln > 0) c.invuln = math.max(0, c.invuln - dt);
+    if (c.stun > 0) c.stun = math.max(0, c.stun - dt);
+    if (c.hopCd > 0) c.hopCd = math.max(0, c.hopCd - dt);
 
     if (!c.alive) {
       c.figure.update(dt);
       return;
+    }
+
+    // SCORE: bank altitude held this frame (rung × dt). Only while alive and
+    // past the warmup, so the calm GET-SET beat doesn't pad the score and a
+    // climber earns only the height it actually CLIMBS AND HOLDS.
+    if (!_inWarmup) {
+      c.heightTime += c.hopper.lane * dt * _Tuning.scoreHeightRate;
     }
 
     c.hopper.update(sdt, speed: _Tuning.hopAnimSpeed);
@@ -570,7 +775,7 @@ class ChickenJump extends MiniGameBase {
   /// rung (the DOUBLE LEAP). Frame-rate independent — driven by real dt, not the
   /// hold-tick event — so a long-press always reads the same regardless of fps.
   void _tickHold(_Climber c, double dt) {
-    if (!c.holdActive) return;
+    if (!c.holdActive || c.stun > 0) return; // stunned → the gamble is frozen too
     c.holdSec += dt;
     if (c.leapPending && c.holdSec >= _Tuning.doubleLeapHoldSec) {
       _springDoubleLeap(c);
@@ -681,6 +886,7 @@ class ChickenJump extends MiniGameBase {
     for (final c in _climbers) {
       final clock = c.clock;
       if (clock == null || !c.alive) continue;
+      if (c.stun > 0 || c.hopCd > 0) continue; // can't act while locked / mid-step
       if (!clock.tick(dt)) continue;
       _driveBotMove(c);
       clock.arm(ctx.botProfile, ctx.rng);
@@ -690,6 +896,12 @@ class ChickenJump extends MiniGameBase {
   /// One bot decision: bail off a cracked rung first (so it isn't caught when the
   /// stone gives way), otherwise hop to outrun the lava — risking the double leap
   /// when the lava is close enough to be worth the gamble.
+  ///
+  /// READS THE GAUNTLET: before committing a hop the bot checks the rung above
+  /// for spikes. A skilled bot ([accuracy]) waits when that rung is DEADLY or
+  /// telegraphing-into-deadly, threading the safe windows like a good human; a
+  /// sloppy one ([errorRate]) sometimes steps anyway and eats the spike. So easy
+  /// bots impale themselves on the gauntlet and a measured human out-climbs them.
   void _driveBotMove(_Climber c) {
     // On a cracked rung: a competent bot hops off promptly; a sloppy one (high
     // errorRate) may dither and let it crumble — keeps the bet real for the AI.
@@ -701,7 +913,19 @@ class ChickenJump extends MiniGameBase {
     final gap = c.lavaY - rungY; // positive while the lava is still below
     final buffer = _Tuning.botSafetyGapPx *
         (0.45 + _Tuning.botBufferPerAccuracy * ctx.botProfile.accuracy);
-    if (gap > buffer) return; // safe for now — hold position
+    final lavaForcing = gap <= buffer; // must move soon or be caught
+    // Read the rung we'd hop onto. A skilled bot won't step into live or
+    // about-to-be-live spikes; it waits for the window. A weak bot reads poorly
+    // (its accuracy gates how reliably it heeds the tell) and walks into them.
+    final target = c.hopper.lane + 1;
+    if (target < c.rungs.count && _botWouldImpale(c, target)) {
+      // Heeds the spike (waits) unless it reads poorly. When the lava is forcing
+      // a move a panicking bot is likelier to leap anyway — a real bad-spot bet.
+      final heeds = ctx.rng.chance(_Tuning.botSpikeHeedBase +
+          _Tuning.botSpikeHeedSlope * ctx.botProfile.accuracy);
+      if (heeds && !lavaForcing) return; // wait for the spikes to retract
+    }
+    if (!lavaForcing) return; // safe for now — hold position
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate (fumble)
     // Lava closing in: gamble the double leap to clear more distance at once.
     if (gap <= _Tuning.botLeapGapPx) {
@@ -711,13 +935,19 @@ class ChickenJump extends MiniGameBase {
     }
   }
 
+  /// Whether hopping onto [lane] now would land a bot on armed (or imminently
+  /// arming) spikes — the danger window a reading bot avoids.
+  bool _botWouldImpale(_Climber c, int lane) =>
+      _spikeDeadly(lane, c.rungs.count) || _spikeWarning(lane, c.rungs.count);
+
   // ── Elimination / outcome ────────────────────────────────────────────────────
 
   /// The lava catches a climber: it ragdolls + KOs, but this is NOT a permanent
-  /// elimination — its peak height ([topReached]) is already banked as the score
-  /// and it is queued to RESPAWN on a safe checkpoint after [respawnSec], so the
-  /// run continues for the full timer. Guarded against a double-catch in one
-  /// frame (already-dead / mid-respawn climbers are skipped).
+  /// elimination — the altitude it has banked ([heightTime]) is kept and it is
+  /// queued to RESPAWN on a safe checkpoint after [respawnSec], so the run
+  /// continues for the full timer (a caught climber simply stops banking height
+  /// while down). Guarded against a double-catch in one frame (already-dead /
+  /// mid-respawn climbers are skipped).
   void _eliminate(_Climber c) {
     if (!c.alive) return;
     c.alive = false;
@@ -746,20 +976,22 @@ class ChickenJump extends MiniGameBase {
   }
 
   void _finish() {
-    // SCORED RUN: rank by the PEAK rung each climber ever reached (progress),
-    // highest first; a lone player is scored on how far it got over the whole
-    // run, never on merely outliving a fallen rival. Each rung is worth
-    // [scorePerRung]. The double-leap gamble reaches strictly higher than safe
-    // single-hop mashing, so the bold climber out-scores the masher.
+    // SCORED RUN: rank by ALTITUDE HELD over the whole run (the ∫ rung·dt each
+    // climber banked), highest first. A lone player is scored on how high it
+    // climbed AND held, never on merely outliving a fallen rival; and because a
+    // masher battered down the spike gauntlet spends its time low while a reader
+    // holds high, skill out-scores spam. The double-leap, reaching altitude
+    // sooner, banks more dwell-up — so the bold climber still out-scores the safe
+    // one.
     for (final c in _climbers) {
-      setScore(c.playerId, c.topReached * _Tuning.scorePerRung);
+      setScore(c.playerId, c.heightTime.round());
     }
-    // Rank by peak height, highest first; ties break by id so the full set is
+    // Rank by altitude held, highest first; ties break by id so the full set is
     // always preserved in a stable order.
     final ranked = _climbers.toList()
       ..sort((a, b) {
-        final byHeight = b.topReached.compareTo(a.topReached);
-        return byHeight != 0 ? byHeight : a.playerId.compareTo(b.playerId);
+        final byHeld = b.heightTime.compareTo(a.heightTime);
+        return byHeld != 0 ? byHeld : a.playerId.compareTo(b.playerId);
       });
     // Charm: the highest climber reacts atop the tower instead of freezing — a
     // full-body arms-up cheer. Fires once; a climber mid-fall / caught is a
@@ -845,6 +1077,20 @@ class ChickenJump extends MiniGameBase {
         lit: lane == c.hopper.lane && c.alive,
         anticipate: anticipate,
         cracked: cracked,
+      );
+    }
+
+    // SPIKE GATES (drawn over the stone so the trap reads on top). Every gated
+    // rung shows its spikes creep up through the warn beat and stand tall when
+    // live — the telegraphed hazard a reader times their hops around.
+    for (var lane = _Tuning.spikeStartRung; lane < c.rungs.count; lane++) {
+      final level = _spikeLevel(lane, c.rungs.count);
+      if (level <= 0) continue;
+      ChickenRenderer.drawSpikes(
+        canvas,
+        Offset(c.columnX, c.rungYOf(lane)),
+        c.column.width,
+        level,
       );
     }
 
@@ -950,4 +1196,65 @@ class ChickenJump extends MiniGameBase {
   /// cracked / no such climber. Read-only; for deterministic gameplay tests.
   @visibleForTesting
   int crackedRungOf(int id) => _climberOf(id)?.crackedRung ?? -1;
+
+  /// The peak rung [id]'s climber ever reached this run (a readability/cue value,
+  /// NOT the score), or -1 for no such climber. Read-only; for deterministic
+  /// gameplay tests.
+  @visibleForTesting
+  int peakLaneOf(int id) => _climberOf(id)?.topReached ?? -1;
+
+  /// The altitude-held score [id]'s climber has banked so far (∫ rung·dt), or 0
+  /// for no such climber. This is what the run is ranked on. Read-only; for the
+  /// anti-spam test (a masher stalled low banks far less than a reader).
+  @visibleForTesting
+  double heldScoreOf(int id) => _climberOf(id)?.heightTime ?? 0;
+
+  /// Whether the rung directly above [id]'s climber has its spikes OUT (DEADLY)
+  /// right now — i.e. a hop into it would be impaled. Read-only; for the spike
+  /// test (distinct from [nextRungSafeOf], which also excludes the harmless WARN
+  /// beat). False when there is no such climber or it is already atop.
+  @visibleForTesting
+  bool nextRungDeadlyOf(int id) {
+    final c = _climberOf(id);
+    if (c == null) return false;
+    final target = c.hopper.lane + 1;
+    if (target >= c.rungs.count) return false;
+    return _spikeDeadly(target, c.rungs.count);
+  }
+
+  /// Seconds of post-spike stun left on [id]'s climber (0 = free to act), or 0
+  /// for no such climber. Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  double stunOf(int id) => _climberOf(id)?.stun ?? 0;
+
+  /// Whether hopping UP one rung right now would land [id]'s climber on a SAFE
+  /// rung (spikes retracted, not telegraphing-into-deadly). A measured climber
+  /// only taps when this is true; a blind masher ignores it. Read-only; for the
+  /// anti-spam test. False when there is no such climber or it is already atop.
+  @visibleForTesting
+  bool nextRungSafeOf(int id) => nextNRungsSafeOf(id, 1);
+
+  /// Whether the next [n] rungs above [id]'s climber are ALL currently safe
+  /// (none deadly or telegraphing). A holder timing a DOUBLE LEAP (which crosses
+  /// two rungs) checks n=2 so neither the step nor the bonus rung is spiked.
+  /// Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  bool nextNRungsSafeOf(int id, int n) {
+    final c = _climberOf(id);
+    if (c == null) return false;
+    for (var i = 1; i <= n; i++) {
+      final lane = c.hopper.lane + i;
+      if (lane >= c.rungs.count) return false;
+      if (_spikeDeadly(lane, c.rungs.count) ||
+          _spikeWarning(lane, c.rungs.count)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// The first gated rung (the bottom of the gauntlet). Exposed so the anti-spam
+  /// test can target the hazard band. Read-only.
+  @visibleForTesting
+  int get spikeStartRung => _Tuning.spikeStartRung;
 }
