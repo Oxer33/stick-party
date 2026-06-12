@@ -117,14 +117,41 @@ void main() {
     expect(g.winResult!.ranking.toSet(), {0, 1});
   });
 
-  // ── Hold-and-release dig-in behavior ──────────────────────────────────────
+  test('render does not throw before, during, or after resolution', () {
+    final players = [
+      for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(3),
+      zones: ZoneLayout.forPlayers(4),
+    );
+    final g = TugOfWar()..init(ctx);
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    // Render at start, then periodically through the whole round (covers the
+    // heave/slip cues + the win cinematic) — none of it may throw.
+    expect(() => g.render(canvas, ctx.arena), returnsNormally);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      g.update(1 / 60);
+      if (n % 30 == 0) {
+        expect(() => g.render(canvas, ctx.arena), returnsNormally);
+      }
+    }
+    expect(() => g.render(canvas, ctx.arena), returnsNormally);
+  });
+
+  // ── On-beat HEAVE behavior (one-touch, rhythm + nerve) ─────────────────────
   //
   // These drive a SINGLE top-side human (id 0, even → top). With no opponent the
-  // marker only swings on this player's digs: a dig toward the top reads as
-  // score (max(0, -marker)). [beatWindowOpenForTest] lets each run press exactly
-  // when the dig-in window is open, so the only variable is the hold behavior.
+  // marker only swings on this player's taps: a heave toward the top reads as
+  // score (max(0, -marker)). [beatWindowOpenForTest] lets each run tap exactly
+  // when the sweet-spot is open, so the only variable is HOW it is tapped.
 
-  /// Advance [g] one frame at a time until the dig-in window opens (bounded).
+  /// Advance [g] one frame at a time until the beat sweet-spot opens (bounded).
   void advanceToWindow(TugOfWar g) {
     var guard = 0;
     while (!g.beatWindowOpenForTest && guard++ < 600) {
@@ -132,8 +159,8 @@ void main() {
     }
   }
 
-  /// Advance until the dig-in window CLOSES (bounded), so the next dig re-arms
-  /// (the heave latch re-arms only once the beat leaves the sweet-spot).
+  /// Advance until the sweet-spot CLOSES (bounded), so the next tap re-arms (the
+  /// heave latch re-arms only once the beat leaves the sweet-spot).
   void advancePastWindow(TugOfWar g) {
     var guard = 0;
     while (g.beatWindowOpenForTest && guard++ < 600) {
@@ -141,69 +168,163 @@ void main() {
     }
   }
 
-  /// Run a 1p top-side tug for [digs] on-beat digs: each dig waits for the
-  /// window, presses, holds [holdFr] frames, then releases. Returns the final
-  /// advantage score (how far the player dug toward their goal).
-  double runHoldPattern({required int holdFr, int digs = 6}) {
+  /// A fresh 1p top-side game (single human, no bots).
+  TugOfWar solo1p() {
     final ctx = MiniGameContext(
       players: [PlayerSlot.defaults(0)], // single human, top side
       arena: const Size(800, 1200),
       rng: SeededRng(7),
       zones: ZoneLayout.forPlayers(1),
     );
-    final g = TugOfWar()..init(ctx);
-    for (var d = 0; d < digs && g.status != MiniGameStatus.finished; d++) {
-      advanceToWindow(g);
-      g.onInput(PlayerInput.down(0)); // press inside the window → starts a dig
-      for (var f = 0; f < holdFr && g.status != MiniGameStatus.finished; f++) {
-        g.update(1 / 60);
-      }
-      g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up)); // release
-      // Step out of the window so the next dig re-arms (the heave latch re-arms
-      // only once the beat leaves the sweet-spot).
-      advancePastWindow(g);
-    }
-    return g.scores.of(0).toDouble();
+    return TugOfWar()..init(ctx);
   }
 
-  test('dig-in: a longer (in-window) hold pulls harder than an instant release',
+  test('heave: one on-beat tap drags the marker toward the goal (positive score)',
       () {
-    // Same seed + same on-beat presses; only the hold length differs. A ~8-frame
-    // hold (≈0.13s, safely inside the window + grace) charges the dig, so it must
-    // out-pull a zero-hold instant release over the same number of digs.
-    final instant = runHoldPattern(holdFr: 0);
-    final held = runHoldPattern(holdFr: 8);
-    expect(held, greaterThan(instant),
-        reason: 'a charged hold must pull the marker further than an instant tap');
-    expect(held, greaterThan(0),
-        reason: 'a charged dig should clearly move the marker');
+    final g = solo1p();
+    advanceToWindow(g);
+    g.onInput(PlayerInput.down(0)); // a single tap inside the sweet-spot
+    g.update(1 / 60); // let the heave settle into the marker
+    expect(g.scores.of(0).toDouble(), greaterThan(0),
+        reason: 'a clean on-beat tap must move the rope toward the goal');
   });
 
-  test('dig-in: over-holding past the window SLIPS and loses the gained ground',
+  test('heave: an OFF-BEAT tap does not pull — it slips (zero advantage)', () {
+    final g = solo1p();
+    advancePastWindow(g); // make sure the sweet-spot is CLOSED
+    expect(g.beatWindowOpenForTest, isFalse);
+    g.onInput(PlayerInput.down(0)); // tap with the window shut → a MISS/slip
+    g.update(1 / 60);
+    // A miss recoils the marker toward the opponent (down/+), so top advantage
+    // (max(0, -marker)) stays pinned at zero — off-beat taps never pull.
+    expect(g.scores.of(0).toDouble(), 0,
+        reason: 'an off-beat tap must not drag the rope toward the goal');
+  });
+
+  test('heave: a SECOND tap inside the same window misses (one heave per beat)',
       () {
-    // A safe hold drags the marker toward the player's goal (positive score). An
-    // over-long hold (40 frames — well past window close + grace) trips the SLIP
-    // path on release/auto-release, recoiling the marker the WRONG way, so the
-    // greedy pattern ends up far behind the disciplined one.
-    final disciplined = runHoldPattern(holdFr: 8);
-    final greedy = runHoldPattern(holdFr: 40);
-    expect(disciplined, greaterThan(greedy),
-        reason: 'over-holding must slip and forfeit ground vs a clean release');
+    // One clean heave, then immediately a second tap in the SAME open window.
+    final g = solo1p();
+    advanceToWindow(g);
+    g.onInput(PlayerInput.down(0)); // heave (consumes the armed beat)
+    g.update(1 / 60);
+    final afterFirst = g.scores.of(0).toDouble();
+    g.onInput(PlayerInput.down(0)); // repeat tap, same window → MISS/slip
+    g.update(1 / 60);
+    final afterSecond = g.scores.of(0).toDouble();
+    expect(afterFirst, greaterThan(0));
+    expect(afterSecond, lessThan(afterFirst),
+        reason: 'a double-tap in one window must slip back the gained ground');
+  });
+
+  // ── THE ANTI-MASH PROOF: a blind spammer LOSES the rope to an on-beat tapper ─
+  //
+  // Two HUMANS, head-to-head, no bots (id 0 even → top, id 1 odd → bottom). Both
+  // see the same shared beat. The SPAMMER (top) taps EVERY frame, ignoring the
+  // beat; the RHYTHM player (bottom) taps EXACTLY ONCE each time the sweet-spot
+  // opens. Everything is deterministic (ctx.rng only drives bots/juice, and there
+  // are no bots here), so this is a stable proof: the masher lands one weak
+  // edge-heave per beat and then SLIPS on every other tap, netting BACKWARD,
+  // while the clean tapper hauls the rope home. The rhythm player must win.
+  test('BLIND SPAMMER loses the rope to an ON-BEAT tapper (deterministic)', () {
+    final players = [
+      PlayerSlot.defaults(0), // human, top  → the blind SPAMMER
+      PlayerSlot.defaults(1), // human, bottom → the RHYTHM player
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(7),
+      zones: ZoneLayout.forPlayers(2, mode: GameMode.duel1v1),
+      mode: GameMode.duel1v1,
+    );
+    final g = TugOfWar()..init(ctx);
+
+    var rhythmArmed = true; // the rhythm player taps once per window open
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      // SPAMMER: mash every single frame, blind to the beat.
+      g.onInput(PlayerInput.down(0));
+
+      // RHYTHM: a single deliberate tap on the leading edge of each open window.
+      final open = g.beatWindowOpenForTest;
+      if (open && rhythmArmed) {
+        g.onInput(PlayerInput.down(1));
+        rhythmArmed = false;
+      } else if (!open) {
+        rhythmArmed = true; // re-arm once the window has closed
+      }
+
+      g.update(1 / 60);
+    }
+
+    expect(g.status, MiniGameStatus.finished,
+        reason: 'the contest must resolve');
+    // The rhythm player (bottom, id 1) must take the rope outright.
+    expect(g.winResult!.winner, 1,
+        reason: 'an on-beat tapper must beat a blind masher');
+    // And the masher must be driven the WRONG way: with the marker resolved on
+    // the bottom half, the top spammer never gained ground (score pinned at 0).
+    expect(g.scores.of(0).toDouble(), 0,
+        reason: 'blind mashing slips itself backward — it never pulls home');
+    expect(g.scores.of(1).toDouble(), greaterThan(0),
+        reason: 'the rhythm player dragged the rope to its goal');
+  });
+
+  test('skill gap: an on-beat tapper out-pulls a blind masher head-to-head '
+      '(score margin is decisive)', () {
+    // Same setup as the proof, but measured as a SCORE MARGIN at a fixed horizon
+    // (no reliance on who crosses the line first) — the on-beat side must lead by
+    // a wide, unambiguous margin, so spam can't merely tie.
+    final players = [
+      PlayerSlot.defaults(0), // SPAMMER, top
+      PlayerSlot.defaults(1), // RHYTHM, bottom
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(21),
+      zones: ZoneLayout.forPlayers(2, mode: GameMode.duel1v1),
+      mode: GameMode.duel1v1,
+    );
+    final g = TugOfWar()..init(ctx);
+
+    var rhythmArmed = true;
+    var n = 0;
+    // Stop short of a forced finish to read the live margin mid-contest.
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 6) {
+      g.onInput(PlayerInput.down(0)); // blind mash
+      final open = g.beatWindowOpenForTest;
+      if (open && rhythmArmed) {
+        g.onInput(PlayerInput.down(1));
+        rhythmArmed = false;
+      } else if (!open) {
+        rhythmArmed = true;
+      }
+      g.update(1 / 60);
+    }
+
+    final spammer = g.scores.of(0).toDouble();
+    final rhythm = g.scores.of(1).toDouble();
+    expect(rhythm, greaterThan(0),
+        reason: 'the on-beat tapper is hauling the rope home');
+    expect(rhythm, greaterThan(spammer + 0.2),
+        reason: 'the on-beat side must lead by a decisive margin, not a tie');
   });
 
   // ── Uneven-teams fairness (a lone puller vs two) ──────────────────────────
   //
-  // A single top-side human (id 0, even → top) does ONE on-beat dig, measured
+  // A single top-side human (id 0, even → top) does ONE on-beat heave, measured
   // before the bot warmup ends (so the bots never pull and the marker moves only
   // on the human's heave). With two bottom-side opponents (3p ⇒ 1-vs-2) the lone
-  // puller's HEAVE is multiplied (~1.9x), so its single dig drags the marker
-  // markedly FURTHER than the same dig with no opponents (an even 1-side roster).
+  // puller's HEAVE is multiplied (~1.9x), so its single tap drags the marker
+  // markedly FURTHER than the same tap with no opponents (an even 1-side roster).
 
-  /// One on-beat dig for top-side id 0 with [players], returning its advantage
-  /// (how far the marker was dragged toward the top goal). The whole dig lands
+  /// One on-beat heave for top-side id 0 with [players], returning its advantage
+  /// (how far the marker was dragged toward the top goal). The whole heave lands
   /// inside the 1.0s bot warmup, so any bot opponents stay idle and only the
   /// human moves the rope — isolating the underdog pull multiplier.
-  double oneDigAdvantage(List<PlayerSlot> players) {
+  double oneHeaveAdvantage(List<PlayerSlot> players) {
     final ctx = MiniGameContext(
       players: players,
       arena: const Size(800, 1200),
@@ -212,36 +333,33 @@ void main() {
     );
     final g = TugOfWar()..init(ctx);
     advanceToWindow(g); // reach the sweet-spot (well within warmup)
-    g.onInput(PlayerInput.down(0)); // press on the beat → start a dig
-    for (var f = 0; f < 4; f++) {
-      g.update(1 / 60); // a short charge, safely inside the window + grace
-    }
-    g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up)); // release
+    g.onInput(PlayerInput.down(0)); // a single on-beat tap → one heave
     g.update(1 / 60); // let the fired heave settle into the marker
     return g.scores.of(0).toDouble();
   }
 
-  test('fairness: a lone puller (1-vs-2) out-pulls the same dig with no opponent',
+  test('fairness: a lone puller (1-vs-2) out-pulls the same heave with no opponent',
       () {
     // Even roster: a single top-side puller with no opponent ⇒ multiplier 1.0.
-    final solo = oneDigAdvantage([PlayerSlot.defaults(0)]);
+    final solo = oneHeaveAdvantage([PlayerSlot.defaults(0)]);
     // Short-handed roster: id 0 (top) vs two bottom bots (ids 1, 3) ⇒ deficit 1,
     // so the lone puller's heave is boosted ~1.9x.
-    final underdog = oneDigAdvantage([
+    final underdog = oneHeaveAdvantage([
       PlayerSlot.defaults(0), // human, top
       PlayerSlot.defaults(1, isBot: true), // bot, bottom
       PlayerSlot.defaults(3, isBot: true), // bot, bottom
     ]);
-    expect(solo, greaterThan(0), reason: 'a clean dig must move the marker');
+    expect(solo, greaterThan(0), reason: 'a clean heave must move the marker');
     expect(underdog, greaterThan(solo * 1.5),
         reason: 'the short-handed side must pull markedly harder per heave');
   });
 
   test('fairness: even teams (1v1) keep the neutral pull multiplier', () {
     // A balanced split (id 0 top vs id 1 bottom) has zero deficit, so the lone
-    // dig pulls exactly as far as the no-opponent baseline — even modes untouched.
-    final solo = oneDigAdvantage([PlayerSlot.defaults(0)]);
-    final even = oneDigAdvantage([
+    // heave pulls exactly as far as the no-opponent baseline — even modes
+    // untouched.
+    final solo = oneHeaveAdvantage([PlayerSlot.defaults(0)]);
+    final even = oneHeaveAdvantage([
       PlayerSlot.defaults(0), // human, top
       PlayerSlot.defaults(1, isBot: true), // bot, bottom (idle during warmup)
     ]);

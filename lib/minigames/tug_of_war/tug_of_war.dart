@@ -18,21 +18,45 @@ import 'tug_render.dart';
 /// runs vertically (north/south) down the tall portrait screen.
 enum _Side { top, bottom }
 
-/// Tug of War — a TOP team and a BOTTOM team MASH to drag a VERTICAL rope marker
-/// past their goal line (top/bottom edge of the tall screen); the first side to
-/// do so wins and the losers ragdoll-fly into a central mud/lava pit. At the
-/// time limit the side nearer its goal wins, so the round ALWAYS resolves. Sides
-/// split by [Team] (Team.a = top, Team.b = bottom) or, with no teams, even/odd
-/// player id (even = top).
+/// Tug of War — a TOP team and a BOTTOM team HEAVE on the BEAT to drag a
+/// VERTICAL rope marker past their goal line (top/bottom edge of the tall
+/// screen); the first side to do so wins and the losers ragdoll-fly into a
+/// central mud/lava pit. At the time limit the side nearer its goal wins, so the
+/// round ALWAYS resolves. Sides split by [Team] (Team.a = top, Team.b = bottom)
+/// or, with no teams, even/odd player id (even = top).
 ///
-/// Skill layer (one-touch) — rhythm beats blind spam: the rope moves ONLY on a
-/// HEAVE, the first in-window tap of a shared metronome's sweep through a
-/// centered SWEET-SPOT; pull scales with timing precision, and a decaying
-/// per-side effort meter (mash to hold it) gives a small bonus. Off-beat taps
-/// just feed effort. CLIMAX: late-round HEAVEs pull harder ("FINAL HEAVE!").
-/// COMEBACK: the trailing side gets a small HEAVE bonus so it stays in the
-/// fight. Bots tap on a [BotProfile] cadence and scatter around the beat by
-/// accuracy, so easy bots mistime it (beatable) and hard bots land it often.
+/// OBJECTIVE (obvious from the scene): drag the rope's flag MARKER past YOUR
+/// goal line. The flag rides the rope between the two goal lines and the live
+/// score is how far your side has dragged it home ([_publishScores]).
+///
+/// CORE — one-touch, rhythm + nerve, NOT a mash:
+///  * A shared metronome sweeps a marker through a centered SWEET-SPOT on the
+///    beat track. **One TAP landed in the sweet-spot = one HEAVE** that hauls the
+///    rope toward your goal. Pull scales with PRECISION (a dead-center tap pulls
+///    hardest, an edge tap barely moves it), so aiming for the center — not
+///    slapping the instant the window opens — is what wins.
+///  * A heave is **armed once per window pass**: you get exactly ONE heave each
+///    time the marker sweeps through the sweet-spot.
+///
+/// WHY BLIND SPAM LOSES (the anti-mash teeth):
+///  * Any tap that is NOT a fresh on-beat heave is a **MISS** — an off-beat tap,
+///    OR a second/third tap inside a window you already heaved. A MISS makes the
+///    rope SLIP toward your OWN goal-loss (a small recoil to the opponent) and
+///    dumps a chunk of your effort. So a blind masher tapping every frame lands
+///    one weak edge-heave per window and then SLIPS on every other tap — it
+///    drives the marker the WRONG way and loses the rope to a player who taps
+///    once, centered, on each beat. (Proven by a deterministic test.)
+///  * A decaying per-side effort meter gives clean rhythm a small extra bonus;
+///    spam can't bank it because every miss-slip dumps it.
+///
+/// CLIMAX: late-round HEAVEs pull harder ("FINAL HEAVE!"). COMEBACK: the trailing
+/// side gets a small HEAVE bonus so it stays in the fight (never enough to beat a
+/// steady on-beat lead). Bots heave ONCE per armed window on a [BotProfile]
+/// cadence and never double-tap, so they never self-slip; easy bots mistime the
+/// window (beatable) and hard bots land it centered and often.
+///
+/// Kid read: watch the slider hit the middle, TAP once right then — drag the flag
+/// to your side. Mashing makes your guy slip.
 class TugOfWar extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -41,7 +65,7 @@ class TugOfWar extends MiniGameBase {
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.ffa, GameMode.duel1v1, GameMode.team2v2],
-        inputHint: 'MASH',
+        inputHint: 'TAP',
       );
 
   // ── Round / marker tuning (no magic numbers inline) ─────────────────────────
@@ -50,42 +74,47 @@ class TugOfWar extends MiniGameBase {
   static const double _timeLimit = 20;
   static const double _winThreshold = 1.0; // |marker| to win
   static const double _markerCenterPullPerSec = 0.03; // idle bleed toward 0
-  // HOLD-AND-RELEASE DIG-IN: the rope moves only when a player DIGS IN — press
-  // (down) while the beat is in the sweet-spot to start charging a heave, then
-  // RELEASE (up) to fire. A longer hold pulls harder (charge lerps the pull),
-  // but holding PAST the window close SLIPS: the marker recoils toward you and
-  // the dig-in is wasted. So timing the press AND the release both matter —
-  // rhythm + nerve beat blind spam.
-  static const double _heavePullMin = 0.014; // pull for an instant (zero-hold) dig
-  static const double _heavePullMax = 0.060; // pull for a full-charge dig
+  // ON-BEAT HEAVE: the rope moves only on a HEAVE — a TAP (down) landed inside
+  // the sweet-spot when a fresh heave is armed (one per window pass). Pull scales
+  // with PRECISION: an edge-of-window tap barely moves the rope, a dead-center
+  // tap pulls hardest. So aiming for the center — rhythm + nerve — beats slapping
+  // the instant the window opens. Off-beat taps and extra in-window taps MISS
+  // (see _missSlip), so blind mashing backfires instead of pulling.
+  static const double _heavePullMin = 0.012; // pull for an edge-of-window heave
+  static const double _heavePullMax = 0.060; // pull for a dead-center heave
 
   // ── Effort meter (per side) tuning ──────────────────────────────────────────
   static const double _effortPerTap = 0.12; // meter bump per tap
   static const double _effortDecayPerSec = 0.55; // bleeds so you must keep going
 
   // ── Visible HEAVE beat (a sweeping sweet-spot you tap ON) ────────────────────
-  // A HEAVE is rate-limited to one per window pass (a human can't double-dip a
-  // single beat), so total pull tracks *timing*, not raw tap rate — blind spam
-  // off the beat goes almost nowhere.
+  // A HEAVE is armed once per window pass (one heave per beat — a human can't
+  // double-dip a single beat for free; a second tap MISSES and slips), so total
+  // pull tracks *timing*, not raw tap rate. Blind spam off the beat slips.
   static const double _beatPeriodSec = 1.05; // one full left→right→left sweep
   static const double _beatWindowHalf = 0.13; // sweet-spot half-width (0..1 pos)
-  static const double _heaveDecayPerSec = 0.7; // charge bleed when missing
-  static const double _heaveFireThreshold = 1.0; // charge full = bar tip glows
   static const double _heaveSurgeSec = 0.34; // pull-surge window (body twitch)
   static const double _heaveCueSec = 0.45; // shockwave cue life
 
-  // ── Hold-and-release dig-in tuning ──────────────────────────────────────────
-  // A held dig charges from 0→1 over [_holdToFullSec]; the charge lerps the pull
-  // between [_heavePullMin] and [_heavePullMax]. Releasing after the beat has
-  // left the window (plus a short grace) SLIPS: the marker recoils by
-  // [_slipRecoil] toward the opponent and the slipping side's effort meter dumps.
-  static const double _holdToFullSec = 0.42; // hold time for a full-charge dig
-  static const double _slipGraceSec = 0.12; // grace past window close before a slip
-  static const double _slipRecoil = 0.05; // marker recoil toward the opponent
-  // Bots can't hold (they send down only), so they auto-release at a charge set
-  // by accuracy — strong bots dig in deeper. Centered so even weak bots pull.
-  static const double _botHoldChargeBase = 0.45; // weakest-bot release charge
-  static const double _botHoldChargeGain = 0.5; // extra release charge at full acc
+  // ── Miss-slip (the anti-mash teeth) ─────────────────────────────────────────
+  // ANY tap that is not a fresh on-beat heave is a MISS: an off-beat tap, or a
+  // repeat tap inside a window already heaved. A miss SLIPS the rope toward the
+  // misser's own goal-loss (a small recoil to the opponent) and DUMPS a chunk of
+  // their effort. So a frame-by-frame masher heaves once per window then slips on
+  // every other tap, netting BACKWARD — blind spam loses the rope. [_slipRecoil]
+  // is kept well under a clean centered heave so a single mistimed tap is a
+  // readable nick, not a death sentence; it only piles up under real mashing.
+  static const double _slipRecoil = 0.013; // marker recoil toward the opponent per miss
+  static const double _slipEffortDump = 0.5; // fraction of effort lost on a miss
+  // The marker recoil + effort dump apply on EVERY miss (that's the anti-spam
+  // teeth), but the SLIP cosmetic (popup + body buckle) is rate-limited to once
+  // per this cooldown so a frame-by-frame masher can't flood thousands of popups.
+  static const double _slipCueCooldownSec = 0.22;
+  // Bots heave ONCE per armed window (no repeat taps), so they never self-slip.
+  // Their heave precision is set by accuracy — strong bots land near center, weak
+  // bots near the edge. Centered enough that even weak bots still pull a little.
+  static const double _botHeavePrecBase = 0.35; // weakest-bot heave precision
+  static const double _botHeavePrecGain = 0.6; // extra precision at full accuracy
 
   // ── Final-HEAVE climax ───────────────────────────────────────────────────────
   // In the last stretch every landed HEAVE pulls harder (a frantic finale) and a
@@ -109,7 +138,7 @@ class TugOfWar extends MiniGameBase {
   static const double _underdogPullPerDeficit = 0.9; // +90% HEAVE per missing teammate
   static const double _underdogMaxDeficit = 2.0; // cap the deficit it scales with
 
-  // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
+  // ── Bot heave cadence (sec/attempt); harder bots attempt faster + steadier ──
   static const double _botWarmupSec = 1.0; // grace before bots engage
   static const double _botBaseInterval = 0.22;
   static const double _botAccuracyBonus = 0.07; // faster at high accuracy
@@ -264,14 +293,9 @@ class TugOfWar extends MiniGameBase {
   @override
   void onInput(PlayerInput input) {
     if (status != MiniGameStatus.running) return;
-    switch (input.phase) {
-      case InputPhase.down:
-        _press(input.playerId);
-      case InputPhase.up:
-        _release(input.playerId);
-      case InputPhase.holdTick:
-        break; // charge advances in update(); holdTick carries no new decision
-    }
+    // One-touch: only the press matters. A tap is either a fresh on-beat HEAVE or
+    // a MISS that slips. Release / holdTick carry no decision in this rework.
+    if (input.phase == InputPhase.down) _tap(input.playerId);
   }
 
   @override
@@ -321,7 +345,7 @@ class TugOfWar extends MiniGameBase {
   /// True when the beat marker currently sits inside the centered sweet-spot.
   bool get _beatInWindow => (_beatPos - 0.5).abs() <= _beatWindowHalf;
 
-  /// Test-only view of the dig-in window so deterministic tests can press
+  /// Test-only view of the sweet-spot window so deterministic tests can tap
   /// exactly on the beat. Not used by gameplay.
   @visibleForTesting
   bool get beatWindowOpenForTest => _beatInWindow;
@@ -332,56 +356,38 @@ class TugOfWar extends MiniGameBase {
   double get _beatPrecision =>
       1.0 - ((_beatPos - 0.5).abs() / _beatWindowHalf).clamp(0.0, 1.0);
 
-  // ── Press / hold / release → dig-in HEAVE or SLIP ───────────────────────────
+  // ── Tap → on-beat HEAVE or MISS (slip) ──────────────────────────────────────
 
-  /// A press (down). Always feeds the side's effort meter. If the beat is in the
-  /// sweet-spot and this player still has an un-spent dig this pass, begin a HOLD
-  /// — `heaveCharge` then ramps in [_tickHeave] while held. An off-beat press
-  /// just feeds effort (no dig), so blind spam goes nowhere.
-  void _press(int id) {
+  /// A tap (down). Resolves to ONE of two outcomes:
+  ///  * **HEAVE** — the beat is in the sweet-spot AND this player still has a
+  ///    fresh heave armed this pass: consume the arm, feed effort, and haul the
+  ///    rope toward the goal (pull scales with how centered the tap was).
+  ///  * **MISS** — anything else (off-beat tap, or a repeat tap inside a window
+  ///    already heaved): the rope SLIPS toward the misser's goal-loss and their
+  ///    effort dumps. This is what makes blind mashing backfire.
+  void _tap(int id) {
     final pl = _pullers[id];
     if (pl == null) return;
-
-    _effort[pl.side]?.tap();
-
-    if (pl.holding) return; // already digging in
-    if (!(_beatInWindow && pl.heaveArmed)) return; // off-beat / already spent
-    pl.heaveArmed = false; // consume this window pass
-    pl.holding = true;
-    pl.heaveCharge = 0;
-    pl.holdStartPrecision = _beatPrecision.clamp(0.0, 1.0);
-  }
-
-  /// A release (up). Fires the held dig: a longer hold pulls harder. But if the
-  /// player held PAST the window close (beyond a short grace) it SLIPS instead —
-  /// the marker recoils toward them and their effort dumps. Releasing without a
-  /// live hold does nothing.
-  void _release(int id) {
-    final pl = _pullers[id];
-    if (pl == null || !pl.holding) return;
-    pl.holding = false;
-    final charge = pl.heaveCharge.clamp(0.0, _heaveFireThreshold);
-    if (pl.heldTooLong) {
-      _slip(pl);
+    if (_beatInWindow && pl.heaveArmed) {
+      pl.heaveArmed = false; // consume this window pass: one heave per beat
+      _fireHeave(pl, _beatPrecision.clamp(0.0, 1.0));
     } else {
-      _fireDig(pl, charge);
+      _missSlip(pl);
     }
-    pl.heldTooLong = false;
   }
 
-  /// Fire a dig-in HEAVE for [pl] with the given hold [charge] (0..1). Pull lerps
-  /// between [_heavePullMin] (instant) and [_heavePullMax] (full hold), boosted a
-  /// touch by a clean (centered) press, by the side's effort, and by the climax /
-  /// comeback multipliers — then drags the marker toward this side's goal.
-  void _fireDig(_Puller pl, double charge) {
+  /// Land an on-beat HEAVE for [pl] at the given [precision] (0 = window edge,
+  /// 1 = dead center). Pull lerps between [_heavePullMin] (edge) and
+  /// [_heavePullMax] (center), boosted a touch by the side's effort, and by the
+  /// climax / comeback / underdog multipliers — then drags the marker toward this
+  /// side's goal. A clean heave also banks a little effort for the small bonus.
+  void _fireHeave(_Puller pl, double precision) {
+    final prec = precision.clamp(0.0, 1.0);
+    _effort[pl.side]?.tap(); // a landed heave banks effort; misses dump it
     final effort = _effort[pl.side]?.progress ?? 0.0;
-    // A cleaner (more centered) press start adds a small bonus, so timing the
-    // press still matters on top of the hold length.
-    final precBonus = 0.15 * pl.holdStartPrecision;
-    _fireHeave(pl, charge);
+    _heaveJuice(pl, prec);
 
-    var pull = lerpD(_heavePullMin, _heavePullMax, charge.clamp(0.0, 1.0)) *
-        (1.0 + 0.25 * effort + precBonus);
+    var pull = lerpD(_heavePullMin, _heavePullMax, prec) * (1.0 + 0.25 * effort);
     if (_inClimax) pull *= _climaxHeaveMul; // CLIMAX: finale pulls harder
     pull *= 1.0 + _comebackBonusFor(pl.side); // COMEBACK: help the trailing side
     pull *= _underdogPullMul(pl.side); // FAIRNESS: a short-handed side pulls harder
@@ -389,24 +395,45 @@ class TugOfWar extends MiniGameBase {
     _marker = clampD(_marker, -_winThreshold, _winThreshold);
   }
 
-  /// A SLIP: the player held their dig too long. The marker recoils toward their
-  /// own side (giving the opponent ground) and their effort meter dumps. A clear,
-  /// readable punishment for greedy over-holding.
-  void _slip(_Puller pl) {
+  /// A MISS: a mistimed / spammed tap. The rope SLIPS toward the misser's own
+  /// goal-loss (giving the opponent ground) and the side's effort dumps. Small
+  /// per miss, but a frame-by-frame masher racks these up far faster than its one
+  /// armed heave can pull — so spam nets BACKWARD. A clear, readable nick.
+  void _missSlip(_Puller pl) {
+    // ── Mechanic (every miss): recoil + effort dump — the anti-spam teeth. ──
     final recoil = _slipRecoil * (1.0 + _comebackBonusFor(_other(pl.side)));
-    // A slip gives the OPPONENT ground: the marker moves toward the opponent's
-    // goal (top slips → marker drifts down/+; bottom slips → marker drifts up/-).
+    // The marker moves toward the OPPONENT's goal (top miss → drifts down/+;
+    // bottom miss → drifts up/-), i.e. the misser loses ground.
     _marker += pl.side == _Side.top ? recoil : -recoil;
     _marker = clampD(_marker, -_winThreshold, _winThreshold);
-    // Effort dumps: a slip wastes the side's built-up effort (full reset).
-    _effort[pl.side]?.reset();
-    pl.heaveCharge = 0;
+    // Effort bleeds on a miss so spam can never bank the rhythm bonus.
+    _drainEffort(pl.side, _slipEffortDump);
     pl.surge = 0;
+
+    // ── Cosmetic (rate-limited): a masher misses every frame, so only fire the
+    // SLIP popup + body buckle once per cooldown to avoid flooding popups. ──
+    if (pl.slipCueCd > 0) return;
+    pl.slipCueCd = _slipCueCooldownSec;
     pl.cue = _heaveCueSec; // reuse the cue ring as a "slip!" tell
-    pl.figure.hurt(); // a buckle on the body so the over-hold reads as a slip
+    pl.figure.hurt(); // a buckle on the body so the mistimed tap reads as a slip
     final at = _runnerRoot(pl).translate(0, -_footReach * 0.9);
-    _juice.popup(at, 'SLIP!', _splashLava, size: 24);
-    _juice.shake.light();
+    _juice.popup(at, 'SLIP!', _splashLava, size: 22);
+  }
+
+  /// Bleed [frac] (0..1) of a side's effort meter — re-tapping the meter back up
+  /// from a fraction of its current value. Used on a miss so a single mistimed
+  /// tap dents the side's effort without the helper mutating engine internals.
+  void _drainEffort(_Side side, double frac) {
+    final m = _effort[side];
+    if (m == null) return;
+    final keep = (m.progress * (1.0 - frac.clamp(0.0, 1.0))) * m.maxValue;
+    m.reset();
+    // Re-bank the kept portion in whole tap impulses (cheap, allocation-free).
+    var banked = 0.0;
+    while (banked + _effortPerTap <= keep) {
+      m.tap();
+      banked += _effortPerTap;
+    }
   }
 
   _Side _other(_Side side) => side == _Side.top ? _Side.bottom : _Side.top;
@@ -452,12 +479,13 @@ class TugOfWar extends MiniGameBase {
     _juice.flashScreen(_accent, strength: 0.3);
   }
 
-  void _fireHeave(_Puller pl, double precision) {
+  /// Cosmetic burst for a landed HEAVE: a body twitch + popup + sparks scaled by
+  /// precision (a dead-center HEAVE shouts louder than a sloppy edge one).
+  void _heaveJuice(_Puller pl, double precision) {
     pl.surge = _heaveSurgeSec;
     pl.cue = _heaveCueSec;
     final prec = precision.clamp(0.0, 1.0);
     final at = _runnerRoot(pl).translate(0, -_footReach * 0.9);
-    // A dead-center HEAVE shouts louder than a sloppy edge one.
     _juice.popup(at, prec > 0.66 ? 'HEAVE!' : 'heave', _accent,
         size: 22 + 10 * prec);
     if (prec > 0.66) _juice.shake.light();
@@ -471,32 +499,13 @@ class TugOfWar extends MiniGameBase {
     );
   }
 
+  /// Decay the per-puller surge / cue / slip-cue timers (body twitch + cue ring
+  /// life + the SLIP-cosmetic cooldown).
   void _tickHeave(double dt) {
     for (final pl in _pullers.values) {
       if (pl.surge > 0) pl.surge = math.max(0, pl.surge - dt);
       if (pl.cue > 0) pl.cue = math.max(0, pl.cue - dt);
-
-      if (pl.holding) {
-        _tickHold(pl, dt);
-      } else if (pl.heaveCharge > 0) {
-        // Idle charge bleeds toward 0 (drives the effort-bar tip glow fade).
-        pl.heaveCharge = math.max(0, pl.heaveCharge - _heaveDecayPerSec * dt);
-      }
-    }
-  }
-
-  /// Advance a live hold: ramp `heaveCharge` 0→1 over [_holdToFullSec] and, once
-  /// the beat has left the window past [_slipGraceSec], latch [heldTooLong] so
-  /// the eventual release SLIPS. A wildly over-long hold auto-releases (a slip)
-  /// so a forgotten finger never freezes the dig.
-  void _tickHold(_Puller pl, double dt) {
-    pl.heaveCharge =
-        (pl.heaveCharge + dt / _holdToFullSec).clamp(0.0, _heaveFireThreshold);
-    pl.holdSinceWindow = _beatInWindow ? 0.0 : pl.holdSinceWindow + dt;
-    if (pl.holdSinceWindow > _slipGraceSec) pl.heldTooLong = true;
-    // Safety auto-release: a hold left way past the slip point resolves itself.
-    if (pl.holdSinceWindow > _slipGraceSec + _holdToFullSec) {
-      _release(pl.slot.id);
+      if (pl.slipCueCd > 0) pl.slipCueCd = math.max(0, pl.slipCueCd - dt);
     }
   }
 
@@ -516,14 +525,14 @@ class TugOfWar extends MiniGameBase {
     }
   }
 
-  /// Bots can only send down (no hold), so they're routed through an INSTANT
-  /// dig-and-release: on a cadence tick that lands while the beat is in the
-  /// window (and their accuracy roll hits), a bot presses + immediately releases
-  /// at a charge chosen by accuracy — strong bots dig in deeper and clean, weak
-  /// bots mistime the beat or release shallow, so they stay beatable. Off-beat
-  /// ticks just feed effort. A short warmup gives the human the first beat; the
-  /// guard caps catch-up taps for huge frame steps. Bots never over-hold, so
-  /// they never self-slip.
+  /// Drive bots: on a cadence tick that lands while the beat is in the window AND
+  /// a fresh heave is armed AND their accuracy roll hits, a bot HEAVES once at a
+  /// precision chosen by accuracy — strong bots land near center and clean, weak
+  /// bots mistime the window (no heave) or land near the edge (weak pull), so
+  /// they stay beatable. Crucially a bot NEVER taps when off-beat or already
+  /// heaved this pass, so it never self-slips — the miss-slip punishes only the
+  /// human masher, never a disciplined CPU. A short warmup gives the human the
+  /// first beat; the guard caps catch-up ticks for huge frame steps.
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return;
     for (final pl in _pullers.values) {
@@ -532,32 +541,32 @@ class TugOfWar extends MiniGameBase {
       var guard = 0;
       while (pl.botClock >= pl.nextTapAt && guard++ < 8) {
         pl.botClock -= pl.nextTapAt;
-        // Feed effort every tick (the press path also does this for humans).
+        // A bot's cadence tick always feeds a little side effort (it is pulling
+        // the rope between heaves), keeping the back-and-forth pace steady.
         _effort[pl.side]?.tap();
-        final onBeat =
-            _beatInWindow && pl.heaveArmed && _botHitsBeat();
-        if (onBeat) {
-          pl.heaveArmed = false; // consume this window pass like a human press
-          pl.holdStartPrecision = _beatPrecision.clamp(0.0, 1.0);
-          _fireDig(pl, _botHoldCharge()); // instant auto-release at chosen charge
+        // Only HEAVE when a clean one is genuinely available; a missed roll or an
+        // off-beat tick simply does nothing (a bot won't mash itself into slips).
+        if (_beatInWindow && pl.heaveArmed && _botHitsBeat()) {
+          pl.heaveArmed = false; // consume this window pass like a human heave
+          _fireHeave(pl, _botHeavePrecision());
         }
         pl.nextTapAt = _nextBotInterval(pl);
       }
     }
   }
 
-  /// A bot's chance of nailing the sweet spot scales with accuracy, so dig-in
-  /// timing is what separates tiers — easy bots mostly mistime it.
+  /// A bot's chance of nailing the sweet spot scales with accuracy, so timing is
+  /// what separates tiers — easy bots mostly mistime it.
   bool _botHitsBeat() {
     final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
     return ctx.rng.chance(0.25 + 0.7 * acc);
   }
 
-  /// The hold charge a bot releases at (its auto-release point), scaled by
-  /// accuracy so strong bots dig in deeper — never over-held, so never a slip.
-  double _botHoldCharge() {
+  /// The precision a bot heaves at (0 = edge, 1 = center), scaled by accuracy so
+  /// strong bots pull near full and weak bots near the floor — never a slip.
+  double _botHeavePrecision() {
     final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
-    return (_botHoldChargeBase + _botHoldChargeGain * acc).clamp(0.0, 1.0);
+    return (_botHeavePrecBase + _botHeavePrecGain * acc).clamp(0.0, 1.0);
   }
 
   double _nextBotInterval(_Puller pl) =>
@@ -820,14 +829,13 @@ class TugOfWar extends MiniGameBase {
     );
   }
 
-  /// Peak active surge/charge strength on a side (0..1) for the effort-bar glow.
+  /// Peak active HEAVE-surge strength on a side (0..1) for the effort-bar tip
+  /// glow — lights up briefly each time a puller on the side lands a heave.
   double _heaveOfSide(_Side side) {
     var best = 0.0;
     for (final pl in _pullers.values) {
       if (pl.side != side) continue;
-      final v = pl.surge > 0
-          ? (pl.surge / _heaveSurgeSec)
-          : (pl.heaveCharge / _heaveFireThreshold);
+      final v = pl.surge > 0 ? (pl.surge / _heaveSurgeSec) : 0.0;
       if (v > best) best = v;
     }
     return best.clamp(0.0, 1.0);
@@ -916,15 +924,11 @@ class _Puller {
   double botClock = 0;
   double nextTapAt;
 
-  // On-beat dig-in (hold-and-release) bookkeeping.
-  bool heaveArmed = true; // true = a dig is available this window pass
-  bool holding = false; // true while a dig is charging (down held)
-  double heaveCharge = 0; // 0.._heaveFireThreshold (hold charge / bar tip glow)
-  double holdStartPrecision = 0; // beat precision when the hold began (0..1)
-  double holdSinceWindow = 0; // seconds the hold has run since the beat left window
-  bool heldTooLong = false; // latched once a hold passes the slip point
-  double surge = 0; // seconds of active pull surge remaining
-  double cue = 0; // seconds of HEAVE shockwave cue remaining
+  // On-beat HEAVE bookkeeping.
+  bool heaveArmed = true; // true = a fresh heave is available this window pass
+  double surge = 0; // seconds of active pull surge remaining (body twitch)
+  double cue = 0; // seconds of HEAVE / SLIP shockwave cue remaining
+  double slipCueCd = 0; // cooldown gating the SLIP cosmetic (anti popup-flood)
 
   _Puller({
     required this.slot,
