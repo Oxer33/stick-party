@@ -77,4 +77,114 @@ class AppLocalizationsDe extends AppLocalizations {
   @override
   String get aboutBody =>
       'Freigegeben ohne Altersbeschränkung. Läuft vollständig offline. Keine Konten, kein Tracking. In-App-Käufe sind rein kosmetisch und beeinflussen niemals das Gameplay — keine Beutekisten, kein Pay-to-Win, keine manipulativen Tricks.';
+
+  @override
+  String get homeTagline => 'SPIELE FÜR 2 • 3 • 4 SPIELER';
+
+  @override
+  String get navSettings => 'EINSTELLUNGEN';
+
+  @override
+  String get quickPlay => 'SCHNELLSPIEL';
+
+  @override
+  String get actionCup => 'POKAL';
+
+  @override
+  String get actionCupHint => 'Turnier';
+
+  @override
+  String get actionShop => 'SHOP';
+
+  @override
+  String get actionShopHint => 'Skins & Themes';
+
+  @override
+  String get actionDaily => 'TÄGLICH';
+
+  @override
+  String get actionDailyHintReady => 'Belohnung bereit';
+
+  @override
+  String get actionDailyHintDefault => 'Missionen';
+
+  @override
+  String get actionStats => 'STATISTIK';
+
+  @override
+  String get actionStatsHint => 'Deine Rekorde';
+
+  @override
+  String get moreGames => 'MEHR SPIELE';
+
+  @override
+  String gamesCount(int count) {
+    return '$count SPIELE';
+  }
+
+  @override
+  String get pickAGame => 'WÄHLE EIN SPIEL';
+
+  @override
+  String get noGamesForPlayerCount => 'Keine Spiele für diese Spieleranzahl.';
+
+  @override
+  String get game_sumo_smash => 'Sumo-Schubser';
+
+  @override
+  String get game_bumper_balls => 'Rempelkugeln';
+
+  @override
+  String get game_one_touch_soccer => 'Ein-Touch-Fußball';
+
+  @override
+  String get game_tank_duel => 'Panzerduell';
+
+  @override
+  String get game_archer_pop => 'Bogenschütze';
+
+  @override
+  String get game_chicken_jump => 'Hühnersprung';
+
+  @override
+  String get game_falling_dodge => 'Fallschauer';
+
+  @override
+  String get game_tap_sprint => 'Tipp-Sprint';
+
+  @override
+  String get game_tug_of_war => 'Tauziehen';
+
+  @override
+  String get game_button_masher => 'Knöpfehämmern';
+
+  @override
+  String get game_reaction_duel => 'Reaktionsduell';
+
+  @override
+  String get game_snake_arena => 'Schlangenarena';
+
+  @override
+  String get game_paint_splash => 'Farbklecks';
+
+  @override
+  String get game_catch_the_star => 'Fang den Stern';
+
+  @override
+  String get game_color_memory => 'Farbgedächtnis';
+
+  @override
+  String get hint_tap => 'TIPP';
+
+  @override
+  String get hint_hold => 'HALTEN';
+
+  @override
+  String get hint_mash => 'HÄMMERN';
+
+  @override
+  String get hint_move => 'BEWEGEN';
+
+  @override
+  String get hint_drag => 'ZIEHEN';
 }

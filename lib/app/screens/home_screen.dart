@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/rng.dart';
+import '../../l10n/app_localizations.dart';
 import '../../meta/daily.dart';
 import '../../meta/progress_store.dart';
 import '../../meta/streak.dart';
@@ -156,7 +157,7 @@ class _TopBar extends StatelessWidget {
         const Spacer(),
         GlassChip(
           icon: Icons.settings,
-          label: 'SETTINGS',
+          label: AppLocalizations.of(context).navSettings,
           accent: GlassColors.cyan,
           onTap: () => context.push(AppRoutes.settings),
         ),
@@ -203,7 +204,7 @@ class _Hero extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          '2 • 3 • 4 PLAYER GAMES',
+          AppLocalizations.of(context).homeTagline,
           textAlign: TextAlign.center,
           style: GlassText.overline.copyWith(letterSpacing: 4),
         ),
@@ -231,7 +232,7 @@ class _PrimaryPlayButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GlassButton(
-      label: 'QUICK PLAY',
+      label: AppLocalizations.of(context).quickPlay,
       icon: Icons.play_arrow_rounded,
       primary: true,
       accent: GlassColors.violet,
@@ -274,10 +275,11 @@ class _ActionGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final List<_Action> actions = <_Action>[
       _Action(
-        label: 'CUP',
-        hint: 'Tournament',
+        label: l10n.actionCup,
+        hint: l10n.actionCupHint,
         icon: Icons.emoji_events,
         accent: GlassColors.amber,
         onTap: () => context.push(
@@ -286,23 +288,25 @@ class _ActionGrid extends StatelessWidget {
         ),
       ),
       _Action(
-        label: 'SHOP',
-        hint: 'Skins & themes',
+        label: l10n.actionShop,
+        hint: l10n.actionShopHint,
         icon: Icons.storefront,
         accent: GlassColors.magenta,
         onTap: () => context.push(AppRoutes.shop),
       ),
       _Action(
-        label: 'DAILY',
-        hint: dailyAvailable ? 'Reward ready' : 'Missions',
+        label: l10n.actionDaily,
+        hint: dailyAvailable
+            ? l10n.actionDailyHintReady
+            : l10n.actionDailyHintDefault,
         icon: Icons.calendar_today,
         accent: GlassColors.cyan,
         showDot: dailyAvailable,
         onTap: () => context.push(AppRoutes.daily),
       ),
       _Action(
-        label: 'STATS',
-        hint: 'Your records',
+        label: l10n.actionStats,
+        hint: l10n.actionStatsHint,
         icon: Icons.bar_chart,
         accent: GlassColors.flame,
         onTap: () => context.push(AppRoutes.stats),
@@ -494,7 +498,7 @@ class _HouseAdTeaserState extends ConsumerState<_HouseAdTeaser> {
     return PremiumMediaTile(
       accent: accent,
       leading: ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
-      eyebrow: 'MORE GAMES',
+      eyebrow: AppLocalizations.of(context).moreGames,
       title: ad.title,
       supporting: ad.blurb.isNotEmpty ? ad.blurb : null,
       trailing: const Icon(Icons.chevron_right, color: GlassColors.textMuted),

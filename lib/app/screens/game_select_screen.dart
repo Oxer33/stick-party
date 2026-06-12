@@ -14,6 +14,7 @@ import '../../core/constants.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
+import '../../l10n/app_localizations.dart';
 import '../providers.dart';
 import '../router.dart';
 import '../widgets/game_glyphs.dart';
@@ -29,19 +30,20 @@ class GameSelectScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final PlayerManager players = ref.watch(playersSetupProvider);
     final List<MiniGameMeta> metas = allMiniGameMetas()
         .where((MiniGameMeta m) => m.supportsPlayers(players.count))
         .toList(growable: false);
 
     return GlassScaffold(
-      title: 'PICK A GAME',
+      title: l10n.pickAGame,
       scroll: false,
       padding: EdgeInsets.zero,
       body: metas.isEmpty
           ? Center(
               child: Text(
-                'No games for this player count.',
+                l10n.noGamesForPlayerCount,
                 style: GlassText.body,
               ),
             )
@@ -100,6 +102,7 @@ class _GameCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Color accent = Color(colorArgb);
     return PressableCard(
       onTap: onTap,
@@ -113,6 +116,8 @@ class _GameCard extends StatelessWidget {
               children: <Widget>[
                 GameGlyph(
                   id: meta.id,
+                  // Glyph art is seeded from the stable English name so the
+                  // procedural icon stays identical across locales.
                   label: meta.name,
                   colorArgb: colorArgb,
                   size: _kGlyphSize,
@@ -127,7 +132,7 @@ class _GameCard extends StatelessWidget {
             ),
             const Spacer(),
             Text(
-              meta.name,
+              localizedGameName(l10n, meta),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: GlassText.heading,
@@ -135,11 +140,77 @@ class _GameCard extends StatelessWidget {
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerLeft,
-              child: AccentTag(label: meta.inputHint, accent: accent),
+              child: AccentTag(
+                label: localizedInputHint(l10n, meta.inputHint),
+                accent: accent,
+              ),
             ),
           ],
         ),
       ),
     );
+  }
+}
+
+/// Localized display name for a game, resolved by its registry id. Falls back to
+/// the English [MiniGameMeta.name] for any id without a translation key.
+String localizedGameName(AppLocalizations l10n, MiniGameMeta meta) {
+  switch (meta.id) {
+    case 'sumo_smash':
+      return l10n.game_sumo_smash;
+    case 'bumper_balls':
+      return l10n.game_bumper_balls;
+    case 'one_touch_soccer':
+      return l10n.game_one_touch_soccer;
+    case 'tank_duel':
+      return l10n.game_tank_duel;
+    case 'archer_pop':
+      return l10n.game_archer_pop;
+    case 'chicken_jump':
+      return l10n.game_chicken_jump;
+    case 'falling_dodge':
+      return l10n.game_falling_dodge;
+    case 'tap_sprint':
+      return l10n.game_tap_sprint;
+    case 'tug_of_war':
+      return l10n.game_tug_of_war;
+    case 'button_masher':
+      return l10n.game_button_masher;
+    case 'reaction_duel':
+      return l10n.game_reaction_duel;
+    case 'snake_arena':
+      return l10n.game_snake_arena;
+    case 'paint_splash':
+      return l10n.game_paint_splash;
+    case 'catch_the_star':
+      return l10n.game_catch_the_star;
+    case 'color_memory':
+      return l10n.game_color_memory;
+    default:
+      return meta.name;
+  }
+}
+
+/// Localized input-hint chip text for a [MiniGameMeta.inputHint] value.
+///
+/// Handles the single-token hints (TAP / HOLD / MASH / MOVE / DRAG) plus the
+/// compound "DRAG / HOLD" used by the shove games, composing it from the two
+/// localized tokens. Any unrecognized hint falls back to the raw English value.
+String localizedInputHint(AppLocalizations l10n, String hint) {
+  switch (hint.toUpperCase()) {
+    case 'TAP':
+      return l10n.hint_tap;
+    case 'HOLD':
+      return l10n.hint_hold;
+    case 'MASH':
+      return l10n.hint_mash;
+    case 'MOVE':
+      return l10n.hint_move;
+    case 'DRAG':
+      return l10n.hint_drag;
+    case 'DRAG / HOLD':
+      return '${l10n.hint_drag} / ${l10n.hint_hold}';
+    default:
+      return hint;
   }
 }

@@ -245,6 +245,222 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Rated Everyone. Plays fully offline. No accounts, no tracking. In-app purchases are cosmetic only and never affect gameplay — no loot boxes, no pay-to-win, no dark patterns.'**
   String get aboutBody;
+
+  /// Subtitle under the STICK PARTY logo on the home screen. The dot separators and digits should stay as-is.
+  ///
+  /// In en, this message translates to:
+  /// **'2 • 3 • 4 PLAYER GAMES'**
+  String get homeTagline;
+
+  /// Label of the settings chip in the home top bar. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'SETTINGS'**
+  String get navSettings;
+
+  /// The big primary call-to-action button on the home screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'QUICK PLAY'**
+  String get quickPlay;
+
+  /// Label of the Cup / tournament action card on the home screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'CUP'**
+  String get actionCup;
+
+  /// Supporting line under the CUP action card.
+  ///
+  /// In en, this message translates to:
+  /// **'Tournament'**
+  String get actionCupHint;
+
+  /// Label of the Shop action card on the home screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'SHOP'**
+  String get actionShop;
+
+  /// Supporting line under the SHOP action card.
+  ///
+  /// In en, this message translates to:
+  /// **'Skins & themes'**
+  String get actionShopHint;
+
+  /// Label of the Daily action card on the home screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'DAILY'**
+  String get actionDaily;
+
+  /// Supporting line under the DAILY card when a daily reward is ready to claim.
+  ///
+  /// In en, this message translates to:
+  /// **'Reward ready'**
+  String get actionDailyHintReady;
+
+  /// Supporting line under the DAILY card when no daily reward is pending.
+  ///
+  /// In en, this message translates to:
+  /// **'Missions'**
+  String get actionDailyHintDefault;
+
+  /// Label of the Stats action card on the home screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'STATS'**
+  String get actionStats;
+
+  /// Supporting line under the STATS action card.
+  ///
+  /// In en, this message translates to:
+  /// **'Your records'**
+  String get actionStatsHint;
+
+  /// Eyebrow label on the cross-promo 'more games' teaser card. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'MORE GAMES'**
+  String get moreGames;
+
+  /// Header over the horizontal games catalog strip, e.g. '15 GAMES'. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} GAMES'**
+  String gamesCount(int count);
+
+  /// Title of the game-select screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'PICK A GAME'**
+  String get pickAGame;
+
+  /// Empty-state message on the game-select screen when no game supports the chosen player count.
+  ///
+  /// In en, this message translates to:
+  /// **'No games for this player count.'**
+  String get noGamesForPlayerCount;
+
+  /// Name of the Sumo Smash minigame: players shove each other out of a ring.
+  ///
+  /// In en, this message translates to:
+  /// **'Sumo Smash'**
+  String get game_sumo_smash;
+
+  /// Name of the Bumper Balls minigame: players bump rivals off an arena.
+  ///
+  /// In en, this message translates to:
+  /// **'Bumper Balls'**
+  String get game_bumper_balls;
+
+  /// Name of the One-Touch Soccer minigame: fast tap-to-kick football duel.
+  ///
+  /// In en, this message translates to:
+  /// **'One-Touch Soccer'**
+  String get game_one_touch_soccer;
+
+  /// Name of the Tank Duel minigame: players shoot each other with tanks.
+  ///
+  /// In en, this message translates to:
+  /// **'Tank Duel'**
+  String get game_tank_duel;
+
+  /// Name of the Archer Pop minigame: aim and pop targets with arrows.
+  ///
+  /// In en, this message translates to:
+  /// **'Archer Pop'**
+  String get game_archer_pop;
+
+  /// Name of the Chicken Jump minigame: jump up a tower of rungs as high as possible.
+  ///
+  /// In en, this message translates to:
+  /// **'Chicken Jump'**
+  String get game_chicken_jump;
+
+  /// Name of the Falling Dodge minigame: dodge falling objects to survive.
+  ///
+  /// In en, this message translates to:
+  /// **'Falling Dodge'**
+  String get game_falling_dodge;
+
+  /// Name of the Tap Sprint minigame: tap rapidly to sprint to the finish.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap Sprint'**
+  String get game_tap_sprint;
+
+  /// Name of the Tug of War minigame: two sides pull a rope.
+  ///
+  /// In en, this message translates to:
+  /// **'Tug of War'**
+  String get game_tug_of_war;
+
+  /// Name of the Button Masher minigame: mash a button as fast as possible.
+  ///
+  /// In en, this message translates to:
+  /// **'Button Masher'**
+  String get game_button_masher;
+
+  /// Name of the Reaction Duel minigame: tap the instant the signal appears.
+  ///
+  /// In en, this message translates to:
+  /// **'Reaction Duel'**
+  String get game_reaction_duel;
+
+  /// Name of the Snake Arena minigame: grow a snake and outlast rivals.
+  ///
+  /// In en, this message translates to:
+  /// **'Snake Arena'**
+  String get game_snake_arena;
+
+  /// Name of the Paint Splash minigame: cover the most area with paint.
+  ///
+  /// In en, this message translates to:
+  /// **'Paint Splash'**
+  String get game_paint_splash;
+
+  /// Name of the Catch the Star minigame: grab the star before rivals do.
+  ///
+  /// In en, this message translates to:
+  /// **'Catch the Star'**
+  String get game_catch_the_star;
+
+  /// Name of the Color Memory minigame: repeat the growing color sequence.
+  ///
+  /// In en, this message translates to:
+  /// **'Color Memory'**
+  String get game_color_memory;
+
+  /// Input-hint chip meaning the player taps the screen. Shown in all caps; keep very short.
+  ///
+  /// In en, this message translates to:
+  /// **'TAP'**
+  String get hint_tap;
+
+  /// Input-hint chip meaning the player presses and holds. Shown in all caps; keep very short.
+  ///
+  /// In en, this message translates to:
+  /// **'HOLD'**
+  String get hint_hold;
+
+  /// Input-hint chip meaning the player taps as fast as possible (mashing). Shown in all caps; keep very short.
+  ///
+  /// In en, this message translates to:
+  /// **'MASH'**
+  String get hint_mash;
+
+  /// Input-hint chip meaning the player moves / steers. Shown in all caps; keep very short.
+  ///
+  /// In en, this message translates to:
+  /// **'MOVE'**
+  String get hint_move;
+
+  /// Input-hint chip meaning the player drags a finger. Shown in all caps; keep very short.
+  ///
+  /// In en, this message translates to:
+  /// **'DRAG'**
+  String get hint_drag;
 }
 
 class _AppLocalizationsDelegate

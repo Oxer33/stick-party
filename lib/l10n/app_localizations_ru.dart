@@ -76,4 +76,114 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get aboutBody =>
       'Для всех возрастов. Работает полностью офлайн. Без аккаунтов и отслеживания. Внутриигровые покупки носят только косметический характер и никогда не влияют на игровой процесс — без лутбоксов, без pay-to-win, без тёмных паттернов.';
+
+  @override
+  String get homeTagline => 'ИГРЫ НА 2 • 3 • 4 ИГРОКА';
+
+  @override
+  String get navSettings => 'НАСТРОЙКИ';
+
+  @override
+  String get quickPlay => 'БЫСТРАЯ ИГРА';
+
+  @override
+  String get actionCup => 'КУБОК';
+
+  @override
+  String get actionCupHint => 'Турнир';
+
+  @override
+  String get actionShop => 'МАГАЗИН';
+
+  @override
+  String get actionShopHint => 'Скины и темы';
+
+  @override
+  String get actionDaily => 'ЕЖЕДНЕВНО';
+
+  @override
+  String get actionDailyHintReady => 'Награда готова';
+
+  @override
+  String get actionDailyHintDefault => 'Задания';
+
+  @override
+  String get actionStats => 'СТАТИСТИКА';
+
+  @override
+  String get actionStatsHint => 'Ваши рекорды';
+
+  @override
+  String get moreGames => 'ЕЩЁ ИГРЫ';
+
+  @override
+  String gamesCount(int count) {
+    return '$count ИГР';
+  }
+
+  @override
+  String get pickAGame => 'ВЫБЕРИ ИГРУ';
+
+  @override
+  String get noGamesForPlayerCount => 'Нет игр для такого числа игроков.';
+
+  @override
+  String get game_sumo_smash => 'Сумо-схватка';
+
+  @override
+  String get game_bumper_balls => 'Шары-толкачи';
+
+  @override
+  String get game_one_touch_soccer => 'Футбол в касание';
+
+  @override
+  String get game_tank_duel => 'Танковая дуэль';
+
+  @override
+  String get game_archer_pop => 'Меткий лучник';
+
+  @override
+  String get game_chicken_jump => 'Прыг-курица';
+
+  @override
+  String get game_falling_dodge => 'Уворот от падений';
+
+  @override
+  String get game_tap_sprint => 'Тап-спринт';
+
+  @override
+  String get game_tug_of_war => 'Перетягивание каната';
+
+  @override
+  String get game_button_masher => 'Жми на кнопку';
+
+  @override
+  String get game_reaction_duel => 'Дуэль на реакцию';
+
+  @override
+  String get game_snake_arena => 'Арена змеек';
+
+  @override
+  String get game_paint_splash => 'Брызги краски';
+
+  @override
+  String get game_catch_the_star => 'Поймай звезду';
+
+  @override
+  String get game_color_memory => 'Память цветов';
+
+  @override
+  String get hint_tap => 'ТАП';
+
+  @override
+  String get hint_hold => 'ДЕРЖИ';
+
+  @override
+  String get hint_mash => 'ЖМИ';
+
+  @override
+  String get hint_move => 'ДВИГАЙ';
+
+  @override
+  String get hint_drag => 'ТЯНИ';
 }

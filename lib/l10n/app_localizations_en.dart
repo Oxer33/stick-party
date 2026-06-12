@@ -75,4 +75,114 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get aboutBody =>
       'Rated Everyone. Plays fully offline. No accounts, no tracking. In-app purchases are cosmetic only and never affect gameplay — no loot boxes, no pay-to-win, no dark patterns.';
+
+  @override
+  String get homeTagline => '2 • 3 • 4 PLAYER GAMES';
+
+  @override
+  String get navSettings => 'SETTINGS';
+
+  @override
+  String get quickPlay => 'QUICK PLAY';
+
+  @override
+  String get actionCup => 'CUP';
+
+  @override
+  String get actionCupHint => 'Tournament';
+
+  @override
+  String get actionShop => 'SHOP';
+
+  @override
+  String get actionShopHint => 'Skins & themes';
+
+  @override
+  String get actionDaily => 'DAILY';
+
+  @override
+  String get actionDailyHintReady => 'Reward ready';
+
+  @override
+  String get actionDailyHintDefault => 'Missions';
+
+  @override
+  String get actionStats => 'STATS';
+
+  @override
+  String get actionStatsHint => 'Your records';
+
+  @override
+  String get moreGames => 'MORE GAMES';
+
+  @override
+  String gamesCount(int count) {
+    return '$count GAMES';
+  }
+
+  @override
+  String get pickAGame => 'PICK A GAME';
+
+  @override
+  String get noGamesForPlayerCount => 'No games for this player count.';
+
+  @override
+  String get game_sumo_smash => 'Sumo Smash';
+
+  @override
+  String get game_bumper_balls => 'Bumper Balls';
+
+  @override
+  String get game_one_touch_soccer => 'One-Touch Soccer';
+
+  @override
+  String get game_tank_duel => 'Tank Duel';
+
+  @override
+  String get game_archer_pop => 'Archer Pop';
+
+  @override
+  String get game_chicken_jump => 'Chicken Jump';
+
+  @override
+  String get game_falling_dodge => 'Falling Dodge';
+
+  @override
+  String get game_tap_sprint => 'Tap Sprint';
+
+  @override
+  String get game_tug_of_war => 'Tug of War';
+
+  @override
+  String get game_button_masher => 'Button Masher';
+
+  @override
+  String get game_reaction_duel => 'Reaction Duel';
+
+  @override
+  String get game_snake_arena => 'Snake Arena';
+
+  @override
+  String get game_paint_splash => 'Paint Splash';
+
+  @override
+  String get game_catch_the_star => 'Catch the Star';
+
+  @override
+  String get game_color_memory => 'Color Memory';
+
+  @override
+  String get hint_tap => 'TAP';
+
+  @override
+  String get hint_hold => 'HOLD';
+
+  @override
+  String get hint_mash => 'MASH';
+
+  @override
+  String get hint_move => 'MOVE';
+
+  @override
+  String get hint_drag => 'DRAG';
 }
