@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../l10n/app_localizations.dart';
+import 'providers.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -25,6 +27,9 @@ class _StickPartyAppState extends ConsumerState<StickPartyApp> {
       title: 'Stick Party',
       debugShowCheckedModeBanner: false,
       theme: stickPartyTheme(),
+      locale: ref.watch(localeProvider),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       routerConfig: _router,
     );
   }

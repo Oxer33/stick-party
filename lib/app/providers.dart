@@ -5,6 +5,7 @@
 /// and the stubbed monetization/analytics services.
 library;
 
+import 'package:flutter/widgets.dart' show Locale;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants.dart';
@@ -233,7 +234,21 @@ class ShellKeys {
 
   /// 0-based login-cycle index for the next claim.
   static const String dailyLoginIndex = 'daily_login_index';
+
+  /// BCP-47-ish locale code for the chosen UI language ('' = follow system).
+  static const String appLocaleTag = 'app_locale';
 }
+
+/// Selected UI [Locale], or `null` to follow the device's system language.
+///
+/// Read from persistence on first watch ('' ⇒ system default ⇒ `null`). The
+/// settings screen updates this notifier AND persists the tag so the choice
+/// survives a relaunch.
+final StateProvider<Locale?> localeProvider = StateProvider<Locale?>((Ref ref) {
+  final String tag =
+      ref.watch(persistenceProvider).getString(ShellKeys.appLocaleTag);
+  return tag.isEmpty ? null : Locale(tag);
+});
 
 /// Thin read/write helper for the daily login-bonus claim state. Wraps the
 /// shared [Persistence] box; all reads are corruption-tolerant by [Persistence].

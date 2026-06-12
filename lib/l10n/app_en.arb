@@ -1,0 +1,91 @@
+{
+  "@@locale": "en",
+  "settingsTitle": "Settings",
+  "@settingsTitle": {
+    "description": "Title of the Settings screen."
+  },
+  "sectionGameplay": "Gameplay",
+  "@sectionGameplay": {
+    "description": "Header for the gameplay settings section."
+  },
+  "cpuDifficulty": "CPU Difficulty",
+  "@cpuDifficulty": {
+    "description": "Label for the CPU (bot) difficulty selector."
+  },
+  "difficultyEasy": "Easy",
+  "@difficultyEasy": {
+    "description": "Easy CPU difficulty option."
+  },
+  "difficultyMedium": "Medium",
+  "@difficultyMedium": {
+    "description": "Medium CPU difficulty option."
+  },
+  "difficultyHard": "Hard",
+  "@difficultyHard": {
+    "description": "Hard CPU difficulty option."
+  },
+  "screenShake": "Screen Shake",
+  "@screenShake": {
+    "description": "Label for the screen shake intensity slider."
+  },
+  "sectionLanguage": "Language",
+  "@sectionLanguage": {
+    "description": "Header for the language selection section."
+  },
+  "languageSystem": "System default",
+  "@languageSystem": {
+    "description": "Option that follows the device's system language."
+  },
+  "sectionPurchases": "Purchases",
+  "@sectionPurchases": {
+    "description": "Header for the purchases settings section."
+  },
+  "restorePurchases": "Restore Purchases",
+  "@restorePurchases": {
+    "description": "Label for the restore purchases action."
+  },
+  "restorePurchasesDesc": "Re-apply your one-time unlocks",
+  "@restorePurchasesDesc": {
+    "description": "Supporting text under the restore purchases action."
+  },
+  "purchasesRestored": "Purchases restored.",
+  "@purchasesRestored": {
+    "description": "Snackbar shown after purchases are restored."
+  },
+  "sectionData": "Data",
+  "@sectionData": {
+    "description": "Header for the data / reset settings section."
+  },
+  "resetProgress": "Reset Progress",
+  "@resetProgress": {
+    "description": "Label for the reset progress action."
+  },
+  "resetProgressDesc": "Erase coins, unlocks and stats",
+  "@resetProgressDesc": {
+    "description": "Supporting text under the reset progress action."
+  },
+  "resetConfirmTitle": "Reset progress?",
+  "@resetConfirmTitle": {
+    "description": "Title of the reset progress confirmation dialog."
+  },
+  "resetConfirmBody": "This permanently erases your coins, cosmetics and stats. This cannot be undone.",
+  "@resetConfirmBody": {
+    "description": "Body of the reset progress confirmation dialog."
+  },
+  "actionCancel": "Cancel",
+  "@actionCancel": {
+    "description": "Generic cancel button label."
+  },
+  "actionReset": "Reset",
+  "@actionReset": {
+    "description": "Confirm button label for the reset action."
+  },
+  "progressReset": "Progress reset.",
+  "@progressReset": {
+    "description": "Snackbar shown after progress is reset."
+  },
+  "aboutBody": "Rated Everyone. Plays fully offline. No accounts, no tracking. In-app purchases are cosmetic only and never affect gameplay — no loot boxes, no pay-to-win, no dark patterns.",
+  "@aboutBody": {
+    "description": "About / legal blurb shown at the bottom of Settings."
+  }
+}
