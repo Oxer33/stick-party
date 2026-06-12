@@ -14,22 +14,44 @@ import '../../engine/player_manager.dart';
 import 'reaction_duel_rounds.dart';
 import 'reaction_render.dart';
 
-/// Reaction Duel — a samurai quick-draw standoff at dusk, played as a best-of:
-/// a normal round, then a CLIMAX **LIGHTNING round worth double** (snappier
-/// wait, a persistent gold ambience). Each round the field shows "WAIT…" through
-/// a random delay (via [ReactionGate]), then a blinding "STRIKE!" signal; the
-/// first valid tap lands an instant slash and ragdoll-KOs the loser(s) under a
-/// slow-mo beat. Tapping BEFORE the signal is a false start (locked out for that
-/// round). A late tap still records a reaction time, so the round ranks the
-/// whole field, and the match ranks by cumulative points (see [buildDuelRanking]).
+/// QUICK-DRAW DUEL — a samurai standoff at dusk, played as a best-of race:
+/// **first duelist to win [_targetDraws] DRAWS takes the match**.
+///
+/// OBJECTIVE: each DRAW is a "WAIT…" standoff that, after a random delay, snaps
+/// to a real GO ("DRAW!" + green flash). The FASTEST valid tap AFTER the GO wins
+/// that draw; everyone slower, silent, or false-started gets nothing. First to
+/// [_targetDraws] draws wins the whole duel. The HUD shows each duelist's draw
+/// tally and the "FIRST TO N" target.
+///
+/// INTERPOSING DIFFICULTY — feints + a tightening ramp: during the wait the
+/// field flashes 1–3 brief FAKE GOs (feints) that look like the signal but are
+/// NOT it (the gate stays WAITING). Tapping during the wait OR on a feint is a
+/// FALSE START → you LOSE that draw outright and are locked out for it. As the
+/// match progresses the GO delay band drifts later, feints grow more numerous +
+/// more GO-like (longer flashes), and the post-GO reaction window tightens (see
+/// [_gateForDraw] / [_goWindowForDraw]). So a spammer who taps early/repeatedly
+/// FALSE-STARTS every draw and wins none; a duelist who reads real-vs-fake and
+/// holds their nerve wins.
+///
+/// ANTI-INCIDENTAL: a tap before the real GO can NEVER win a draw — the gate
+/// classifies any wait-phase tap (including on a feint) as an early false start
+/// and never sets it as the winner. Only a deliberate tap during the GO window
+/// counts. No lucky early tap can back into a draw.
+///
+/// 1–4 players: every duelist contests every draw; the single fastest
+/// non-false-starter wins it. The match ranks by draws won, then by the snappier
+/// cumulative reaction as a tiebreak (see [buildDuelRanking]).
 ///
 /// Bots draw after the signal on a [BotProfile]-driven reaction delay (+jitter)
-/// and may jump the gun with probability [BotProfile.errorRate]; per-round and
+/// and may jump the gun, or fall for a feint, with probability
+/// [BotProfile.errorRate] (easy bots jump often; hard bots hold). Per-draw and
 /// overall timeouts guarantee the match always resolves within its limit.
 class ReactionDuel extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
         id: 'reaction_duel',
+        // Display name comes from l10n (game_reaction_duel); this is the
+        // engine-level fallback, kept stable. The in-game flavor is QUICK-DRAW.
         name: 'Reaction Duel',
         minPlayers: 1,
         maxPlayers: 4,
@@ -37,26 +59,31 @@ class ReactionDuel extends MiniGameBase {
         inputHint: 'TAP',
       );
 
-  // ── Round tuning (no magic numbers inline) ──────────────────────────────────
-  // The duel is now a short best-of: a normal round, then a LIGHTNING FINAL
-  // round worth double. The cap is sized to comfortably fit both rounds (each
-  // round: up to _maxGoDelay wait + a reaction window + the post-win linger).
-  static const int _roundCount = 2; // total rounds (last one is the lightning)
-  static const double _timeLimit = 20;
-  static const double _minGoDelay = 1.2;
-  static const double _maxGoDelay = 3.6;
-  static const double _lightningMinGoDelay = 0.7; // snappier wait in the finale
-  static const double _lightningMaxGoDelay = 2.0;
-  static const double _lingerAfterWin = 1.0; // hold the KO beat before next round
-  static const double _interRoundSec = 1.3; // beat between rounds (cue + reset)
-  static const double _goWindow = 3.0; // max seconds in GO before force-ending
-  static const double _penaltyScore = -1; // HUD score for false-starters
+  // ── Match shape (the "first to N draws" objective) ──────────────────────────
+  // The duel is a race: first to _targetDraws won draws takes it. A hard draw
+  // cap + the overall time cap are pure safety nets so the match always lands
+  // inside its window even if every draw is a wash (all false starts / silence).
+  static const int _targetDraws = 3; // first to this many draws wins
+  static const int _maxDraws = 9; // safety cap on draws played
+  static const double _timeLimit = 40; // overall cap (seconds)
 
-  // ── Climax: the LIGHTNING FINAL round (double points) ───────────────────────
-  static const int _normalRoundPoints = 1; // winner's points in a normal round
-  static const int _lightningPoints = 2; // winner's points in the finale
-  static const double _lightningCueSec = 1.6; // "LIGHTNING ROUND!" banner life
-  static const Color _lightningGold = Color(0xFFFFE45C);
+  // ── Per-draw timing + the calibrated ramp ───────────────────────────────────
+  // Draw 0 is gentle; each later draw shifts the GO band later, adds feints,
+  // lengthens feint flashes, and tightens the post-GO window — the nerve test
+  // ramps so reading real-vs-fake matters more as the match tightens.
+  static const double _minGoDelay = 1.1; // base GO band (draw 0)
+  static const double _maxGoDelay = 3.0;
+  static const double _goDelayRampPerDraw = 0.18; // band drifts later per draw
+  static const double _goDelayRampMax = 1.2; // cap the drift
+  static const int _baseFeints = 1; // feints at draw 0
+  static const int _maxFeints = 3; // feints late
+  static const double _baseFeintFlash = 0.18; // feint flash life (draw 0)
+  static const double _maxFeintFlash = 0.30; // longer, more GO-like later
+  static const double _goWindowBase = 2.4; // post-GO window at draw 0
+  static const double _goWindowMin = 1.1; // tightest post-GO window
+  static const double _goWindowRampPerDraw = 0.22; // window shrink per draw
+  static const double _lingerAfterWin = 0.9; // hold the KO beat before next draw
+  static const double _interDrawSec = 1.1; // beat between draws (cue + reset)
 
   // ── Strike / feel tuning ────────────────────────────────────────────────────
   static const double _strikeFlashSec = 0.45; // blinding flash + screen-flash
@@ -65,6 +92,7 @@ class ReactionDuel extends MiniGameBase {
   static const double _tooSoonLifeSec = 1.4; // "TOO SOON!" stamp life
   static const double _hitStopSec = 0.22; // slow-mo on the decisive strike
   static const double _hitStopScale = 0.12;
+  static const double _matchPointCueSec = 1.5; // "MATCH POINT!" banner life
   // Ragdoll fling is a velocity in px/s (the ragdoll integrates at g≈1800), so
   // it is sized off arena height for a dramatic, resolution-independent launch.
   // The lift dominates and the sideways push is capped so the loser pops UP and
@@ -90,10 +118,12 @@ class ReactionDuel extends MiniGameBase {
   static const double _vignettePulseHz = 5.0;
   static const double _cueCenterFrac = 0.21; // banner in the clean sky above sun
   static const Color _accentGold = Color(0xFFFFE08A); // confetti highlight
+  static const Color _matchPointGold = Color(0xFFFFE45C);
+  static const Color _tallyOn = Color(0xFFFFE45C); // won-draw pip fill
 
   // ── Per-zone signal (the unmistakable kid-clear cue) ─────────────────────────
   // Each player's whole zone is washed RED while waiting, then flashes a sudden
-  // bright GREEN on GO ("TAP!"). The wash is the dominant signal; the samurai
+  // bright GREEN on GO ("DRAW!"). The wash is the dominant signal; the samurai
   // figures + center cue ride on top as flavor. A false-starter's zone goes a
   // calm grey with a gentle "TOO EARLY!" — readable, never harsh.
   static const Color _zoneRed = Color(0xFFE53935); // WAIT red
@@ -123,18 +153,26 @@ class ReactionDuel extends MiniGameBase {
   bool _confettiFired = false;
   bool _feintLitLast = false; // edge-detect each fake-GO flash (bot bait)
 
-  // ── Best-of round state (the climax is the final LIGHTNING round) ───────────
-  int _round = 1; // 1-based; _round == _roundCount is the lightning final
-  bool _between = false; // in the short inter-round beat (cue + reset)
-  double _betweenTimer = 0; // time spent in the inter-round beat
-  bool _roundScored = false; // this round's points have been tallied
-  double _lightningCue = 0; // 1 → 0 life of the "LIGHTNING ROUND!" banner
-  final Map<int, int> _points = <int, int>{}; // cumulative points across rounds
+  // ── Best-of "first to N draws" state ────────────────────────────────────────
+  int _drawIndex = 0; // 0-based index of the current draw (drives the ramp)
+  bool _between = false; // in the short inter-draw beat (cue + reset)
+  double _betweenTimer = 0; // time spent in the inter-draw beat
+  bool _drawScored = false; // this draw's outcome has been banked
+  double _matchPointCue = 0; // 1 → 0 life of the "MATCH POINT!" banner
+  final Map<int, int> _drawsWon = <int, int>{}; // draws won per player
+  final Map<int, double> _totalReaction = <int, double>{}; // Σ valid reactions
 
   final Map<int, _Reactor> _reactors = <int, _Reactor>{};
   final List<Slash> _slashes = <Slash>[]; // active slash arcs (winner→loser)
 
-  bool get _isLightning => _round >= _roundCount;
+  /// The current draw is "match point" once any duelist sits one draw away from
+  /// taking the match — used only for the cue banner + gold bloom.
+  bool get _isMatchPoint {
+    for (final won in _drawsWon.values) {
+      if (won >= _targetDraws - 1) return true;
+    }
+    return false;
+  }
 
   /// True while a fake-GO flash is lit before the real signal — the field bluffs
   /// green to bait a tap, but the gate is still WAITING so any tap is an early
@@ -145,7 +183,7 @@ class ReactionDuel extends MiniGameBase {
   void init(MiniGameContext ctx) {
     prepare(ctx);
     _juice = Juice(rng: ctx.rng);
-    _gate = ReactionGate(ctx.rng, minDelay: _minGoDelay, maxDelay: _maxGoDelay);
+    _gate = _gateForDraw(0);
     _size = ctx.arena;
     _center = Offset(_size.width / 2, _size.height * 0.5);
 
@@ -155,11 +193,39 @@ class ReactionDuel extends MiniGameBase {
     _footReach = _proportions.thigh + _proportions.shin;
 
     for (final p in ctx.players) {
-      _points[p.id] = 0;
+      _drawsWon[p.id] = 0;
+      _totalReaction[p.id] = 0;
     }
     _buildDuelists();
     begin();
   }
+
+  /// Build the gate for draw [index] with the calibrated ramp: the GO band
+  /// drifts later, feints grow more numerous + more GO-like (longer flashes),
+  /// and (via [_goWindowForDraw]) the post-GO window tightens as [index] climbs.
+  /// All escalation is bounded so even a long match stays fair and finite.
+  ReactionGate _gateForDraw(int index) {
+    final shift =
+        math.min(_goDelayRampMax, _goDelayRampPerDraw * index).toDouble();
+    final feints = math.min(_maxFeints, _baseFeints + index);
+    final flash = math.min(
+      _maxFeintFlash,
+      _baseFeintFlash + (_maxFeintFlash - _baseFeintFlash) * (index / 4.0),
+    );
+    return ReactionGate(
+      ctx.rng,
+      minDelay: _minGoDelay + shift,
+      maxDelay: _maxGoDelay + shift,
+      feints: feints,
+      feintFlashSec: flash,
+    );
+  }
+
+  /// Post-GO reaction window for draw [index]: starts at [_goWindowBase] and
+  /// tightens by [_goWindowRampPerDraw] each draw down to [_goWindowMin], so a
+  /// late or hesitant tap stops counting sooner as the match tightens.
+  double _goWindowForDraw(int index) =>
+      math.max(_goWindowMin, _goWindowBase - _goWindowRampPerDraw * index);
 
   /// Place one swordsman per player, each facing the center, and build its
   /// figure (player color, sheathed sword) + reaction clock. With two players we
@@ -172,8 +238,8 @@ class ReactionDuel extends MiniGameBase {
   }
 
   /// Build a ready-stance duelist for [p] at [foot] (fresh figure facing the
-  /// centre, fresh clock, per-round gun-jump roll). Shared by the first build
-  /// and each round reset so the two never drift.
+  /// centre, fresh clock, per-draw gun-jump roll). Shared by the first build and
+  /// each draw reset so the two never drift.
   _Reactor _makeReactor(PlayerSlot p, Offset foot) {
     final facing = foot.dx <= _center.dx ? 1.0 : -1.0; // face the signal
     final color = Color(p.colorArgb);
@@ -260,12 +326,12 @@ class ReactionDuel extends MiniGameBase {
     _decayEffects(dt);
     _advanceFigures(sdt);
 
-    // The short beat between rounds: hold a cue, then arm the next round.
+    // The short beat between draws: hold a cue, then arm the next draw.
     if (_between) {
       _betweenTimer += dt;
-      if (_betweenTimer >= _interRoundSec) _beginNextRound();
+      if (_betweenTimer >= _interDrawSec) _beginNextDraw();
       // Absolute safety net even mid-transition.
-      if (_elapsed >= _timeLimit) _finishFromPoints();
+      if (_elapsed >= _timeLimit) _finishFromDraws();
       return;
     }
 
@@ -300,8 +366,9 @@ class ReactionDuel extends MiniGameBase {
     if (_strikeWord > 0) {
       _strikeWord = (_strikeWord - dt / _strikeWordSec).clamp(0.0, 1.0);
     }
-    if (_lightningCue > 0) {
-      _lightningCue = (_lightningCue - dt / _lightningCueSec).clamp(0.0, 1.0);
+    if (_matchPointCue > 0) {
+      _matchPointCue =
+          (_matchPointCue - dt / _matchPointCueSec).clamp(0.0, 1.0);
     }
     for (final r in _reactors.values) {
       if (r.tooSoon > 0) {
@@ -318,13 +385,15 @@ class ReactionDuel extends MiniGameBase {
   /// on their (jittered) reaction delay. Honest bots can also be BAITED by a
   /// feint — on each fresh fake-GO flash they roll [BotProfile.errorRate] and,
   /// if it lands, snap at the fake (a false start), so weak bots fall for feints
-  /// and strong bots hold. A stalled GO closes its own window so a round of
-  /// all-false-starts still resolves.
+  /// and strong bots hold. A stalled GO closes its own window (tightening per
+  /// draw) so a draw of all-false-starts still resolves.
   void _driveBots(double dt) {
     final inGo = _gate.phase == ReactionPhase.go;
     if (inGo) {
       _sinceGo += dt;
-      if (_gate.winner == null && _sinceGo >= _goWindow) _gate.forceDone();
+      if (_gate.winner == null && _sinceGo >= _goWindowForDraw(_drawIndex)) {
+        _gate.forceDone();
+      }
     }
     _maybeBaitBotsOnFeint();
     for (final r in _reactors.values) {
@@ -373,7 +442,7 @@ class ReactionDuel extends MiniGameBase {
       case ReactionTap.early:
         _onFalseStart(reactor);
       case ReactionTap.late:
-        // A valid-but-late draw: a small clash spark, no KO.
+        // A valid-but-late draw: a small clash spark, no KO, no draw won.
         _juice.hit(_chestOf(reactor), _colorOf(id), sparks: 5);
         reactor.figure.dash();
       case ReactionTap.ignored:
@@ -383,7 +452,7 @@ class ReactionDuel extends MiniGameBase {
 
   /// The winning quick-draw: turn toward the field and whip out a horizontal
   /// slash that arcs to each loser (KO-flinging them), under a slow-mo beat, with
-  /// a big "STRIKE!" popup.
+  /// a big "STRIKE!" popup. The draw itself is banked in [_tallyDraw].
   void _onStrike(_Reactor winner) {
     final reaction = _gate.reactionTimes[winner.slot.id] ?? _decisiveRefSec;
     final decisive =
@@ -391,7 +460,7 @@ class ReactionDuel extends MiniGameBase {
     final color = _colorOf(winner.slot.id);
 
     // Face the loser cluster, level the blade at them, and snap into a full-body
-    // VICTORY hold (fired once per round) so the "FASTEST!" banner lands on a
+    // VICTORY hold (fired once per draw) so the "FASTEST!" banner lands on a
     // triumphant pose instead of a frozen idle. The slash arc itself is a
     // separate effect drawn from the blade tip below, so the cheer doesn't eat
     // the strike read.
@@ -452,13 +521,14 @@ class ReactionDuel extends MiniGameBase {
     final dirX = away.dx >= 0 ? 1.0 : -1.0;
     final mag =
         _size.height * (_flingBaseFracH + _flingDecisiveFracH * decisive);
-    final fling = Offset(dirX * mag * _flingSidewaysFactor, -mag * _flingLiftFactor);
+    final fling =
+        Offset(dirX * mag * _flingSidewaysFactor, -mag * _flingLiftFactor);
     final groundY = loser.foot.dy;
     loser.figure.enterRagdoll(_rootOf(loser), groundY, fling);
   }
 
-  /// A false start: the gate already penalized them. Stamp "TOO SOON!", stagger
-  /// them with a hurt pose, and a light shake.
+  /// A false start: the gate already penalized them (they LOSE this draw). Stamp
+  /// "TOO SOON!", stagger them with a hurt pose, and a light shake.
   void _onFalseStart(_Reactor reactor) {
     // Gentle, kid-friendly: a soft hurt stagger + a light shake. The big GREY
     // zone wash + "TOO EARLY!" word (drawn per zone) is the real feedback, so we
@@ -474,25 +544,25 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
-  /// Live HUD score: cumulative round points plus a tiny (<1) in-round nudge so
-  /// a faster reaction edges ahead and a false-starter dips, while the round
-  /// points always dominate — kids watch the tally climb, the finale swings it.
+  /// Live HUD score: cumulative draws won plus a tiny (<1) in-draw nudge so a
+  /// faster reaction edges ahead and a false-starter dips, while the draw tally
+  /// always dominates — kids watch the win count climb toward the target.
   void _publishLiveScores() {
     final times = _gate.reactionTimes;
     final penalized = _gate.penalized;
     for (final p in ctx.players) {
-      final base = (_points[p.id] ?? 0).toDouble();
+      final base = (_drawsWon[p.id] ?? 0).toDouble();
       if (penalized.contains(p.id)) {
-        setScore(p.id, base + _penaltyScore * 0.001);
+        setScore(p.id, base - 0.001); // a dip for a false start this draw
       } else {
         final t = times[p.id];
-        // Tiny in-round nudge (<1) so cumulative points always dominate.
+        // Tiny in-draw nudge (<1) so cumulative draws always dominate.
         setScore(p.id, base + (t != null ? 0.001 / (t + 0.01) : 0));
       }
     }
   }
 
-  // ── Outcome (best-of rounds) ────────────────────────────────────────────────
+  // ── Outcome ("first to N draws") ────────────────────────────────────────────
 
   void _resolveOutcome(double dt) {
     if (_gate.phase == ReactionPhase.done) {
@@ -506,62 +576,62 @@ class ReactionDuel extends MiniGameBase {
                 ? const []
                 : [_colorOf(w), _brighten(_colorOf(w), 0.55), _accentGold]);
       }
-      if (_sinceDone >= _lingerAfterWin) _onRoundOver();
+      if (_sinceDone >= _lingerAfterWin) _onDrawOver();
     }
     // Absolute safety net: never exceed the time limit.
     if (_elapsed >= _timeLimit && status == MiniGameStatus.running) {
       _gate.forceDone();
-      _tallyRound();
-      _finishFromPoints();
+      _tallyDraw();
+      _finishFromDraws();
     }
   }
 
-  /// A round has fully resolved (winner + linger done): bank its points, then
-  /// either kick off the inter-round beat or finish the whole match.
-  void _onRoundOver() {
-    _tallyRound();
-    if (_round < _roundCount) {
-      _beginInterRound();
+  /// A draw has fully resolved (winner + linger done): bank it, then either
+  /// finish the match (someone reached the target / we hit the draw cap) or kick
+  /// off the inter-draw beat.
+  void _onDrawOver() {
+    _tallyDraw();
+    if (matchWon(_drawsWon, _targetDraws) || _drawIndex + 1 >= _maxDraws) {
+      _finishFromDraws();
     } else {
-      _finishFromPoints();
+      _beginInterDraw();
     }
   }
 
-  /// Award this round's DESCENDING placement points to the WHOLE field (1st=N-1,
-  /// 2nd=N-2, … last=0), so every duelist races for position instead of only the
-  /// fastest tap scoring — see [roundPlacementPoints]. The points are scaled by
-  /// the round's value ([_normalRoundPoints], or the doubled [_lightningPoints]
-  /// in the LIGHTNING final, so the finale still swings the match). Idempotent per
-  /// round via [_roundScored] so a tally + safety-net can't double-count.
-  void _tallyRound() {
-    if (_roundScored) return;
-    _roundScored = true;
-    final scale = _isLightning ? _lightningPoints : _normalRoundPoints;
-    final placement = roundPlacementPoints(
+  /// Bank this draw's outcome: award the single draw to the gate's [winner] (the
+  /// fastest valid tap; none if the draw was a wash), and fold every duelist's
+  /// valid reaction into the cumulative tiebreak total. Idempotent per draw via
+  /// [_drawScored] so a tally + safety-net can't double-count.
+  void _tallyDraw() {
+    if (_drawScored) return;
+    _drawScored = true;
+    final award = drawAward(
       ctx.players.map((p) => p.id).toList(),
       _gate.winner,
-      _gate.reactionTimes,
-      pointsScale: scale,
     );
-    placement.forEach((id, pts) {
-      _points[id] = (_points[id] ?? 0) + pts;
+    award.forEach((id, delta) {
+      _drawsWon[id] = (_drawsWon[id] ?? 0) + delta;
+    });
+    _gate.reactionTimes.forEach((id, t) {
+      _totalReaction[id] = (_totalReaction[id] ?? 0) + t;
     });
   }
 
-  /// Open the inter-round beat; [update] times it out then arms the next round.
-  void _beginInterRound() {
+  /// Open the inter-draw beat; [update] times it out then arms the next draw.
+  void _beginInterDraw() {
     _between = true;
     _betweenTimer = 0;
   }
 
-  /// Arm the next round: bump the counter, roll a fresh gate (snappier delays in
-  /// the lightning final), reset every duelist to a ready stance, clear the
-  /// round-scoped fx + flags, and raise the LIGHTNING cue when it is the finale.
-  void _beginNextRound() {
-    _round += 1;
+  /// Arm the next draw: bump the index, roll a fresh gate via the calibrated
+  /// ramp ([_gateForDraw]), reset every duelist to a ready stance, clear the
+  /// draw-scoped fx + flags, and raise the MATCH POINT cue when a duelist is one
+  /// draw from taking the match.
+  void _beginNextDraw() {
+    _drawIndex += 1;
     _between = false;
     _betweenTimer = 0;
-    _roundScored = false;
+    _drawScored = false;
     _signalSeen = false;
     _confettiFired = false;
     _feintLitLast = false;
@@ -569,27 +639,20 @@ class ReactionDuel extends MiniGameBase {
     _sinceGo = 0;
     _slashes.clear();
 
-    _gate = _isLightning
-        ? ReactionGate(ctx.rng,
-            minDelay: _lightningMinGoDelay, maxDelay: _lightningMaxGoDelay)
-        : ReactionGate(ctx.rng, minDelay: _minGoDelay, maxDelay: _maxGoDelay);
+    _gate = _gateForDraw(_drawIndex);
+    _resetDuelistsForDraw();
 
-    _resetDuelistsForRound();
-
-    if (_isLightning) {
-      _lightningCue = 1.0;
+    if (_isMatchPoint) {
+      _matchPointCue = 1.0;
       _juice.shake.medium();
       final center = Offset(_size.width / 2, _size.height * _cueCenterFrac);
-      _juice.popup(center, 'LIGHTNING ROUND!', _lightningGold, size: 44);
-      _juice.popup(center.translate(0, _scaleUnit * 2.6), 'DOUBLE POINTS',
-          _brighten(_lightningGold, 0.2),
-          size: 26);
+      _juice.popup(center, 'MATCH POINT!', _matchPointGold, size: 42);
     }
   }
 
-  /// Reset each duelist for a fresh round by rebuilding it at the same foot
-  /// anchor (un-ragdolls, re-poses, re-arms). Points live outside the reactors.
-  void _resetDuelistsForRound() {
+  /// Reset each duelist for a fresh draw by rebuilding it at the same foot anchor
+  /// (un-ragdolls, re-poses, re-arms). Draws won live outside the reactors.
+  void _resetDuelistsForDraw() {
     for (final p in ctx.players) {
       final old = _reactors[p.id];
       if (old == null) continue;
@@ -597,17 +660,17 @@ class ReactionDuel extends MiniGameBase {
     }
   }
 
-  /// Build the final ranking from cumulative points (best→worst), with the last
-  /// round's reaction times as a gentle tiebreak (see [buildDuelRanking]). Every
-  /// player id appears exactly once.
-  void _finishFromPoints() {
+  /// Build the final ranking from draws won (best→worst), with the cumulative
+  /// reaction total as a gentle tiebreak (see [buildDuelRanking]). Every player
+  /// id appears exactly once.
+  void _finishFromDraws() {
     if (status == MiniGameStatus.finished) return;
     _publishLiveScores();
 
     final ids = buildDuelRanking(
       ctx.players.map((p) => p.id).toList(),
-      _points,
-      _gate.reactionTimes,
+      _drawsWon,
+      _totalReaction,
     );
 
     finishWith(WinResult(
@@ -631,18 +694,17 @@ class ReactionDuel extends MiniGameBase {
     // the figures so the swordsmen sit on top of their colored ground.
     _drawZoneWashes(canvas, size);
 
-    // The LIGHTNING (double-points) final round gets a persistent gold edge-wash
-    // so the climax reads at a glance; the cue peak blooms at the round start.
-    if (_isLightning) {
+    // Match point gets a brief gold edge bloom so the climax reads at a glance.
+    if (_matchPointCue > 0) {
       ReactionRenderer.drawLightningAmbience(
-          canvas, size, _lightningCue, _waitPulse(),
-          gold: _lightningGold);
+          canvas, size, _matchPointCue, _waitPulse(),
+          gold: _matchPointGold);
     }
 
     _drawDuelists(canvas);
     _drawSlashes(canvas);
 
-    // Big per-zone word ("WAIT" / "TAP!" / "TOO EARLY!") over the figures so
+    // Big per-zone word ("WAIT" / "DRAW!" / "TOO EARLY!") over the figures so
     // every player reads their own state at a glance.
     _drawZoneLabels(canvas, size);
 
@@ -662,19 +724,39 @@ class ReactionDuel extends MiniGameBase {
     _juice.render(canvas);
     canvas.restore();
 
-    // Screen-space cinematic overlays (GO flash + FASTEST! banner) after the
-    // world transform is restored, so they are not shaken or zoomed. The GO
-    // wash is the green [Juice.flashScreen] overlay fired once on the signal
-    // edge; the old in-world white [drawScreenFlash] was removed so the flash no
-    // longer double-stacks (white over green) nor gets zoomed by a strike's
-    // camera punch (which left unflashed wedges at the screen corners).
+    // Screen-space HUD (draw tally + "FIRST TO N") + cinematic overlays (GO
+    // flash + FASTEST! banner) after the world transform is restored, so they
+    // are not shaken or zoomed. The GO wash is the green [Juice.flashScreen]
+    // overlay fired once on the signal edge.
+    _drawDrawTally(canvas, size);
     _juice.renderOverlay(canvas, size);
+  }
+
+  /// The "first to N draws" HUD: a per-player tally of won-draw pips plus the
+  /// target, drawn screen-space along the top so the objective + standings read
+  /// at a glance. Built no-throw from plain snapshots.
+  void _drawDrawTally(Canvas canvas, Size size) {
+    final rows = <DrawTallyRow>[
+      for (final p in ctx.players)
+        DrawTallyRow(
+          color: _colorOf(p.id),
+          won: _drawsWon[p.id] ?? 0,
+        ),
+    ];
+    ReactionRenderer.drawDrawTally(
+      canvas,
+      size,
+      rows: rows,
+      target: _targetDraws,
+      onColor: _tallyOn,
+    );
   }
 
   /// Vignette pulse: dark + throbbing during WAIT (rising tension), calm after.
   double _vignettePulse() {
     if (_gate.phase != ReactionPhase.waiting) return 0.0;
-    final ramp = (_elapsed / _maxGoDelay).clamp(0.0, 1.0);
+    final ramp =
+        (_elapsed / (_maxGoDelay + _goDelayRampMax)).clamp(0.0, 1.0);
     final throb = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
     return (_vignetteWaitBase + _vignetteWaitGain * ramp * throb)
         .clamp(0.0, 1.0);
@@ -707,7 +789,7 @@ class ReactionDuel extends MiniGameBase {
       _drawDuelistWithWaitSway(canvas, r, locked);
 
       // Per-duelist readout above the head: a small reaction time once they
-      // draw, for flavor. The WAIT/TAP/TOO-EARLY state is carried by the big
+      // draw, for flavor. The WAIT/DRAW/TOO-EARLY state is carried by the big
       // per-zone wash + word; a false start adds a gentle X over the figure.
       final above = _chestOf(r).translate(0, -_scaleUnit * 2.4);
       ReactionRenderer.drawReadout(
@@ -721,7 +803,7 @@ class ReactionDuel extends MiniGameBase {
 
   // ── Wait-phase micro-sway ───────────────────────────────────────────────────
   // Tiny tuning for a pure-visual ready-stance breathing tilt while the field
-  // holds its nerve through WAIT. Render only — touches no scoring/round state.
+  // holds its nerve through WAIT. Render only — touches no scoring/draw state.
   static const double _waitSwayRad = 0.025; // peak tilt (radians) during WAIT
   static const double _waitSwayHz = 1.6; // sway speed
 
@@ -756,7 +838,7 @@ class ReactionDuel extends MiniGameBase {
 
   /// Wash each player's whole zone with its signal color — the unmistakable
   /// cue. RED while waiting (gentle throb), a sudden bright GREEN on GO (a flash
-  /// that spikes at the edge then settles to a steady "TAP!" green), GREEN for a
+  /// that spikes at the edge then settles to a steady "DRAW!" green), GREEN for a
   /// player who has drawn, and a calm GREY for a false-starter.
   void _drawZoneWashes(Canvas canvas, Size size) {
     for (final r in _reactors.values) {
@@ -801,7 +883,7 @@ class ReactionDuel extends MiniGameBase {
     }
     if (reacted) return (_zoneGreen, _zoneGoBaseAlpha * 0.85);
     if (_signalSeen) {
-      // Bright GREEN: a flash spike at the GO edge that settles to a steady "TAP".
+      // Bright GREEN: a flash spike at the GO edge that settles to a steady "DRAW".
       return (_zoneGreen, _zoneGoBaseAlpha + _zoneGoFlashAlpha * _strikeFlash);
     }
     if (_feintLit) {
@@ -814,7 +896,7 @@ class ReactionDuel extends MiniGameBase {
     return (_zoneRed, _zoneWaitAlpha + _zoneWaitPulse * throb);
   }
 
-  /// The big readable word for a player's zone: "WAIT" (red), "TAP!" (green),
+  /// The big readable word for a player's zone: "WAIT" (red), "DRAW!" (green),
   /// "WINNER!" / "GOT IT!" once drawn, or a gentle "TOO EARLY!" on a false start.
   (String, Color) _zoneLabel(int id) {
     if (_gate.penalized.contains(id)) {
@@ -824,13 +906,13 @@ class ReactionDuel extends MiniGameBase {
     if (_gate.reactionTimes.containsKey(id)) {
       return ('GOT IT!', const Color(0xFFFFFFFF));
     }
-    // A feint shows the same "TAP!" bait as the real signal (it's a fake-out).
-    if (_signalSeen || _feintLit) return ('TAP!', const Color(0xFFFFFFFF));
+    // A feint shows the same "DRAW!" bait as the real signal (it's a fake-out).
+    if (_signalSeen || _feintLit) return ('DRAW!', const Color(0xFFFFFFFF));
     return ('WAIT', const Color(0xFFFFFFFF));
   }
 
   /// The small flavor text above a duelist: their reaction time once they draw,
-  /// nothing otherwise (the per-zone word carries the WAIT/TAP/EARLY state).
+  /// nothing otherwise (the per-zone word carries the WAIT/DRAW/EARLY state).
   String _readoutFor(_Reactor r) {
     if (_gate.penalized.contains(r.slot.id)) return '';
     final t = _gate.reactionTimes[r.slot.id];
@@ -869,14 +951,14 @@ class ReactionDuel extends MiniGameBase {
   }
 }
 
-/// Per-player reaction state for one round. Mutable round-scoped state (allowed
-/// for the duration of a single round).
+/// Per-player reaction state for one draw. Mutable draw-scoped state (allowed for
+/// the duration of a single draw).
 class _Reactor {
   final PlayerSlot slot;
   final Offset foot; // ground anchor (foot line) for this duelist
   final StickFigure figure;
   final ReactionClock clock;
-  final bool jumpsTheGun; // bot decided to false-start this round
+  final bool jumpsTheGun; // bot decided to false-start this draw
 
   bool acted = false;
   bool cheered = false; // fired the one-shot victory hold on a winning strike

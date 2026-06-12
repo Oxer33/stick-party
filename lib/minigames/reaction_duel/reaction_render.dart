@@ -3,10 +3,17 @@ import 'dart:ui';
 
 import '../../art/stick/stick_figure.dart';
 
-/// Pure-Canvas rendering for [ReactionDuel] — a samurai quick-draw standoff at
-/// dusk. Holds NO game state and never mutates the simulation: callers pass
-/// plain value snapshots. Kept in its own file so the gameplay module stays lean
-/// and the drawing stays cohesive (mirrors the sumo_smash / tug_of_war split).
+/// Pure-Canvas rendering for [ReactionDuel] (QUICK-DRAW DUEL) — a samurai
+/// standoff at dusk. Holds NO game state and never mutates the simulation:
+/// callers pass plain value snapshots. Kept in its own file so the gameplay
+/// module stays lean and the drawing stays cohesive (mirrors the sumo_smash /
+/// tug_of_war split).
+///
+/// The signal states it paints are clear and distinct: WAIT (red wash + "WAIT…"
+/// halo), FEINT (a fake green "GO!" bluff — same look as the real signal so it
+/// genuinely bluffs), and the real GO/DRAW (green flash + "GO!" punch). Per
+/// player it draws a ready stance (with a breathing sway, owned by the game), a
+/// gentle false-start mark, a draw-win pose, and the "first to N" draw tally.
 ///
 /// Every method is side-effect free beyond the supplied [Canvas], guards its
 /// own inputs, and never throws (so it is safe to call from `render`).
@@ -497,43 +504,80 @@ class ReactionRenderer {
     canvas.restore();
   }
 
-  /// Best-of round pips along the top: filled in each player's color for rounds
-  /// they have won so far, hollow for the rest.
-  static void drawRoundPips(
+  /// The "FIRST TO N" draw-tally HUD: a compact title plus one short row per
+  /// duelist, each row a player-color dot followed by [target] pips — filled
+  /// (won) in [onColor], hollow for the rest. So the objective ("first to N
+  /// draws") and the live standings read at a glance, and a duelist who is one
+  /// pip from the target is obvious. Centered along the top, screen-space, sized
+  /// off the arena so it stays readable for 1–4 players. No-throw; an empty
+  /// [rows] or non-positive [target] draws nothing.
+  static void drawDrawTally(
     Canvas canvas,
-    Size size,
-    int totalRounds,
-    List<Color> wonColors,
-  ) {
-    if (totalRounds <= 0) return;
-    final r = math.max(3.0, size.width * 0.012);
-    final gap = r * 3.2;
-    final totalW = gap * (totalRounds - 1);
-    final startX = size.width / 2 - totalW / 2;
-    final y = size.height * 0.085;
-    for (var i = 0; i < totalRounds; i++) {
-      final cx = startX + gap * i;
-      final won = i < wonColors.length ? wonColors[i] : null;
-      if (won != null) {
-        canvas.drawCircle(Offset(cx, y), r, Paint()..color = won);
-        canvas.drawCircle(
-          Offset(cx, y),
-          r,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = math.max(1.0, r * 0.3)
-            ..color = _white.withValues(alpha: 0.85),
-        );
-      } else {
-        canvas.drawCircle(
-          Offset(cx, y),
-          r,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = math.max(1.0, r * 0.3)
-            ..color = _white.withValues(alpha: 0.4),
-        );
+    Size size, {
+    required List<DrawTallyRow> rows,
+    required int target,
+    Color onColor = const Color(0xFFFFE45C),
+  }) {
+    if (rows.isEmpty || target <= 0 || size.width <= 1) return;
+
+    final pip = math.max(3.0, size.width * 0.013); // pip radius
+    final pipGap = pip * 2.6; // pip center spacing
+    final dot = pip * 1.15; // player-color dot radius
+    final dotGap = dot * 2.2; // gap from dot to first pip
+    final rowH = pip * 3.0; // vertical row pitch
+    final titleSize = math.max(9.0, size.width * 0.026);
+
+    // Width of one row = color dot + the run of pips. Center the block.
+    final rowW = dotGap + pipGap * (target - 1) + pip * 2;
+    final cx = size.width / 2;
+    final left = cx - rowW / 2;
+
+    // "FIRST TO N" title above the rows.
+    final topY = size.height * 0.045;
+    _drawText(canvas, 'FIRST TO $target', Offset(cx, topY), titleSize,
+        _white.withValues(alpha: 0.92),
+        weight: FontWeight.w900, glow: true, glowColor: _black);
+
+    var rowY = topY + titleSize * 0.9 + rowH * 0.5;
+    for (final row in rows) {
+      // Player-color dot anchoring the row.
+      canvas.drawCircle(
+          Offset(left + dot, rowY), dot, Paint()..color = row.color);
+      canvas.drawCircle(
+        Offset(left + dot, rowY),
+        dot,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, dot * 0.22)
+          ..color = _white.withValues(alpha: 0.6),
+      );
+
+      final won = row.won.clamp(0, target);
+      for (var i = 0; i < target; i++) {
+        final px = left + dot + dotGap + pipGap * i;
+        final center = Offset(px, rowY);
+        if (i < won) {
+          canvas.drawCircle(center, pip, Paint()..color = onColor);
+          canvas.drawCircle(
+            center,
+            pip,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = math.max(1.0, pip * 0.3)
+              ..color = _white.withValues(alpha: 0.85),
+          );
+        } else {
+          canvas.drawCircle(
+            center,
+            pip,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = math.max(1.0, pip * 0.3)
+              ..color = _white.withValues(alpha: 0.38),
+          );
+        }
       }
+      rowY += rowH;
     }
   }
 
@@ -627,4 +671,13 @@ class ReactionRenderer {
     canvas.drawParagraph(
         paragraph, Offset(center.dx - width / 2, center.dy - fontSize));
   }
+}
+
+/// One row of the "first to N" draw tally: a duelist's [color] and how many
+/// draws they have [won] so far. A plain value snapshot the game hands to
+/// [ReactionRenderer.drawDrawTally] (no game state leaks into the renderer).
+class DrawTallyRow {
+  final Color color;
+  final int won;
+  const DrawTallyRow({required this.color, required this.won});
 }

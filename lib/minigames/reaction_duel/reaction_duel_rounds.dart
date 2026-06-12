@@ -1,7 +1,7 @@
-// Pure scoring/ranking + small value types for ReactionDuel's best-of round
-// structure. Kept in its own file (same game folder) so the gameplay module
-// stays under the file-size budget. The ranking helper holds NO state and never
-// mutates its inputs; it is side-effect free.
+// Pure scoring/ranking + small value types for ReactionDuel's "first to N draws
+// won" (best-of) structure. Kept in its own file (same game folder) so the
+// gameplay module stays under the file-size budget. The helpers hold NO state
+// and never mutate their inputs; they are side-effect free.
 import 'dart:ui';
 
 /// A short-lived slash arc from the winner's blade to a loser's chest.
@@ -19,70 +19,60 @@ class Slash {
   });
 }
 
-/// Award DESCENDING placement points for one finished round, so every duelist
-/// races for position (not just the single fastest tap). Players finish in this
-/// order, best → worst:
-///   1. the round [winner] (the first valid draw), if any;
-///   2. everyone else who produced a valid reaction, fastest first
-///      ([reactionTimes], seconds after GO — lower is better);
-///   3. everyone who never reacted or false-started, keeping [playerIds] order.
-/// The k-th finisher (0-based) of N players earns `(N-1-k)` base points, so a
-/// 4-field pays 3/2/1/0 and a 2-field pays 1/0; last place always scores 0. Each
-/// award is multiplied by [pointsScale] (1 for a normal round, 2 for the
-/// double-points LIGHTNING final). Pure: never mutates its inputs, and every id
-/// in [playerIds] gets an entry (0 if unplaced), so callers can fold it straight
-/// into a cumulative tally.
-Map<int, int> roundPlacementPoints(
-  List<int> playerIds,
-  int? winner,
-  Map<int, double> reactionTimes, {
-  int pointsScale = 1,
-}) {
-  // Finish order: winner, then other reactors fastest-first, then the rest.
-  final reactors = playerIds
-      .where((id) => id != winner && reactionTimes.containsKey(id))
-      .toList()
-    ..sort((a, b) => reactionTimes[a]!.compareTo(reactionTimes[b]!));
-  final rest = playerIds
-      .where((id) => id != winner && !reactionTimes.containsKey(id))
-      .toList();
-  final order = <int>[
-    if (winner != null && playerIds.contains(winner)) winner,
-    ...reactors,
-    ...rest,
-  ];
-
-  final n = playerIds.length;
-  final points = <int, int>{for (final id in playerIds) id: 0};
-  for (var k = 0; k < order.length; k++) {
-    points[order[k]] = (n - 1 - k) * pointsScale;
+/// Award one finished DRAW. Quick-Draw is a winner-takes-the-draw duel: the
+/// single fastest valid tap after GO ([winner], the first tap the gate accepted
+/// during its GO window) wins the draw; everyone else — slower tappers,
+/// non-tappers, and false-starters — gets nothing that draw. So a draw is won by
+/// nerve + speed, never by an early/incidental tap (an early tap is a false
+/// start and can never be the [winner]).
+///
+/// Returns a `{playerId: drawsDelta}` map carrying exactly one `+1` for the
+/// [winner] (when present and in [playerIds]) and `0` for every other id, so the
+/// caller can fold it straight into a cumulative draw tally. A [winner] of
+/// `null` (a draw with no valid tap — e.g. a timed-out GO) awards nothing. Pure:
+/// never mutates its inputs, and every id in [playerIds] gets an entry.
+Map<int, int> drawAward(List<int> playerIds, int? winner) {
+  final delta = <int, int>{for (final id in playerIds) id: 0};
+  if (winner != null && delta.containsKey(winner)) {
+    delta[winner] = 1;
   }
-  return points;
+  return delta;
+}
+
+/// True once any player has reached [target] draws won — the match-over test for
+/// the "first to N" objective. [target] is clamped to at least 1.
+bool matchWon(Map<int, int> drawsWon, int target) {
+  final need = target < 1 ? 1 : target;
+  for (final won in drawsWon.values) {
+    if (won >= need) return true;
+  }
+  return false;
 }
 
 /// Build the final best→worst ranking for a finished duel.
 ///
-/// Order: more cumulative [points] first; ties broken by the faster valid
-/// reaction in the last round ([lastReactionTimes], seconds after GO — lower is
-/// better), with players who reacted ranked above players who did not; remaining
-/// ties keep the input order of [playerIds]. Every id in [playerIds] appears
-/// exactly once, so the result is always a complete, unique ranking.
+/// Order: more [drawsWon] first (the player who won the most draws is the
+/// champion); ties broken by the smaller cumulative reaction total across the
+/// match ([totalReaction], seconds summed over every valid tap — lower/snappier
+/// is better), with players who ever reacted ranked above players who never did;
+/// remaining ties keep the input order of [playerIds]. Every id in [playerIds]
+/// appears exactly once, so the result is always a complete, unique ranking.
 List<int> buildDuelRanking(
   List<int> playerIds,
-  Map<int, int> points,
-  Map<int, double> lastReactionTimes,
+  Map<int, int> drawsWon,
+  Map<int, double> totalReaction,
 ) {
   final ranked = List<int>.of(playerIds);
   ranked.sort((a, b) {
-    final pa = points[a] ?? 0;
-    final pb = points[b] ?? 0;
-    if (pa != pb) return pb.compareTo(pa); // more points first
+    final wa = drawsWon[a] ?? 0;
+    final wb = drawsWon[b] ?? 0;
+    if (wa != wb) return wb.compareTo(wa); // more draws won first
 
-    final ta = lastReactionTimes[a];
-    final tb = lastReactionTimes[b];
-    if (ta != null && tb != null) return ta.compareTo(tb); // faster first
-    if (ta != null) return -1; // a reacted, b didn't → a higher
-    if (tb != null) return 1; // b reacted, a didn't → b higher
+    final ta = totalReaction[a];
+    final tb = totalReaction[b];
+    if (ta != null && tb != null) return ta.compareTo(tb); // snappier first
+    if (ta != null) return -1; // a reacted at least once, b never → a higher
+    if (tb != null) return 1; // b reacted at least once, a never → b higher
     return 0; // stable: keep input order
   });
   return ranked;
