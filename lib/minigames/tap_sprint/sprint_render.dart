@@ -35,6 +35,15 @@ class SprintRenderer {
   static const Color _black = Color(0xFF000000);
   static const Color _bannerPole = Color(0xFFB9C2D6);
 
+  // ── Hurdle palette (the interposing obstacle) ───────────────────────────────
+  /// The trip/knock color — the burst the gameplay fires on a clipped hurdle.
+  static const Color hurdleHit = Color(0xFFFF4438);
+  static const Color _hurdleBar = Color(0xFFF4EFE4); // crossbar (idle, approaching)
+  static const Color _hurdleLeg = Color(0xFF2C3A57); // upright legs
+  static const Color _hurdleWarn = Color(0xFFFFC93C); // "JUMP!" telegraph color
+  static const Color _hurdlePassed = Color(0xFF54E08A); // cleared/behind tint
+  static const Color _hudTrack = Color(0xCC0B1220); // distance-HUD pill bg
+
   // ── Tuning (fractions / px; no inline magic numbers) ───────────────────────
   static const double _standTopFrac = 0.0; // stands start at the very top
   static const int _crowdRows = 4; // rows of crowd dots
@@ -50,6 +59,10 @@ class SprintRenderer {
   static const double _spotlightHFactor = 1.35; // spotlight height / laneHeight
   static const int _dustMoteCount = 5;
   static const int _speedLineCount = 6;
+  // Hurdle geometry, as fractions of the lane height it stands in.
+  static const double _hurdleHeightFrac = 0.46; // crossbar height / laneHeight
+  static const double _hurdleHalfWidthFrac = 0.16; // half foot-spread / laneHeight
+  static const double _hudHeightFrac = 0.055; // distance-HUD pill height / arenaH
 
   // ── Background: night-stadium sky + tiered stands with a crowd ──────────────
   static void drawBackground(
@@ -391,6 +404,157 @@ class SprintRenderer {
     );
   }
 
+  // ── Hurdle (the interposing obstacle; telegraphed) ──────────────────────────
+  /// One hurdle standing on the track at [base] (the lane foot line), sized to
+  /// [laneHeight]. A crossbar on two angled legs with a small ground shadow.
+  ///
+  /// [live] is the telegraph: when this is the next hurdle inside the runner's
+  /// jump window it lights up in the warn color with a pulsing "JUMP!" arc + tag
+  /// ([warnPulse] 0..1 throbs it), so a reading player always gets the tell.
+  /// [passed] draws a hurdle the runner has already cleared in a faint green,
+  /// receding behind. Side-effect free; never throws.
+  static void drawHurdle(
+    Canvas canvas,
+    Offset base,
+    double laneHeight, {
+    required bool live,
+    required bool passed,
+    double warnPulse = 0,
+  }) {
+    if (laneHeight <= 1) return;
+    final h = (laneHeight * _hurdleHeightFrac).clamp(8.0, laneHeight);
+    final halfW = (laneHeight * _hurdleHalfWidthFrac).clamp(4.0, laneHeight);
+    final top = base.dy - h;
+    final barColor = passed
+        ? _hurdlePassed.withValues(alpha: 0.45)
+        : (live ? _hurdleWarn : _hurdleBar);
+    final legColor = passed
+        ? _hurdlePassed.withValues(alpha: 0.4)
+        : (live ? _blend(_hurdleWarn, _hurdleLeg, 0.35) : _hurdleLeg);
+
+    // Ground contact shadow.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: base, width: halfW * 2.4, height: h * 0.16),
+      Paint()..color = _black.withValues(alpha: 0.28),
+    );
+
+    // Two angled legs splaying down to the track.
+    final leg = Paint()
+      ..color = legColor
+      ..strokeWidth = math.max(2.0, halfW * 0.32)
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(Offset(base.dx, top), base.translate(-halfW, 0), leg);
+    canvas.drawLine(Offset(base.dx, top), base.translate(halfW, 0), leg);
+
+    // Live telegraph glow behind the bar (cheap stacked disc, no blur).
+    if (live) {
+      final p = warnPulse.clamp(0.0, 1.0);
+      canvas.drawCircle(
+        Offset(base.dx, top),
+        halfW * (1.4 + 0.4 * p),
+        Paint()..color = _hurdleWarn.withValues(alpha: 0.18 + 0.16 * p),
+      );
+    }
+
+    // Crossbar with a thin striped underline so it reads as a barrier.
+    final barRect = RRect.fromRectAndRadius(
+      Rect.fromLTRB(
+          base.dx - halfW * 1.15, top - h * 0.12, base.dx + halfW * 1.15, top + h * 0.12),
+      Radius.circular(h * 0.12),
+    );
+    canvas.drawRRect(barRect, Paint()..color = barColor);
+    canvas.drawRRect(
+      barRect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, h * 0.05)
+        ..color = (passed ? _hurdlePassed : _black).withValues(alpha: 0.35),
+    );
+
+    if (live) _drawJumpCue(canvas, Offset(base.dx, top - h * 0.55), halfW, warnPulse);
+  }
+
+  /// The "JUMP!" telegraph above a live hurdle: a pulsing up-chevron + a small
+  /// tag, so the cue to vault is unmistakable.
+  static void _drawJumpCue(
+      Canvas canvas, Offset at, double scale, double pulse) {
+    final p = pulse.clamp(0.0, 1.0);
+    final lift = scale * 0.5 * p;
+    final c = at.translate(0, -lift);
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(2.0, scale * 0.22)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = _hurdleWarn.withValues(alpha: 0.7 + 0.3 * p);
+    final s = scale * 0.7;
+    // Up-chevron (jump arrow).
+    canvas.drawLine(c.translate(-s, s * 0.6), c.translate(0, -s * 0.2), paint);
+    canvas.drawLine(c.translate(0, -s * 0.2), c.translate(s, s * 0.6), paint);
+    // A compact "JUMP" tag above the chevron.
+    _drawText(canvas, 'JUMP!', c.translate(0, -s * 1.1), scale * 0.7, _hurdleWarn,
+        weight: FontWeight.w900, maxWidth: scale * 6);
+  }
+
+  // ── Distance HUD (the objective: progress toward the finish) ────────────────
+  /// A top-center pill reading the leader's distance toward the finish, e.g.
+  /// "63 / 100 m", with a thin progress bar — so the objective + how close it is
+  /// are always on screen. Side-effect free; never throws.
+  static void drawDistanceHud(
+    Canvas canvas,
+    Size size,
+    double leaderMeters,
+    double raceMeters,
+    Color accent,
+  ) {
+    if (raceMeters <= 0 || size.width <= 1) return;
+    final frac = (leaderMeters / raceMeters).clamp(0.0, 1.0);
+    final h = (size.height * _hudHeightFrac).clamp(22.0, 60.0);
+    final w = (size.width * 0.42).clamp(120.0, size.width - 16);
+    final center = Offset(size.width / 2, h * 0.85);
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: w, height: h),
+      Radius.circular(h * 0.5),
+    );
+    canvas.drawRRect(rect, Paint()..color = _hudTrack);
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = accent.withValues(alpha: 0.5),
+    );
+
+    // Progress fill bar tucked along the bottom of the pill.
+    final barH = h * 0.18;
+    final barTop = center.dy + h * 0.5 - barH - 2;
+    final barLeft = center.dx - w / 2 + 6;
+    final barW = w - 12;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(barLeft, barTop, barW, barH), Radius.circular(barH * 0.5)),
+      Paint()..color = _white.withValues(alpha: 0.12),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(barLeft, barTop, barW * frac, barH),
+        Radius.circular(barH * 0.5)),
+      Paint()..color = accent,
+    );
+
+    final meters = leaderMeters.clamp(0, raceMeters).round();
+    _drawText(
+      canvas,
+      '$meters / ${raceMeters.round()} m',
+      center.translate(0, -h * 0.08),
+      h * 0.42,
+      _white,
+      weight: FontWeight.w900,
+      maxWidth: w,
+    );
+  }
+
   /// A soft moving spotlight tracking the race leader on the track.
   static void drawLeaderSpotlight(
       Canvas canvas, Offset feet, double laneHeight, Color color) {
@@ -507,6 +671,9 @@ class SprintRenderer {
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────
+
+  static Color _blend(Color a, Color b, double t) =>
+      Color.lerp(a, b, t.clamp(0.0, 1.0)) ?? a;
 
   static Color _readableText(Color bg) {
     final luma = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;

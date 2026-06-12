@@ -1,88 +1,133 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../core/constants.dart';
 import '../../core/math2.dart';
-import '../../engine/helpers/tap_mash_meter.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'sprint_render.dart';
 
-/// Tap Sprint — a 100 m dash. Each player is a stickman sprinter in a lane;
-/// MASH (no-decay [TapMashMeter]) to run. The meter's fill is the runner's
-/// position on the track; the first across the finish tape is 1st, then
-/// 2nd/3rd/4th as they cross. On the time limit, unfinished runners are ranked
-/// by distance covered, so the round always resolves.
+/// Hurdle Dash — a [_raceMeters] m sprint over a track of HURDLES. (Keeps the
+/// legacy `tap_sprint` id; the old "mash a button to run" sprint is gone.)
 ///
-/// Depth (still one-touch) — **RHYTHM-OR-STUMBLE**:
-///  * A tap INSIDE the cadence window (`_cadenceLo.._cadenceHi`) is a clean
-///    STRIDE: it banks the base meter impulse plus a dominant rhythm-scaled
-///    bonus. A tap OUTSIDE the window is a STUMBLE: ~zero ground, a brief gait
-///    trip, and a small setback. Blind mashing (taps every frame) lands far
-///    below the window floor, so it stumbles and stalls — rhythm, not raw finger
-///    speed, wins the race. The opening tap is a free stride so nobody trips off
-///    the blocks.
-///  * **Mash energy** drives the whole body language: a smoothed recent-tap
-///    rate sets the run-cycle speed (we feed the animator a stretched dt), the
-///    forward lean angle, plus footstep dust and back-streaking speed lines.
-///  * **Photo finish**: when the leader is about to break the tape and nobody
-///    has crossed yet, a brief slow-mo + spotlight sell the moment.
+/// OBJECTIVE (obvious from the scene + HUD): be FIRST to cross the FINISH line.
+/// If nobody finishes before the buzzer, the runner who covered the most
+/// distance wins. The finish banner and a "Xm / 100m" readout sit over every
+/// lane so the goal is unmistakable.
 ///
-/// Bots mash on a [BotProfile]-driven cadence — harder bots are faster and
-/// steadier, so they hold the rhythm window and pull ahead.
+/// CORE — one-touch, a CADENCE not a mash:
+///  * **Rhythmic TAPS = stride.** Speed is built and held by tapping ON the
+///    stride cadence — a tap spaced inside [_strideLo].._strideHi banks a clean
+///    stride and grows your gait rhythm; the rhythm (not the raw tap rate) sets
+///    your run speed. Tapping FASTER than the cadence does nothing extra, and
+///    OVER-MASHING (taps far below the window) breaks stride: it bleeds rhythm,
+///    so a blind masher actually runs SLOWER than a metronomic runner.
+///
+/// INTERPOSING DIFFICULTY — HURDLES:
+///  * Hurdles sit at fixed distances down the track and scroll toward the runner.
+///    Each is **telegraphed**: as it enters the runner's approach zone a "JUMP!"
+///    cue + a flashing arc appear. A VAULT input — a tap landed inside the jump
+///    window, OR a HOLD — clears the hurdle cleanly. An early / late / missing
+///    vault = a TRIP: the runner stumbles (a hard speed loss + a brief dead
+///    stop), then recovers.
+///  * Hurdles get DENSER and the jump window TIGHTER the further you run (a
+///    calibrated ramp), so the back half is a real gauntlet.
+///  * A blind masher never *times* a vault — its taps are strides, not vaults,
+///    so it trips on essentially every hurdle and stalls. A runner who reads the
+///    telegraph and vaults on cue clears them and pulls away. (Proven by a
+///    deterministic test.)
+///
+/// One-touch read, two clearly-different beats: TAP a steady beat to run; when a
+/// hurdle lights up "JUMP!", press inside the window (or hold) to vault it.
+///
+/// BOTS: stride on a [BotProfile] cadence AND time a vault as each hurdle enters
+/// the window — strong bots clear nearly every hurdle, weak bots ([errorRate])
+/// mistime and trip often. A real, beatable 1+CPU contest.
 class TapSprint extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
         id: 'tap_sprint',
-        name: 'Tap Sprint',
+        name: 'Hurdle Dash',
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.ffa],
-        inputHint: 'MASH',
+        inputHint: 'TAP',
       );
 
   // ── Round / track tuning (no magic numbers inline) ──────────────────────────
-  static const double _timeLimit = 30;
-  // Base no-decay meter gain, awarded ONLY for a tap that lands inside the
-  // cadence window (an off-beat tap stumbles and earns ~nothing — see `_tap`).
-  static const double _tapImpulse = 0.020;
-  static const double _trackInsetXFrac = 0.085; // start margin / arena width
-  static const double _finishInsetXFrac = 0.10; // finish margin / arena width
-  static const double _trackTopFrac = 0.30; // stands above, track below
-  static const double _laneTopPadFrac = 0.10; // first lane inset into track
-  static const double _laneBotPadFrac = 0.10; // last lane inset into track
+  // Nobody-finishes ceiling. A measured solo runner finishes in ~22s (well
+  // inside this); the timer only bites when the hurdle gauntlet keeps everyone
+  // short (the ~25-40s target band). A blind masher trips so much it never
+  // finishes in time — the whole anti-spam point.
+  static const double _timeLimit = 38;
+  static const double _raceMeters = 100; // finish distance; shown in the HUD
 
-  // ── Stride rhythm tuning (RHYTHM-OR-STUMBLE) ────────────────────────────────
-  // A tap INSIDE [_cadenceLo, _cadenceHi] is a clean STRIDE: it banks the base
-  // meter impulse plus a dominant in-window bonus. A tap OUTSIDE the window is a
-  // STUMBLE: ~zero ground, a brief trip (idle), and a small setback — so blind
-  // mashing (every-frame taps land far below _cadenceLo) loses to steady rhythm.
-  static const double _cadenceLo = 0.07; // good-cadence window (sec) lo
-  static const double _cadenceHi = 0.22; // good-cadence window (sec) hi
-  static const double _rhythmGainInWindow = 0.18; // rhythm added per good tap
-  static const double _rhythmPenaltyOutWindow = 0.5; // rhythm lost per stumble
-  static const double _rhythmDecayPerSec = 0.35; // idle bleed toward 0
-  // In-window stride bonus per tap (scaled 0..1 by rhythm). Sized to dominate
-  // the base impulse so a runner holding the beat far out-paces an off-beat one.
-  static const double _strideBonusPerTap = 0.020;
-  // STUMBLE: an off-beat tap loses a little hard-won ground (a small setback)
-  // and trips the gait briefly. Kept small + capped so a behind kid never goes
-  // backwards much, but enough that spamming is strictly worse than rhythm.
-  static const double _stumbleSetback = 0.006; // fill removed per stumble
-  static const double _stumbleTripSec = 0.18; // gait trip (idle) after a stumble
-  // The opening tap (and any tap after a long idle) is a free clean stride, so a
-  // runner never stumbles just getting off the blocks.
-  static const double _kickoffGraceSec = 0.6; // idle beyond this → free stride
+  // ── Stride cadence (the CADENCE, not a mash) ────────────────────────────────
+  // A tap spaced inside [_strideLo, _strideHi] is a clean STRIDE: it grows gait
+  // rhythm. A tap FASTER than _strideLo is an over-mash: it banks no rhythm and
+  // bleeds a little (mashing breaks stride). Rhythm 0..1 drives run speed, so a
+  // metronomic runner outruns a masher outright.
+  static const double _strideLo = 0.085; // good-cadence window (sec) lo
+  static const double _strideHi = 0.26; // good-cadence window (sec) hi
+  static const double _rhythmGainPerStride = 0.16; // rhythm per clean stride
+  static const double _rhythmDecayPerSec = 0.42; // idle / off-beat bleed toward 0
+  static const double _overMashRhythmPenalty = 0.10; // rhythm lost per over-mash
+  // The opening tap (or a tap after a long idle) is a free clean stride so a
+  // runner is never punished merely getting off the blocks.
+  static const double _kickoffGraceSec = 0.7;
+
+  // Run speed (m/s) as a function of gait rhythm: a dead-rhythm jog floor up to
+  // a full-rhythm sprint. Rhythm — not tap rate — is the throttle.
+  static const double _jogSpeed = 1.8; // m/s at rhythm 0 (barely moving)
+  static const double _sprintSpeed = 8.6; // m/s at rhythm 1 (full cadence)
+
+  // ── Hurdles (the interposing difficulty) ────────────────────────────────────
+  // Hurdles are seeded down the track from [_firstHurdleM] to near the finish.
+  // Spacing SHRINKS toward the finish (denser late) and the jump window TIGHTENS
+  // — a calibrated difficulty ramp. The first stretch is an open run-up so the
+  // start is fair.
+  static const double _firstHurdleM = 14; // open run-up before hurdle 1
+  static const double _lastHurdleM = 94; // last hurdle sits just before the tape
+  static const double _gapStartM = 13.0; // spacing between the first hurdles (m)
+  static const double _gapEndM = 7.0; // spacing between the last hurdles (m)
+
+  // The jump window: a runner may vault while a hurdle is within this many
+  // meters AHEAD. The window NARROWS down the track (tighter timing late). Vault
+  // outside it (too early) OR fail to vault before contact (too late/missed) =
+  // a trip.
+  static const double _windowStartM = 3.2; // window depth at the first hurdle
+  static const double _windowEndM = 1.7; // window depth at the last hurdle
+  // Airborne time per vault: a hurdle is CLEARED only if the runner is still in
+  // this arc when its body reaches the hurdle, so a vault must be timed to the
+  // approach (launch too early and the arc ends short → trip).
+  static const double _vaultAirSec = 0.42; // airborne arc length (sec)
+
+  // TRIP: a mistimed / missed hurdle. The runner loses most of its rhythm, dead
+  // stops for a beat, then recovers. A trip is HEAVY on purpose — it must cost a
+  // masher more than it can claw back before the next (denser) hurdle, so blind
+  // play nets near-zero up the track. A reading runner trips ~never.
+  static const double _tripRhythmKeep = 0.15; // rhythm retained after a trip
+  static const double _tripStopSec = 0.6; // dead-stop (no advance) after a trip
+  // A hurdle can only trip a runner once (a one-shot as it passes the body), so
+  // a single hurdle is one trip, never a per-frame grind.
+
+  // ── Vault input (tap-in-window OR hold) ─────────────────────────────────────
+  // A HOLD of at least this long also triggers a vault (the second, clearly
+  // readable one-touch mapping: press-and-hold to leap). A held press auto-vaults
+  // the next hurdle that enters the window.
+  static const double _holdVaultSec = 0.16;
 
   // ── Mash energy / animation tuning ──────────────────────────────────────────
   static const double _energyPerTap = 0.16; // smoothed-rate bump per tap
-  static const double _energyDecayPerSec = 1.5; // bleed of the smoothed rate
+  static const double _energyDecayPerSec = 1.6; // bleed of the smoothed rate
   static const double _strideMaxBoost = 1.7; // extra leg-cycle speed at full E
-  static const double _maxLeanRad = 0.34; // forward lean at full energy
+  static const double _maxLeanRad = 0.32; // forward lean at full energy
 
   // ── Photo-finish tuning ─────────────────────────────────────────────────────
   static const double _photoFinishProgress = 0.93; // leader past this → arm it
@@ -91,33 +136,33 @@ class TapSprint extends MiniGameBase {
   static const double _photoFinishGap = 0.06; // runner-up within this = "tight"
 
   // ── Final-stretch climax ─────────────────────────────────────────────────────
-  // When the leader passes [_finalStretchProgress] a one-shot "FINAL STRETCH!"
-  // banner + shake fire, so the finale is unmistakable well before the tape.
-  static const double _finalStretchProgress = 0.74; // leader past this → cue
+  static const double _finalStretchProgress = 0.78; // leader past this → cue
 
-  // ── Comeback (rubber-band, kid-assist) ───────────────────────────────────────
-  // Trailing runners convert each tap into a touch more ground, scaled by how
-  // far behind the leader they are. Capped + small so it keeps a behind kid in
-  // the race without ever letting them leapfrog a steady leader on its own.
-  static const double _catchUpMaxBonusPerTap = 0.010; // extra fill / tap at full gap
-  static const double _catchUpGapFull = 0.35; // gap (progress) for the full bonus
-
-  // ── Bot mash cadence (sec/tap); harder bots mash faster + steadier ──────────
-  static const double _botBaseInterval = 0.15;
-  static const double _botAccuracyBonus = 0.07; // faster at high accuracy
-  static const double _botJitterBase = 0.05; // sloppier (worse rhythm) when weak
-  // Bots hold at the blocks for a beat so the start is fair and a human can get
-  // off the line first — they never sprint away before the player reacts.
-  static const double _botWarmupSec = 1.5;
+  // ── Bot stride cadence + vault timing ───────────────────────────────────────
+  // Bots stride on a [BotProfile]-driven interval (harder = faster + steadier =
+  // higher rhythm) and time a vault as each hurdle enters their window. Strong
+  // bots vault crisply (clear); weak bots mistime on an [errorRate] slip (trip).
+  static const double _botBaseInterval = 0.16;
+  static const double _botAccuracyBonus = 0.06; // faster (better rhythm) when good
+  static const double _botJitterBase = 0.06; // sloppier cadence when weak
+  // When a bot commits its vault, as a fraction of one vault arc-reach of ground
+  // ahead (the distance the runner covers while airborne). A SMALL fraction =
+  // launch LATE/close = reliably still airborne at contact → CLEAR; a LARGE
+  // fraction (≳1) = launch EARLY = the arc ends before the hurdle = land short →
+  // TRIP. So strong bots use a small fraction (crisp clears) and weak bots a
+  // large one (mistimed, trip-prone) — a real skill gradient.
+  static const double _botVaultFracStrong = 0.55; // high accuracy → late, clears
+  static const double _botVaultFracWeak = 1.05; // low accuracy → early, lands short
+  // Bots hold at the blocks for a beat so a human can get off the line first.
+  static const double _botWarmupSec = 1.4;
 
   // ── Figure / feel tuning ────────────────────────────────────────────────────
   static const double _figureScale = 1.9; // readable sprinters
   static const double _bodyWidthFactor = 2.6; // dust/shadow half-width / torsoW
   static const Color _accent = Color(0xFFFFD24A);
-  // RENDER-only down-scale as the field fills: at 1 lane the sprinter draws full
-  // size, by 4 lanes it draws smaller so neighbouring lanes never overlap. This
-  // scales ONLY the painted figure (about its feet) — lane positions, foot line,
-  // progress and finish logic are all left untouched.
+  // RENDER-only down-scale as the field fills so neighbouring lanes never
+  // overlap. Scales ONLY the painted figure (about its feet) — lane positions,
+  // foot line, distance and finish logic are untouched.
   static const double _renderScaleSolo = 1.0; // draw scale at 1 lane (full size)
   static const double _renderScaleFull = 0.6; // draw scale at 4 lanes (slimmer)
 
@@ -126,7 +171,7 @@ class TapSprint extends MiniGameBase {
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for crowd/dust/tape
   bool _photoFinishFired = false;
-  bool _finalStretchFired = false; // one-shot "FINAL STRETCH!" climax cue latch
+  bool _finalStretchFired = false; // one-shot "FINAL STRETCH!" climax latch
 
   late double _startX;
   late double _finishX;
@@ -134,6 +179,11 @@ class TapSprint extends MiniGameBase {
   late double _footReach; // pelvis→foot length at rest (for grounding)
   late double _bodyW;
   late StickProportions _proportions;
+
+  // The shared course of hurdles (in meters down the track). One course for the
+  // whole field so every lane runs the identical gauntlet — a fair race. Built
+  // once at init.
+  late final List<double> _hurdleMeters;
 
   final Map<int, _Runner> _runners = <int, _Runner>{};
   final List<double> _laneYs = <double>[]; // foot-line y per lane, top→bottom
@@ -153,17 +203,18 @@ class TapSprint extends MiniGameBase {
     _footReach = _proportions.thigh + _proportions.shin;
     _bodyW = _proportions.torsoWidth * _bodyWidthFactor;
 
+    _hurdleMeters = _buildCourse();
     _buildRunners();
     begin();
   }
 
   void _computeLayout() {
-    _startX = _size.width * _trackInsetXFrac;
-    _finishX = _size.width * (1 - _finishInsetXFrac);
-    _trackTop = _size.height * _trackTopFrac;
+    _startX = _size.width * 0.085;
+    _finishX = _size.width * (1 - 0.10);
+    _trackTop = _size.height * 0.30;
 
-    final top = _trackTop + (_size.height - _trackTop) * _laneTopPadFrac;
-    final bot = _size.height - (_size.height - _trackTop) * _laneBotPadFrac;
+    final top = _trackTop + (_size.height - _trackTop) * 0.10;
+    final bot = _size.height - (_size.height - _trackTop) * 0.10;
     final n = ctx.players.length;
     _laneYs.clear();
     _laneOrder.clear();
@@ -178,11 +229,25 @@ class TapSprint extends MiniGameBase {
     }
   }
 
+  /// Hurdles down the track, packed CLOSER toward the finish (a calibrated
+  /// density ramp): the gap between consecutive hurdles shrinks from [_gapStartM]
+  /// to [_gapEndM] as we approach [_lastHurdleM]. The opening [_firstHurdleM] is
+  /// an open run-up.
+  List<double> _buildCourse() {
+    final course = <double>[];
+    var m = _firstHurdleM;
+    while (m <= _lastHurdleM) {
+      course.add(m);
+      final t = (m / _raceMeters).clamp(0.0, 1.0); // 0 (start)..1 (finish)
+      m += lerpD(_gapStartM, _gapEndM, t);
+    }
+    return course;
+  }
+
   void _buildRunners() {
     for (final p in ctx.players) {
       _runners[p.id] = _Runner(
         slot: p,
-        meter: TapMashMeter(tapImpulse: _tapImpulse),
         figure: StickFigure(
           proportions: _proportions,
           style: _styleFor(Color(p.colorArgb)),
@@ -190,6 +255,7 @@ class TapSprint extends MiniGameBase {
         )..setLoco(LocoState.idle),
         botInterval: _botInterval(),
         botJitter: _botJitter(),
+        botVaultFrac: _botVaultFrac(),
       );
     }
   }
@@ -208,27 +274,42 @@ class TapSprint extends MiniGameBase {
 
   double _botInterval() {
     final prof = ctx.botProfile;
-    return math.max(0.05, _botBaseInterval - _botAccuracyBonus * prof.accuracy);
+    return math.max(0.06, _botBaseInterval - _botAccuracyBonus * prof.accuracy);
   }
 
-  /// Weaker bots jitter more within the (clamped) cadence window, so their
-  /// stride rate wavers; strong bots stay metronomic and faster. Jitter never
-  /// kicks a bot out of the window (see [_nextBotInterval]) so bots never
-  /// stumble themselves inert.
+  /// Weaker bots jitter more so their stride rate wavers (worse rhythm); strong
+  /// bots stay metronomic. Jitter never kicks a bot out of the stride window
+  /// (see [_nextBotInterval]) so bots never break their own stride.
   double _botJitter() {
     final prof = ctx.botProfile;
     return _botJitterBase * (1.0 - prof.accuracy.clamp(0.0, 1.0)) +
         _botJitterBase * 0.2;
   }
 
+  /// When a bot commits a vault (fraction of one arc-reach of ground ahead).
+  /// High accuracy → the small [_botVaultFracStrong] (launch late → clears); low
+  /// accuracy → the large [_botVaultFracWeak] (launch early → lands short → trip).
+  double _botVaultFrac() {
+    final prof = ctx.botProfile;
+    return lerpD(_botVaultFracWeak, _botVaultFracStrong, prof.accuracy.clamp(0.0, 1.0));
+  }
+
   // ── Input ───────────────────────────────────────────────────────────────────
 
   @override
   void onInput(PlayerInput input) {
-    if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
-      return;
+    if (status != MiniGameStatus.running) return;
+    switch (input.phase) {
+      case InputPhase.down:
+        _press(input.playerId);
+        break;
+      case InputPhase.holdTick:
+        _holdTick(input.playerId, input.dt);
+        break;
+      case InputPhase.up:
+        _release(input.playerId);
+        break;
     }
-    _tap(input.playerId);
   }
 
   @override
@@ -263,92 +344,239 @@ class TapSprint extends MiniGameBase {
     _juice.shake.medium();
   }
 
-  // ── Tap → rhythm + meter fill ───────────────────────────────────────────────
+  // ── Press / hold → stride or vault ──────────────────────────────────────────
 
-  /// One tap → STRIDE or STUMBLE, decided purely by cadence. Energy always bumps
-  /// (so the figure reads as trying), but ground is gated on timing: a tap in
-  /// the window banks the base impulse + a dominant in-window bonus; a tap out
-  /// of the window earns ~nothing, trips the gait, and nudges the runner back.
-  void _tap(int id) {
+  /// A press (tap-down). A press is a VAULT when (a) a hurdle is in the jump
+  /// window AND (b) it is a CONTROLLED press — at least a stride-gap since the
+  /// last press, i.e. NOT part of a mash. Otherwise it is a STRIDE on the run
+  /// cadence.
+  ///
+  /// This is the anti-spam crux: a vault must be a *deliberate, timed* press. A
+  /// blind masher hammering every frame has near-zero gap between presses, so
+  /// none of its presses qualify as a vault — it never leaves the ground and
+  /// clips every hurdle. A measured runner presses the "JUMP!" cue cleanly
+  /// (a real gap), so its vault registers and it sails over.
+  void _press(int id) {
     final r = _runners[id];
     if (r == null || r.finished) return;
 
+    // Energy always bumps so the figure reads as "trying" regardless of timing.
+    r.energy = (r.energy + _energyPerTap).clamp(0.0, 1.0);
+
+    // A TAP is ALWAYS a stride — it never clears a hurdle. Vaulting requires a
+    // deliberate HOLD (press-and-hold auto-leaps at the clear moment, see
+    // [_canClearVaultNow]). So a runner who only taps trips on EVERY hurdle: the
+    // obstacle genuinely interposes, and blind tapping loses to a player who
+    // reads each hurdle and holds to leap it.
+    _stride(r);
+  }
+
+  /// Hold-to-vault: a press held past [_holdVaultSec] arms auto-vaulting, and the
+  /// runner then leaps automatically at the right moment for each hurdle (see the
+  /// [_canClearVaultNow] gate in [_tickRunners]). A quick tap stays a stride and a
+  /// deliberate press-and-hold is a leap — two clearly-readable one-touch inputs.
+  void _holdTick(int id, double dt) {
+    final r = _runners[id];
+    if (r == null || r.finished) return;
+    r.holdSec += dt;
+    if (r.holdSec >= _holdVaultSec) r.holding = true;
+  }
+
+  void _release(int id) {
+    final r = _runners[id];
+    if (r == null) return;
+    r.holding = false;
+    r.holdSec = 0;
+  }
+
+  /// A clean stride on the run cadence: a tap spaced inside the stride window
+  /// grows rhythm (which drives run speed). An over-mash (tap far below the
+  /// window) banks NO rhythm and bleeds a little — so mashing is strictly slower
+  /// than a steady beat. The opening tap is a free stride.
+  void _stride(_Runner r) {
     final gap = r.sinceTap;
     r.sinceTap = 0;
 
-    // Mash energy bump (drives animation speed / lean / fx) regardless of timing.
-    r.energy = (r.energy + _energyPerTap).clamp(0.0, 1.0);
-
-    // The opening tap / a tap after a long idle is a free clean stride, so a
-    // runner never trips merely getting off the blocks.
     final isKickoff = gap >= _kickoffGraceSec;
-    final inWindow = gap >= _cadenceLo && gap <= _cadenceHi;
+    final inWindow = gap >= _strideLo && gap <= _strideHi;
 
     if (inWindow || isKickoff) {
-      _stride(r);
-    } else {
-      _stumble(r);
+      r.rhythm = (r.rhythm + _rhythmGainPerStride).clamp(0.0, 1.0);
+      r.figure.setLoco(LocoState.run);
+    } else if (gap < _strideLo) {
+      // Over-mash: pressing faster than the stride cadence breaks the gait.
+      r.rhythm = math.max(0.0, r.rhythm - _overMashRhythmPenalty);
+    }
+    // (A tap slower than _strideHi just resets the beat; natural decay handles
+    // the lost rhythm.)
+  }
+
+  /// A vault attempt: launch a fixed-length airborne ARC ([_vaultAirSec]). A
+  /// hurdle is cleared only if the runner is still airborne WHEN ITS BODY REACHES
+  /// the hurdle (see [_resolveHurdleContact]) — so a vault must be TIMED to the
+  /// hurdle's approach, not just fired whenever it appears on screen:
+  ///  * Vault TOO EARLY (hurdle far away) → the arc ends before contact → land →
+  ///    TRIP. (A blind masher fires the instant the hurdle pops in, far out, and
+  ///    crashes back down well short of it.)
+  ///  * Vault on cue (hurdle close, inside the reach window) → still airborne at
+  ///    contact → CLEAR.
+  /// Re-launching while already airborne just refreshes the arc (a double-hop).
+  void _vault(_Runner r) {
+    final hadHurdle = _hurdleInWindow(r) != null;
+    r.airborne = true;
+    r.airTimer = _vaultAirSec;
+    r.figure.setLoco(LocoState.jump);
+    if (hadHurdle) {
+      _juice.hit(
+        _runnerRoot(r).translate(0, -_footReach * 1.1),
+        _colorOf(r.slot.id),
+        sparks: 6,
+      );
     }
   }
 
-  /// A clean in-window stride: grow rhythm, bank the base meter impulse plus a
-  /// dominant rhythm-scaled bonus, add the comeback assist, and run.
-  void _stride(_Runner r) {
-    r.rhythm = (r.rhythm + _rhythmGainInWindow).clamp(0.0, 1.0);
-    r.meter.tap(); // base no-decay fill, awarded only for on-beat taps
-    // In-window bonus dominates the base impulse so rhythm — not raw tap rate —
-    // covers ground. Scales with how locked-in the gait is (rhythm 0..1).
-    r.rhythmBonus += _strideBonusPerTap * (0.5 + 0.5 * r.rhythm);
-    // Comeback (rubber-band): a runner behind the leader earns a touch more
-    // ground per stride, scaled by the gap — keeps a behind kid in the race.
-    r.rhythmBonus += _catchUpBonus(r);
-    r.figure.setLoco(LocoState.run);
+  /// Index of the next un-passed hurdle inside the runner's jump window — the
+  /// band where a vault is OFFERED (the "JUMP!" telegraph shows). The window is
+  /// only the cue range; whether a vault actually CLEARS still depends on being
+  /// airborne at contact, so firing at the far edge (too early) still trips.
+  int? _hurdleInWindow(_Runner r) {
+    final idx = r.nextHurdle;
+    if (idx >= _hurdleMeters.length) return null;
+    final ahead = _hurdleMeters[idx] - r.meters;
+    final window = _jumpWindowAt(_hurdleMeters[idx]);
+    if (ahead <= window && ahead > 0) return idx;
+    return null;
   }
 
-  /// An off-beat stumble: lose the rhythm, give back a little ground (floored at
-  /// 0), and trip the gait for a beat. No meter impulse — spamming gains ~nothing.
-  void _stumble(_Runner r) {
-    r.rhythm = (r.rhythm - _rhythmPenaltyOutWindow).clamp(0.0, 1.0);
-    r.rhythmBonus = math.max(0.0, r.rhythmBonus - _stumbleSetback);
-    r.tripTimer = _stumbleTripSec;
-    r.figure.setLoco(LocoState.idle); // brief trip read
-    r.figure.hurt(); // a quick full-body trip so the off-beat misstep shows
+  /// The jump-window depth (meters of telegraph lead) for a hurdle at distance
+  /// [hurdleM] — NARROWS toward the finish so late hurdles give less lead time
+  /// and demand tighter timing (the calibrated ramp).
+  double _jumpWindowAt(double hurdleM) {
+    final t = (hurdleM / _raceMeters).clamp(0.0, 1.0);
+    return lerpD(_windowStartM, _windowEndM, t);
   }
 
-  /// Extra per-tap fill for a trailing runner, scaled 0..1 by how far behind the
-  /// current leader it sits (capped at [_catchUpGapFull]). Zero for the leader.
-  double _catchUpBonus(_Runner r) {
-    final gap = _leadProgress() - r.progress;
-    if (gap <= 0) return 0;
-    final t = (gap / _catchUpGapFull).clamp(0.0, 1.0);
-    return _catchUpMaxBonusPerTap * t;
+  /// True when a vault launched THIS instant would clear the next hurdle — i.e.
+  /// the hurdle is close enough that the runner is still inside the [_vaultAirSec]
+  /// arc when its body reaches it. This is the skilled read: vault now and sail
+  /// over. A vault launched outside this band (hurdle too far) lands short → trip.
+  /// Used by the hold-to-vault auto-trigger and the [shouldVaultNow] test seam.
+  bool _canClearVaultNow(_Runner r) {
+    if (r.airborne) return false;
+    final idx = _hurdleInWindow(r); // a vault only fires when one is in the window
+    if (idx == null) return false;
+    final ahead = _hurdleMeters[idx] - r.meters;
+    if (ahead <= 0) return false;
+    final speed = lerpD(_jogSpeed, _sprintSpeed, r.rhythm);
+    final arcReach = speed * _vaultAirSec; // ground covered while airborne
+    // Clears across most of the arc; a small inset off the far edge keeps the
+    // "lands exactly on the bar" knife-edge out of the safe read.
+    return ahead <= arcReach * 0.9;
   }
 
   void _tickRunners(double dt) {
     for (final r in _runners.values) {
       r.sinceTap += dt;
-      r.tripTimer = math.max(0, r.tripTimer - dt);
-      // Rhythm + energy bleed when not feeding taps.
+      r.tripStop = math.max(0, r.tripStop - dt);
+
+      // Auto-vault while holding: the held press leaps automatically at the
+      // right moment (when a vault now would clear), so HOLD is a valid, forgiving
+      // way to clear a hurdle — the second readable one-touch mapping.
+      if (r.holding && _canClearVaultNow(r)) {
+        _vault(r);
+      }
+
+      // Rhythm + energy bleed when not actively striding on-beat.
       r.rhythm = math.max(0, r.rhythm - _rhythmDecayPerSec * dt);
       r.energy = math.max(0, r.energy - _energyDecayPerSec * dt);
 
-      _advanceFigure(r, dt);
-      setScore(r.slot.id, r.progress);
+      // Move the body, THEN resolve any hurdle the body crossed this frame while
+      // [r.airborne] still reflects the in-air state for that crossing — and only
+      // THEN count the arc down. This keeps the airborne-at-contact test exact at
+      // frame boundaries (no landing one tick early and clipping a cleared hurdle).
+      _advance(r, dt);
+      _resolveHurdleContact(r);
 
-      if (!r.finished && r.progress >= 1.0) {
+      if (r.airborne) {
+        r.airTimer -= dt;
+        if (r.airTimer <= 0) {
+          r.airborne = false;
+          r.figure.setLoco(r.energy > 0.02 ? LocoState.run : LocoState.idle);
+        }
+      }
+
+      _advanceFigure(r, dt);
+      setScore(r.slot.id, r.meters);
+
+      if (!r.finished && r.meters >= _raceMeters) {
         _cross(r);
       }
     }
   }
 
+  /// Advance the runner down the track. Speed is set by gait RHYTHM (a jog floor
+  /// up to a full sprint), NOT the tap rate — so a metronomic runner outruns a
+  /// masher. A fresh trip dead-stops the runner ([_Runner.tripStop]); otherwise
+  /// it runs at its rhythm speed.
+  void _advance(_Runner r, double dt) {
+    if (r.finished || r.tripStop > 0) return;
+    final speed = lerpD(_jogSpeed, _sprintSpeed, r.rhythm);
+    r.meters = math.min(_raceMeters, r.meters + speed * dt);
+  }
+
+  /// Resolve the body passing a hurdle. Clearance is decided purely by whether
+  /// the runner is AIRBORNE at the instant its body reaches the hurdle: airborne
+  /// → vaulted clean; grounded → clipped it → TRIP. One-shot per hurdle (it is
+  /// consumed as the body passes), so one hurdle is one trip, never a grind.
+  void _resolveHurdleContact(_Runner r) {
+    final idx = r.nextHurdle;
+    if (idx >= _hurdleMeters.length) return;
+    final hurdleM = _hurdleMeters[idx];
+    if (r.meters < hurdleM) return; // not reached yet
+
+    r.nextHurdle++; // consume this hurdle
+    if (!r.airborne) _trip(r, hurdleM);
+  }
+
+  /// A TRIP: the runner clipped a hurdle (no vault in the window). Lose most of
+  /// the gait rhythm, dead-stop for a beat, and play a full-body stumble. Heavy
+  /// on purpose — a masher that trips every hurdle stalls; a reader trips ~never.
+  void _trip(_Runner r, double hurdleM) {
+    r.rhythm = math.min(r.rhythm, _tripRhythmKeep);
+    r.tripStop = _tripStopSec;
+    r.airborne = false;
+    r.airTimer = 0;
+    r.figure
+      ..setLoco(LocoState.idle)
+      ..hurt(); // a quick full-body trip so the clipped hurdle reads
+
+    final at = _runnerRoot(r).translate(0, -_footReach * 0.5);
+    _juice.particles.burst(
+      at: at,
+      count: 8,
+      color: SprintRenderer.hurdleHit,
+      speed: 200,
+      spread: math.pi * 1.6,
+      size: 5,
+      gravity: 600,
+      life: 0.4,
+    );
+    _juice.popup(at.translate(0, -_size.height * 0.02), 'TRIP!',
+        SprintRenderer.hurdleHit,
+        size: 26);
+    _juice.shake.light();
+  }
+
   /// Drive the figure with a stride speed scaled by mash energy: more energy →
-  /// faster leg cycle (we feed the animator a stretched dt). The stride phase
-  /// advances with the same scaled time so footstep dust pulses with the gait.
-  /// While [_Runner.tripTimer] is live (a fresh stumble) the runner reads idle —
-  /// a visible hitch — even if energy is high.
+  /// faster leg cycle. While dead-stopped from a trip the runner reads idle (a
+  /// visible hitch); while airborne the jump clip plays at real time.
   void _advanceFigure(_Runner r, double dt) {
-    if (r.finished || r.energy <= 0.02 || r.tripTimer > 0) {
-      r.figure.setLoco(LocoState.idle);
+    if (r.airborne) {
+      r.figure.update(dt);
+      r.stridePhase += dt;
+      return;
+    }
+    if (r.finished || r.energy <= 0.02 || r.tripStop > 0) {
       r.figure.update(dt);
       r.stridePhase += dt;
       return;
@@ -360,15 +588,14 @@ class TapSprint extends MiniGameBase {
   }
 
   /// Record a crossing: lock the runner, append to the finish order, fire a
-  /// per-runner confetti + place popup, and a celebratory shake on first place.
+  /// per-runner confetti + place popup, and a celebratory beat on first place.
   void _cross(_Runner r) {
     r.finished = true;
+    r.airborne = false;
     _finishOrder.add(r.slot.id);
     r.figure.setLoco(LocoState.idle);
 
     final place = _finishOrder.length;
-    // The tape winner throws an arms-up cheer so the finish lands on a reaction
-    // instead of an idle freeze; everyone else just decelerates into idle.
     if (place == 1) r.figure.victory();
     final at = _runnerRoot(r).translate(0, -_footReach * 1.1);
     _juice.popup(at, _ordinal(place), _colorOf(r.slot.id), size: 34);
@@ -377,10 +604,9 @@ class TapSprint extends MiniGameBase {
       _juice.confetti(_size, colors: [_colorOf(r.slot.id)]);
     }
     if (place == 1) {
-      // Signature climax for the winner. A tight finish already played the
-      // PHOTO FINISH slow-mo + banner as the tape neared, so keep that crossing
-      // punchy but don't double up; a runaway leader gets the full WINNER! beat
-      // (burst + heavy shake + slow-mo + zoom + flash + banner + haptic) here.
+      // A tight finish already played the PHOTO FINISH slow-mo as the tape
+      // neared, so keep that crossing punchy but don't double up; a runaway
+      // leader gets the full WINNER! beat here.
       if (_photoFinishFired) {
         _juice.shake.heavy();
         _juice.hitStop.trigger(Feel.hitStopHeavySec, scale: 0.12);
@@ -394,38 +620,60 @@ class TapSprint extends MiniGameBase {
     _juice.hit(_tapeHitPoint(r), _colorOf(r.slot.id), sparks: 10);
   }
 
-  /// Bots mash on a cadence clock with [BotProfile]-driven interval + jitter, so
-  /// they read as steady (hard) or sloppy (easy) without ever branching beyond
-  /// "is this slot a bot?". The guard caps catch-up taps for huge frame steps.
+  /// Bots stride on a cadence clock AND vault each hurdle as it enters their
+  /// window. Strong bots stride faster (higher rhythm) and vault crisply; weak
+  /// bots stride sloppier and, on an [errorRate] slip, fail to vault → trip. The
+  /// guard caps catch-up strides for huge frame steps.
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return; // hold bots at the blocks for a beat
     for (final r in _runners.values) {
       if (!r.slot.isBot || r.finished) continue;
+      _botMaybeVault(r);
       r.botClock += dt;
       var guard = 0;
       while (r.botClock >= r.nextTapAt && guard++ < 8) {
         r.botClock -= r.nextTapAt;
-        _tap(r.slot.id);
+        _stride(r); // bots stride on-cadence (clamped in-window → grows rhythm)
         r.nextTapAt = _nextBotInterval(r);
       }
     }
   }
 
-  /// A bot's next tap interval, CLAMPED inside the cadence window so a bot always
-  /// lands a clean stride (never stumbles itself inert). Tiers differ by interval
-  /// length within the window — faster (harder) bots take more strides per second
-  /// — not by missing the window. A small inset keeps jitter off the boundaries.
+  /// A bot vaults the next hurdle once its body closes to [_Runner.botVaultFrac]
+  /// of one vault arc-reach away. A SMALL fraction (strong bot) launches LATE/
+  /// close so the runner is still airborne at contact → CLEAR; a LARGE fraction
+  /// (weak bot, ≳1) launches EARLY so the arc ends before the hurdle → land short
+  /// → TRIP. On an [errorRate] slip the bot skips the vault entirely and clips the
+  /// hurdle — a careless miss, exactly like a human who didn't react in time.
+  void _botMaybeVault(_Runner r) {
+    if (r.airborne) return;
+    final idx = r.nextHurdle;
+    if (idx >= _hurdleMeters.length) return;
+    if (r.botVaultedFor == idx) return; // already attempted this hurdle
+    final hurdleM = _hurdleMeters[idx];
+    final ahead = hurdleM - r.meters;
+    if (ahead <= 0) return;
+    final speed = lerpD(_jogSpeed, _sprintSpeed, r.rhythm);
+    final arcReach = speed * _vaultAirSec; // ground covered while airborne
+    final commitAt = arcReach * r.botVaultFrac;
+    if (ahead > commitAt) return; // hurdle still too far to commit a vault
+    r.botVaultedFor = idx;
+    // Careless slip: skip the vault on this hurdle and eat the trip.
+    if (ctx.rng.chance(ctx.botProfile.errorRate)) return;
+    _vault(r);
+  }
+
+  /// A bot's next stride interval, CLAMPED inside the stride window so a bot
+  /// always banks a clean stride (never over-mashes itself slow). Tiers differ by
+  /// interval length within the window — faster (harder) bots stride more often,
+  /// holding higher rhythm — not by missing the window.
   double _nextBotInterval(_Runner r) {
     final raw = r.botInterval + ctx.rng.jitter(r.botJitter);
-    return raw.clamp(_cadenceLo + 0.005, _cadenceHi - 0.005);
+    return raw.clamp(_strideLo + 0.005, _strideHi - 0.005);
   }
 
   // ── Photo finish ─────────────────────────────────────────────────────────────
 
-  /// Arm a single slow-mo when the leader is about to break the tape, nobody has
-  /// crossed yet, AND the race is tight (runner-up within [_photoFinishGap]) — a
-  /// brief, dramatic photo-finish beat with a banner. A runaway leader skips this
-  /// so the climax lands as a clean WINNER! beat at the crossing instead.
   void _maybePhotoFinish() {
     if (_photoFinishFired || _finishOrder.isNotEmpty) return;
     final lead = _leadProgress();
@@ -441,22 +689,24 @@ class TapSprint extends MiniGameBase {
   double _leadProgress() {
     var best = 0.0;
     for (final r in _runners.values) {
-      if (r.progress > best) best = r.progress;
+      final p = r.meters / _raceMeters;
+      if (p > best) best = p;
     }
     return best;
   }
 
   /// Best progress among everyone except the single front-runner — used to judge
-  /// how tight the finish is (small gap to the leader → a photo finish).
+  /// how tight the finish is.
   double _runnerUpProgress() {
     var best = -1.0;
     var second = -1.0;
     for (final r in _runners.values) {
-      if (r.progress > best) {
+      final p = r.meters / _raceMeters;
+      if (p > best) {
         second = best;
-        best = r.progress;
-      } else if (r.progress > second) {
-        second = r.progress;
+        best = p;
+      } else if (p > second) {
+        second = p;
       }
     }
     return second < 0 ? 0.0 : second;
@@ -470,7 +720,7 @@ class TapSprint extends MiniGameBase {
 
     // Finishers (by crossing time) first, then the rest by distance covered.
     final unfinished = _runners.values.where((r) => !r.finished).toList()
-      ..sort((a, b) => b.progress.compareTo(a.progress));
+      ..sort((a, b) => b.meters.compareTo(a.meters));
     finishByOrder(<int>[
       ..._finishOrder,
       ...unfinished.map((r) => r.slot.id),
@@ -492,10 +742,13 @@ class TapSprint extends MiniGameBase {
         canvas, size, _startX, _finishX, _laneYs, _laneColors());
     SprintRenderer.drawStartLine(canvas, size, _startX);
 
+    _drawHurdles(canvas);
     _drawRunners(canvas);
 
-    // Finish furniture on top of the runners so the tape reads as "ahead".
+    // Finish furniture + the distance HUD on top so they read as "ahead".
     SprintRenderer.drawFinish(canvas, size, _finishX, _animClock);
+    SprintRenderer.drawDistanceHud(
+        canvas, size, _leaderMeters(), _raceMeters, _accent);
 
     _juice.render(canvas);
     canvas.restore();
@@ -509,6 +762,44 @@ class TapSprint extends MiniGameBase {
   int _laneCount() => math.max(1, _laneYs.length);
 
   List<Color> _laneColors() => [for (final id in _laneOrder) _colorOf(id)];
+
+  double _leaderMeters() {
+    var best = 0.0;
+    for (final r in _runners.values) {
+      if (r.meters > best) best = r.meters;
+    }
+    return best;
+  }
+
+  /// Draw the hurdles approaching in every lane. Each hurdle is telegraphed: as
+  /// it enters a runner's jump window it lights up (a "JUMP!" cue + arc) so a
+  /// reading player always gets the tell; a cleared/passed hurdle fades.
+  void _drawHurdles(Canvas canvas) {
+    for (var lane = 0; lane < _laneOrder.length; lane++) {
+      final r = _runners[_laneOrder[lane]];
+      if (r == null) continue;
+      final y = _laneYs[lane];
+      for (var idx = 0; idx < _hurdleMeters.length; idx++) {
+        final hurdleM = _hurdleMeters[idx];
+        final ahead = hurdleM - r.meters;
+        // Cull hurdles well behind or far ahead of this runner (keeps the lane
+        // legible — only the nearby gauntlet is drawn).
+        if (ahead < -2 || ahead > 26) continue;
+        final x = lerpDouble(_startX, _finishX, hurdleM / _raceMeters)!;
+        final passed = idx < r.nextHurdle;
+        final live =
+            !passed && idx == r.nextHurdle && _hurdleInWindow(r) != null;
+        SprintRenderer.drawHurdle(
+          canvas,
+          Offset(x, y),
+          _laneHeight(lane),
+          live: live,
+          passed: passed,
+          warnPulse: 0.5 + 0.5 * math.sin(_animClock * 12.0 + idx),
+        );
+      }
+    }
+  }
 
   void _drawRunners(Canvas canvas) {
     final leaderId = _currentLeaderId();
@@ -547,41 +838,43 @@ class TapSprint extends MiniGameBase {
 
   /// RENDER-only figure scale for the current field size: full at 1 lane,
   /// shrinking toward [_renderScaleFull] by 4 lanes so multi-lane sprinters stop
-  /// overlapping. Applied about the feet in the draw path only — it never moves a
-  /// lane, the foot line, progress, or the finish.
+  /// overlapping. Applied about the feet in the draw path only.
   double _renderScale() {
     final n = _laneCount();
     final t = n <= 1 ? 0.0 : ((n - 1) / 3.0).clamp(0.0, 1.0);
     return lerpDouble(_renderScaleSolo, _renderScaleFull, t)!;
   }
 
-  /// Draw a runner pitched forward by an amount that grows with mash energy
-  /// (premium body language). Finished runners stand upright (decelerating).
-  /// The lean rotates around the feet so the plant stays glued to the track; a
-  /// field-size render scale (about the same feet pivot) shrinks the painted
-  /// figure as lanes fill so neighbours never overlap.
+  /// Draw a runner pitched forward by mash energy (premium body language) and
+  /// lifted while airborne (the vault arc). The lean/scale pivot is the feet so
+  /// the plant stays glued to the track.
   void _drawLeaningRunner(
       Canvas canvas, _Runner r, Offset root, double speed01) {
     final pivot = Offset(root.dx, root.dy + _footReach);
     final scale = _renderScale();
-    final lean = r.finished ? 0.0 : _maxLeanRad * speed01; // forward = +rotation
+    final lean = r.finished ? 0.0 : _maxLeanRad * speed01;
+    // Vault hop: lift the figure on a smooth arc while airborne.
+    final hop = r.airborne
+        ? math.sin((1 - (r.airTimer / _vaultAirSec).clamp(0.0, 1.0)) * math.pi)
+        : 0.0;
+    final lift = hop * _footReach * 1.2;
     canvas.save();
     canvas.translate(pivot.dx, pivot.dy);
     if (lean != 0) canvas.rotate(lean);
     if (scale != 1.0) canvas.scale(scale);
     canvas.translate(-pivot.dx, -pivot.dy);
-    SprintRenderer.drawSprinter(canvas, r.figure, root);
+    SprintRenderer.drawSprinter(canvas, r.figure, root.translate(0, -lift));
     canvas.restore();
   }
 
   // ── Layout helpers ──────────────────────────────────────────────────────────
 
-  /// Stick root for a runner: x mapped from progress along the track, y lifted
+  /// Stick root for a runner: x mapped from distance along the track, y lifted
   /// by [_footReach] so the feet plant on the lane's foot line.
   Offset _runnerRoot(_Runner r) {
     final lane = _laneOrder.indexOf(r.slot.id);
     final y = (lane >= 0 ? _laneYs[lane] : _laneYs.first) - _footReach;
-    final x = lerpDouble(_startX, _finishX, r.progress)!;
+    final x = lerpDouble(_startX, _finishX, r.meters / _raceMeters)!;
     return Offset(x, y);
   }
 
@@ -604,8 +897,8 @@ class TapSprint extends MiniGameBase {
     var bestId = _laneOrder.isEmpty ? 0 : _laneOrder.first;
     var best = -1.0;
     for (final r in _runners.values) {
-      if (r.progress > best) {
-        best = r.progress;
+      if (r.meters > best) {
+        best = r.meters;
         bestId = r.slot.id;
       }
     }
@@ -634,40 +927,80 @@ class TapSprint extends MiniGameBase {
 
   static Color _brighten(Color c, double t) =>
       Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
+
+  // ── Test seams (read-only / deterministic input) ────────────────────────────
+
+  /// Meters [id]'s runner has covered (the scored quantity), or -1 if there is
+  /// no such runner. Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  double metersOf(int id) => _runners[id]?.meters ?? -1;
+
+  /// Gait rhythm 0..1 of [id]'s runner (drives run speed), or -1 if none.
+  /// Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  double rhythmOf(int id) => _runners[id]?.rhythm ?? -1;
+
+  /// Whether a hurdle is inside [id]'s jump window — the "JUMP!" telegraph is
+  /// showing (a hurdle is approaching and a vault is offered). The earliest tell.
+  /// Read-only; for deterministic gameplay tests + smart play.
+  @visibleForTesting
+  bool hasHurdleInWindow(int id) {
+    final r = _runners[id];
+    if (r == null) return false;
+    return _hurdleInWindow(r) != null;
+  }
+
+  /// Whether a vault launched THIS instant would CLEAR [id]'s next hurdle — the
+  /// precise skilled read (the hurdle is close enough that the runner is still
+  /// airborne when its body reaches it). A measured player vaults exactly here;
+  /// vaulting earlier (merely on the telegraph) lands short → trip. Read-only;
+  /// for deterministic gameplay tests + smart play.
+  @visibleForTesting
+  bool shouldVaultNow(int id) {
+    final r = _runners[id];
+    if (r == null) return false;
+    return _canClearVaultNow(r);
+  }
 }
 
 /// Per-player race state. Mutable round-scoped state (allowed for the duration
 /// of a single round).
 class _Runner {
   final PlayerSlot slot;
-  final TapMashMeter meter;
   final StickFigure figure;
   final double botInterval;
   final double botJitter;
+  final double botVaultFrac; // where in the window this bot commits its vault
 
   bool finished = false;
 
-  // Rhythm + energy bookkeeping.
-  double sinceTap = 1e9; // seconds since this runner's last tap
-  double rhythm = 0; // 0..1 stride-rhythm quality
-  double energy = 0; // 0..1 smoothed recent mash rate
-  double rhythmBonus = 0; // extra fill earned by a smooth gait (added to meter)
-  double stridePhase = 0; // gait phase (advanced with scaled dt) for dust sync
-  double tripTimer = 0; // seconds of stumble-trip remaining (gait reads idle)
+  // Distance + rhythm bookkeeping.
+  double meters = 0; // distance covered down the track — THIS is the score
+  double sinceTap = 1e9; // seconds since this runner's last stride tap
+  double rhythm = 0; // 0..1 gait rhythm; sets run speed
+  double energy = 0; // 0..1 smoothed recent tap rate (animation only)
+  double stridePhase = 0; // gait phase for dust sync
+
+  // Hurdle bookkeeping.
+  int nextHurdle = 0; // index of the next hurdle the body will reach
+  double tripStop = 0; // seconds of dead-stop remaining after a trip
+  bool airborne = false; // mid-vault arc
+  double airTimer = 0; // seconds of airborne arc remaining
+
+  // Hold-to-vault.
+  bool holding = false; // a press is held long enough to arm auto-vault
+  double holdSec = 0; // seconds the current press has been held
 
   // Bot cadence clock.
   double botClock = 0;
   double nextTapAt;
+  int botVaultedFor = -1; // hurdle index this bot has already attempted to vault
 
   _Runner({
     required this.slot,
-    required this.meter,
     required this.figure,
     required this.botInterval,
     required this.botJitter,
+    required this.botVaultFrac,
   }) : nextTapAt = botInterval;
-
-  /// Track position 0..1: the no-decay meter fill plus the rhythm bonus, capped.
-  double get progress =>
-      clampD(meter.progress + rhythmBonus, 0.0, 1.0);
 }
