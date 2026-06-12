@@ -116,6 +116,15 @@ class AppLocalizationsEs extends AppLocalizations {
   String get moreGames => 'MÁS JUEGOS';
 
   @override
+  String get noGamesToShow => 'No hay juegos para mostrar ahora.';
+
+  @override
+  String get fromTheStudio => 'DEL ESTUDIO';
+
+  @override
+  String get actionGet => 'OBTENER';
+
+  @override
   String gamesCount(int count) {
     return '$count JUEGOS';
   }
@@ -395,6 +404,33 @@ class AppLocalizationsEs extends AppLocalizations {
   String cupRoundOf(int current, int total) {
     return 'Ronda $current de $total';
   }
+
+  @override
+  String get resultsTitle => 'RESULTADOS';
+
+  @override
+  String get resultWinner => 'GANADOR';
+
+  @override
+  String get resultNext => 'SIGUIENTE';
+
+  @override
+  String get resultMenu => 'MENÚ';
+
+  @override
+  String get resultSuperlativeSoloRun => '¡EN SOLITARIO!';
+
+  @override
+  String get resultSuperlativeCleanSweep => '¡ARRASE TOTAL!';
+
+  @override
+  String get resultSuperlativePhotoFinish => '¡FINAL DE FOTO!';
+
+  @override
+  String get resultSuperlativeDominant => '¡DOMINANTE!';
+
+  @override
+  String get resultSuperlativeFlawless => '¡IMPECABLE!';
 
   @override
   String get statsCareer => 'CARRERA';

@@ -12,6 +12,8 @@ import 'package:flutter/material.dart';
 import '../../core/constants.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/registry.dart';
+import '../../l10n/app_localizations.dart';
+import '../screens/game_select_screen.dart';
 import 'game_glyphs.dart';
 import 'glass_tokens.dart';
 
@@ -31,12 +33,13 @@ class GamesShowcase extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final List<MiniGameMeta> metas = allMiniGameMetas();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        _Header(count: metas.length),
+        _Header(label: l10n.gamesCount(metas.length)),
         const SizedBox(height: GlassTokens.gapSmall),
         SizedBox(
           height: _kStripHeight,
@@ -51,6 +54,7 @@ class GamesShowcase extends StatelessWidget {
               final MiniGameMeta meta = metas[i];
               return _GameTile(
                 meta: meta,
+                name: localizedGameName(l10n, meta),
                 colorArgb: PlayerPalette.argb[i % PlayerPalette.argb.length],
                 onTap: () => onTapGame(meta.id),
               );
@@ -64,9 +68,9 @@ class GamesShowcase extends StatelessWidget {
 
 /// "15 GAMES" eyebrow with an accent bar and a small swipe hint.
 class _Header extends StatelessWidget {
-  const _Header({required this.count});
+  const _Header({required this.label});
 
-  final int count;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +85,7 @@ class _Header extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        Text('$count GAMES', style: GlassText.overline.copyWith(fontSize: 12)),
+        Text(label, style: GlassText.overline.copyWith(fontSize: 12)),
         const Spacer(),
         const Icon(Icons.swipe, size: 16, color: GlassColors.textMuted),
       ],
@@ -93,11 +97,15 @@ class _Header extends StatelessWidget {
 class _GameTile extends StatelessWidget {
   const _GameTile({
     required this.meta,
+    required this.name,
     required this.colorArgb,
     required this.onTap,
   });
 
   final MiniGameMeta meta;
+
+  /// Localized display name shown under the glyph.
+  final String name;
   final int colorArgb;
   final VoidCallback onTap;
 
@@ -113,10 +121,10 @@ class _GameTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             GameGlyph(
-                id: meta.id, label: meta.name, colorArgb: colorArgb, size: 52),
+                id: meta.id, label: name, colorArgb: colorArgb, size: 52),
             const SizedBox(height: 6),
             Text(
-              meta.name,
+              name,
               maxLines: 2,
               textAlign: TextAlign.center,
               overflow: TextOverflow.ellipsis,

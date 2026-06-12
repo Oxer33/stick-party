@@ -115,6 +115,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get moreGames => 'もっとゲーム';
 
   @override
+  String get noGamesToShow => '現在表示できるゲームはありません。';
+
+  @override
+  String get fromTheStudio => 'スタジオから';
+
+  @override
+  String get actionGet => '入手';
+
+  @override
   String gamesCount(int count) {
     return '$count ゲーム';
   }
@@ -393,6 +402,33 @@ class AppLocalizationsJa extends AppLocalizations {
   String cupRoundOf(int current, int total) {
     return 'ラウンド $current/$total';
   }
+
+  @override
+  String get resultsTitle => '結果';
+
+  @override
+  String get resultWinner => '勝者';
+
+  @override
+  String get resultNext => '次へ';
+
+  @override
+  String get resultMenu => 'メニュー';
+
+  @override
+  String get resultSuperlativeSoloRun => 'ソロラン！';
+
+  @override
+  String get resultSuperlativeCleanSweep => '完全制覇！';
+
+  @override
+  String get resultSuperlativePhotoFinish => '大接戦！';
+
+  @override
+  String get resultSuperlativeDominant => '圧勝！';
+
+  @override
+  String get resultSuperlativeFlawless => '完璧！';
 
   @override
   String get statsCareer => '通算成績';

@@ -115,6 +115,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get moreGames => '更多游戏';
 
   @override
+  String get noGamesToShow => '暂时没有可显示的游戏。';
+
+  @override
+  String get fromTheStudio => '工作室出品';
+
+  @override
+  String get actionGet => '获取';
+
+  @override
   String gamesCount(int count) {
     return '$count 个游戏';
   }
@@ -392,6 +401,33 @@ class AppLocalizationsZh extends AppLocalizations {
   String cupRoundOf(int current, int total) {
     return '第 $current/$total 轮';
   }
+
+  @override
+  String get resultsTitle => '结果';
+
+  @override
+  String get resultWinner => '获胜者';
+
+  @override
+  String get resultNext => '下一个';
+
+  @override
+  String get resultMenu => '菜单';
+
+  @override
+  String get resultSuperlativeSoloRun => '单人通关！';
+
+  @override
+  String get resultSuperlativeCleanSweep => '完胜！';
+
+  @override
+  String get resultSuperlativePhotoFinish => '险胜！';
+
+  @override
+  String get resultSuperlativeDominant => '碾压！';
+
+  @override
+  String get resultSuperlativeFlawless => '完美！';
 
   @override
   String get statsCareer => '生涯';

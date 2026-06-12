@@ -116,6 +116,15 @@ class AppLocalizationsKo extends AppLocalizations {
   String get moreGames => '게임 더 보기';
 
   @override
+  String get noGamesToShow => '지금 보여줄 게임이 없습니다.';
+
+  @override
+  String get fromTheStudio => '스튜디오 제공';
+
+  @override
+  String get actionGet => '받기';
+
+  @override
   String gamesCount(int count) {
     return '게임 $count개';
   }
@@ -394,6 +403,33 @@ class AppLocalizationsKo extends AppLocalizations {
   String cupRoundOf(int current, int total) {
     return '$total 라운드 중 $current';
   }
+
+  @override
+  String get resultsTitle => '결과';
+
+  @override
+  String get resultWinner => '승자';
+
+  @override
+  String get resultNext => '다음';
+
+  @override
+  String get resultMenu => '메뉴';
+
+  @override
+  String get resultSuperlativeSoloRun => '단독 질주!';
+
+  @override
+  String get resultSuperlativeCleanSweep => '완승!';
+
+  @override
+  String get resultSuperlativePhotoFinish => '사진 판정!';
+
+  @override
+  String get resultSuperlativeDominant => '압도적!';
+
+  @override
+  String get resultSuperlativeFlawless => '완벽!';
 
   @override
   String get statsCareer => '커리어';

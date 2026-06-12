@@ -25,6 +25,7 @@ import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../engine/player_manager.dart';
+import '../../l10n/app_localizations.dart';
 import '../router.dart';
 import '../widgets/glass_kit.dart';
 import '../widgets/glass_scaffold.dart';
@@ -38,6 +39,7 @@ class ResultScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final PlayerManager players = args.players;
     final List<int> ranking = args.result.ranking;
 
@@ -59,7 +61,7 @@ class ResultScreen extends ConsumerWidget {
     final _Finisher? winner = finishers.isEmpty ? null : finishers.first;
 
     return GlassScaffold(
-      title: 'RESULTS',
+      title: l10n.resultsTitle,
       showBack: false,
       scroll: false,
       body: Column(
@@ -69,7 +71,7 @@ class ResultScreen extends ConsumerWidget {
             _WinnerHeadline(
               winner: winner,
               coinsEarned: args.coinsEarned,
-              superlative: _superlative(finishers),
+              superlative: _superlative(l10n, finishers),
             ),
             const SizedBox(height: GlassTokens.gapSmall),
           ],
@@ -96,28 +98,30 @@ class ResultScreen extends ConsumerWidget {
 
   /// A cheap one-line superlative derived from the final scores. Returns null
   /// when nothing fun applies (keeps the headline uncluttered for plain rounds).
-  static String? _superlative(List<_Finisher> finishers) {
+  static String? _superlative(AppLocalizations l10n, List<_Finisher> finishers) {
     if (finishers.isEmpty) return null;
     final int top = finishers.first.score;
 
     if (finishers.length == 1) {
-      return top > 0 ? 'SOLO RUN!' : null;
+      return top > 0 ? l10n.resultSuperlativeSoloRun : null;
     }
 
     final int second = finishers[1].score;
 
     // Everyone but the winner scored nothing → a total wipeout.
     final bool sweep = finishers.skip(1).every((_Finisher f) => f.score <= 0);
-    if (top > 0 && sweep) return 'CLEAN SWEEP!';
+    if (top > 0 && sweep) return l10n.resultSuperlativeCleanSweep;
 
     // Winner scored, nobody else came within one point → photo finish.
-    if (top > 0 && (top - second).abs() <= 1) return 'PHOTO FINISH!';
+    if (top > 0 && (top - second).abs() <= 1) {
+      return l10n.resultSuperlativePhotoFinish;
+    }
 
     // Dominant margin (more than double the runner-up).
-    if (second > 0 && top >= second * 2) return 'DOMINANT!';
+    if (second > 0 && top >= second * 2) return l10n.resultSuperlativeDominant;
 
     // A shut-out where the winner alone scored.
-    if (top > 0 && second <= 0) return 'FLAWLESS!';
+    if (top > 0 && second <= 0) return l10n.resultSuperlativeFlawless;
 
     return null;
   }
@@ -159,6 +163,7 @@ class _WinnerHeadline extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Color color = winner.color;
     return PremiumPanel(
       accent: color,
@@ -172,7 +177,7 @@ class _WinnerHeadline extends StatelessWidget {
               const Icon(Icons.emoji_events, color: GlassColors.amber, size: 22),
               const SizedBox(width: 8),
               Text(
-                'WINNER',
+                l10n.resultWinner,
                 style: GlassText.overline.copyWith(letterSpacing: 4),
               ),
             ],
@@ -230,6 +235,7 @@ class _Actions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -237,7 +243,7 @@ class _Actions extends StatelessWidget {
           children: <Widget>[
             Expanded(
               child: GlassButton(
-                label: 'REMATCH',
+                label: l10n.cupRematch,
                 icon: Icons.refresh,
                 primary: true,
                 accent: GlassColors.magenta,
@@ -250,7 +256,7 @@ class _Actions extends StatelessWidget {
             const SizedBox(width: GlassTokens.gapSmall),
             Expanded(
               child: GlassButton(
-                label: 'NEXT',
+                label: l10n.resultNext,
                 icon: Icons.grid_view_rounded,
                 onTap: () => context.go(AppRoutes.select),
               ),
@@ -260,7 +266,7 @@ class _Actions extends StatelessWidget {
         const SizedBox(height: GlassTokens.gapSmall),
         TextButton(
           onPressed: () => context.go(AppRoutes.home),
-          child: const Text('MENU'),
+          child: Text(l10n.resultMenu),
         ),
       ],
     );

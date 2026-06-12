@@ -116,6 +116,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get moreGames => 'MORE GAMES';
 
   @override
+  String get noGamesToShow => 'No games to show right now.';
+
+  @override
+  String get fromTheStudio => 'FROM THE STUDIO';
+
+  @override
+  String get actionGet => 'GET';
+
+  @override
   String gamesCount(int count) {
     return '$count GAMES';
   }
@@ -394,6 +403,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String cupRoundOf(int current, int total) {
     return 'Round $current of $total';
   }
+
+  @override
+  String get resultsTitle => 'RESULTS';
+
+  @override
+  String get resultWinner => 'WINNER';
+
+  @override
+  String get resultNext => 'NEXT';
+
+  @override
+  String get resultMenu => 'MENU';
+
+  @override
+  String get resultSuperlativeSoloRun => 'SOLO RUN!';
+
+  @override
+  String get resultSuperlativeCleanSweep => 'CLEAN SWEEP!';
+
+  @override
+  String get resultSuperlativePhotoFinish => 'PHOTO FINISH!';
+
+  @override
+  String get resultSuperlativeDominant => 'DOMINANT!';
+
+  @override
+  String get resultSuperlativeFlawless => 'FLAWLESS!';
 
   @override
   String get statsCareer => 'CAREER';

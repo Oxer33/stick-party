@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../l10n/app_localizations.dart';
 import '../../services/analytics_service.dart';
 import '../../services/cross_promo_service.dart';
 import '../providers.dart';
@@ -20,17 +21,18 @@ class MoreGamesScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final CrossPromoService promo = ref.watch(crossPromoProvider);
     final List<HouseAd> ads = promo.catalog;
 
     return GlassScaffold(
-      title: 'MORE GAMES',
+      title: l10n.moreGames,
       scroll: false,
       padding: EdgeInsets.zero,
       body: ads.isEmpty
           ? Center(
               child: Text(
-                'No games to show right now.',
+                l10n.noGamesToShow,
                 style: GlassText.body,
               ),
             )
@@ -41,6 +43,8 @@ class MoreGamesScreen extends ConsumerWidget {
                 final HouseAd ad = ads[i];
                 return _HouseAdCard(
                   ad: ad,
+                  eyebrow: l10n.fromTheStudio,
+                  getLabel: l10n.actionGet,
                   onTap: () => _open(ref, ad),
                 )
                     .animate()
@@ -61,9 +65,20 @@ class MoreGamesScreen extends ConsumerWidget {
 }
 
 class _HouseAdCard extends StatelessWidget {
-  const _HouseAdCard({required this.ad, required this.onTap});
+  const _HouseAdCard({
+    required this.ad,
+    required this.eyebrow,
+    required this.getLabel,
+    required this.onTap,
+  });
 
   final HouseAd ad;
+
+  /// Localized "FROM THE STUDIO" eyebrow.
+  final String eyebrow;
+
+  /// Localized "GET" call-to-action label.
+  final String getLabel;
   final VoidCallback onTap;
 
   @override
@@ -75,10 +90,10 @@ class _HouseAdCard extends StatelessWidget {
         accent: color,
         onTap: onTap,
         leading: ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
-        eyebrow: 'FROM THE STUDIO',
+        eyebrow: eyebrow,
         title: ad.title,
         supporting: ad.blurb,
-        trailing: _GetPill(accent: color),
+        trailing: _GetPill(accent: color, label: getLabel),
       ),
     );
   }
@@ -86,9 +101,10 @@ class _HouseAdCard extends StatelessWidget {
 
 /// A solid accent "GET" call-to-action pill for a house-ad card.
 class _GetPill extends StatelessWidget {
-  const _GetPill({required this.accent});
+  const _GetPill({required this.accent, required this.label});
 
   final Color accent;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -105,9 +121,9 @@ class _GetPill extends StatelessWidget {
           ),
         ],
       ),
-      child: const Text(
-        'GET',
-        style: TextStyle(
+      child: Text(
+        label,
+        style: const TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.w900,
           letterSpacing: 1,

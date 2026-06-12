@@ -324,6 +324,24 @@ abstract class AppLocalizations {
   /// **'MORE GAMES'**
   String get moreGames;
 
+  /// Empty-state message on the More Games screen when the cross-promo catalog is empty.
+  ///
+  /// In en, this message translates to:
+  /// **'No games to show right now.'**
+  String get noGamesToShow;
+
+  /// Eyebrow label above each cross-promo game card on the More Games screen, attributing it to the studio. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'FROM THE STUDIO'**
+  String get fromTheStudio;
+
+  /// Call-to-action pill on a cross-promo game card that opens its store listing. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'GET'**
+  String get actionGet;
+
   /// Header over the horizontal games catalog strip, e.g. '15 GAMES'. Shown in all caps.
   ///
   /// In en, this message translates to:
@@ -809,6 +827,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Round {current} of {total}'**
   String cupRoundOf(int current, int total);
+
+  /// Title bar of the single-round result / podium screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'RESULTS'**
+  String get resultsTitle;
+
+  /// Eyebrow label above the winner's name on the round result headline. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'WINNER'**
+  String get resultWinner;
+
+  /// Secondary button on the round result screen that goes to the game picker. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'NEXT'**
+  String get resultNext;
+
+  /// Tertiary link on the round result screen that returns to the home menu. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'MENU'**
+  String get resultMenu;
+
+  /// Celebratory tag on the round result when only one player finished and scored. Shown in all caps; keep punchy.
+  ///
+  /// In en, this message translates to:
+  /// **'SOLO RUN!'**
+  String get resultSuperlativeSoloRun;
+
+  /// Celebratory tag on the round result when the winner scored and every rival scored nothing. Shown in all caps; keep punchy.
+  ///
+  /// In en, this message translates to:
+  /// **'CLEAN SWEEP!'**
+  String get resultSuperlativeCleanSweep;
+
+  /// Celebratory tag on the round result when the winner edged out the runner-up by a single point. Shown in all caps; keep punchy.
+  ///
+  /// In en, this message translates to:
+  /// **'PHOTO FINISH!'**
+  String get resultSuperlativePhotoFinish;
+
+  /// Celebratory tag on the round result when the winner scored at least double the runner-up. Shown in all caps; keep punchy.
+  ///
+  /// In en, this message translates to:
+  /// **'DOMINANT!'**
+  String get resultSuperlativeDominant;
+
+  /// Celebratory tag on the round result when the winner alone scored (a shut-out). Shown in all caps; keep punchy.
+  ///
+  /// In en, this message translates to:
+  /// **'FLAWLESS!'**
+  String get resultSuperlativeFlawless;
 
   /// Section header for lifetime career counters on the Stats screen. Shown in all caps.
   ///

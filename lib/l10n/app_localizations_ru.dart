@@ -117,6 +117,15 @@ class AppLocalizationsRu extends AppLocalizations {
   String get moreGames => 'ЕЩЁ ИГРЫ';
 
   @override
+  String get noGamesToShow => 'Сейчас нет игр для показа.';
+
+  @override
+  String get fromTheStudio => 'ОТ СТУДИИ';
+
+  @override
+  String get actionGet => 'ПОЛУЧИТЬ';
+
+  @override
   String gamesCount(int count) {
     return '$count ИГР';
   }
@@ -395,6 +404,33 @@ class AppLocalizationsRu extends AppLocalizations {
   String cupRoundOf(int current, int total) {
     return 'Раунд $current из $total';
   }
+
+  @override
+  String get resultsTitle => 'РЕЗУЛЬТАТЫ';
+
+  @override
+  String get resultWinner => 'ПОБЕДИТЕЛЬ';
+
+  @override
+  String get resultNext => 'ДАЛЕЕ';
+
+  @override
+  String get resultMenu => 'МЕНЮ';
+
+  @override
+  String get resultSuperlativeSoloRun => 'СОЛО-ЗАБЕГ!';
+
+  @override
+  String get resultSuperlativeCleanSweep => 'ПОЛНЫЙ РАЗГРОМ!';
+
+  @override
+  String get resultSuperlativePhotoFinish => 'ФОТОФИНИШ!';
+
+  @override
+  String get resultSuperlativeDominant => 'ДОМИНАЦИЯ!';
+
+  @override
+  String get resultSuperlativeFlawless => 'БЕЗУПРЕЧНО!';
 
   @override
   String get statsCareer => 'КАРЬЕРА';
