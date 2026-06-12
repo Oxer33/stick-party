@@ -1,151 +1,184 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../core/math2.dart';
 import '../../engine/bots.dart';
-import '../../engine/helpers/aim_sweep.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'archer_fx.dart';
 import 'archer_render.dart';
 
-/// Archer Pop — every player is a stickman archer on a screen edge with a bow
-/// that auto-sweeps an aiming arc. One tap LOOSES a gravity-arced arrow at the
-/// balloons drifting up the field. Most balloons popped at the 30 s limit wins.
+/// Target Range — precision archery. (Keeps the legacy `archer_pop` id; the old
+/// "auto-sweep + tap to fire" balloon spam is gone.)
 ///
-/// CONTROL (the heart of it — full agency, still one touch):
-///  * The bow AIM sweeps an arc continuously at a learnable speed; the draw fills
-///    toward the ends of the arc so the archer visibly nocks deeper.
-///  * Quick TAP → loose immediately at the angle (and draw) the bow is showing.
-///  * HOLD → the sweep slows to a crawl so you can settle the aim on a balloon;
-///    the arrow looses the moment you RELEASE. A tap is a snap shot, a hold is a
-///    led, careful shot — nothing is auto-aimed. (A one-frame down→up still
-///    looses, so tap-to-fire is intact.) Release punches a string-snap, riser
-///    kick, muzzle puff and a short hit-stop.
+/// OBJECTIVE (obvious from the scene + HUD): score the MOST points by hitting
+/// TARGET balloons before your LIMITED QUIVER ([_quiver] arrows) runs dry or the
+/// round ends. Ammo + score + a "HIT TARGETS / AVOID BOMBS" objective sit over
+/// every player so the goal is unmistakable. Every arrow must count.
 ///
-/// Depth:
-///  * **Wind**: a slowly-varying crosswind drifts every arrow in flight; a top
-///    banner + rushing streaks telegraph its heading + strength so a good archer
-///    leads the shot. Bots read the wind and lead for it too.
-///  * **Combo multiplier**: consecutive pops inside a window stack a multiplier
-///    (x2, x3 …) for fat scores + a floating combo badge; a miss-timed lull lets
-///    it lapse. A pop also feeds a hit-streak that grows the per-pop value.
-///  * **Varied targets**: balloons come small/medium/large (smaller = worth
-///    more), player-colored, bobbing and drifting; rare **golden** bonus
-///    balloons are worth a burst of points with a metallic shine + sparkle.
+/// CORE — one-touch, you AIM each shot (no auto-aim, no sweep):
+///  * **DRAG to aim, RELEASE to loose.** Press in your zone and drag BACK like a
+///    slingshot: the pull *direction* sets the launch angle (you loose opposite
+///    the pull) and the pull *length* sets the power. A live trajectory + power
+///    gauge preview the arc while you hold. Release looses a gravity-arced arrow.
+///  * **A bare tap looses NOTHING.** A press-release with (almost) no drag is
+///    below [_minPower] — the bow simply relaxes, no arrow spent. You cannot
+///    clear a target by incidentally tapping; you must deliberately draw + aim.
+///    And an arrow only scores by physically *colliding* with a target — nothing
+///    is snapped onto a balloon for you.
 ///
-/// FAIR BOTS: they loose when their swept aim lines up (accuracy-scaled cone)
-/// with the wind-lead-corrected bearing to a live balloon, on a [ReactionClock]
-/// cadence — but only after a warm-up grace, and with a [BotProfile] accuracy
-/// error plus a per-shot flinch so easy bots genuinely MISS often and are
-/// beatable. Always finishes on the time limit and never throws for 1..4
-/// players.
+/// INTERPOSING DIFFICULTY (genuinely resists a spammer):
+///  * **Targets MOVE** — every balloon drifts + bobs, and a crosswind pushes
+///    arrows in flight (a top banner telegraphs it) so you must lead the shot.
+///  * **BARRIERS** — some targets sit behind a solid wall; a flat shot is eaten
+///    by the wall, you must ARC the arrow up and over.
+///  * **BOMB decoys (black)** — hitting one SUBTRACTS points, so loosing in a
+///    random direction is punished, not free.
+///  * **GOLD targets** — worth a burst of points but small + short-lived, so the
+///    big score goes to whoever aims fast + precisely.
+///  * **Calibrated ramp** — targets get faster + smaller and bombs more common
+///    as the quiver drains, so the back half is a real test.
+///
+/// A blind spammer looses arrows in random directions: it burns the whole quiver
+/// fast, sails most shots wide, and splatters bombs for NEGATIVE points — it
+/// scores low/negative. A player who aims, prioritizes gold, avoids bombs and
+/// conserves ammo scores high. (Proven by a deterministic test.)
+///
+/// BOTS: aim by SOLVING a launch angle + power onto the best live target (gold
+/// first, never a bomb on purpose) then perturbing it by a [BotProfile] accuracy
+/// error — easy bots scatter wide, waste arrows and clip bombs; hard bots place
+/// arrows on gold. A real, beatable 1+CPU contest. Always finishes (ammo-out or
+/// the time limit) and never throws for 1..4 players.
 class ArcherPop extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
         id: 'archer_pop',
-        name: 'Archer Pop',
+        name: 'Target Range',
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.ffa, GameMode.duel1v1],
-        inputHint: 'TAP',
+        inputHint: 'DRAG',
       );
 
   // ── Round / scoring tuning (no magic numbers inline) ────────────────────────
-  static const double _timeLimit = 30;
-  static const int _baseHitPoints = 1; // points for a plain pop (×combo ×streak)
-  static const int _goldenPoints = 5; // points for a golden pop (×combo)
-  static const double _comboWindowSec = 1.6; // pops within this keep the combo
-  static const int _maxCombo = 6; // multiplier cap
-  static const int _streakForBonus = 3; // hits/streak step that adds +1 value
-  static const int _maxStreakBonus = 3; // cap on the streak value bonus
+  // Hard ceiling; the round usually ends when every quiver is empty (~25-40s of
+  // deliberate shooting), the timer only bites if players sit on their ammo.
+  static const double _timeLimit = 40;
+  static const int _quiver = 14; // arrows per player — the scarce resource
+  static const int _plainPoints = 2; // points for a plain target
+  static const int _goldPoints = 6; // points for the small/brief gold target
+  static const int _bombPenalty = 3; // points SUBTRACTED for hitting a bomb
+  static const double _comboWindowSec = 2.2; // hits within this keep the combo
+  static const int _maxCombo = 5; // multiplier cap
 
   // ── Ballistics tuning ───────────────────────────────────────────────────────
-  static const double _gravity = 240; // px/s^2 on arrows (a readable arc)
-  static const double _arrowSpeed = 760; // launch px/s
-  static const double _arrowLife = 3.2; // seconds before an arrow fizzles
+  static const double _gravity = 320; // px/s^2 on arrows (a readable arc)
+  static const double _speedMin = 360; // launch px/s at minimum usable power
+  static const double _speedMax = 980; // launch px/s at full draw
+  static const double _arrowLife = 3.6; // seconds before an arrow fizzles
   static const int _trailSamples = 10; // trail points kept per arrow
   static const double _outOfBoundsPad = 90;
-  static const double _stuckLifeSec = 0.5; // ground/edge stick fade
-  static const double _burstSec = 0.28; // balloon pop animation length
+  static const double _stuckLifeSec = 0.45; // ground/edge stick fade
+  static const double _burstSec = 0.28; // target pop animation length
 
-  // ── Bow geometry / sweep tuning (mirrors ArcherRenderer so sim agrees) ──────
+  // ── Aim / drag tuning ───────────────────────────────────────────────────────
   static const double _baseScaleRef = 520; // arena minSide → scale 1
   static const double _figureScale = 1.7; // readable archer bodies
   static const double _edgeInsetFactor = 0.10; // edge inset / min(arena side)
-  static const double _sweepHalfBand = 0.62; // half sweep arc (radians)
-  static const double _sweepSpeed = 1.55; // sweep angular speed (rad/s) — learnable
+  static const double _muzzleReach = 26; // bow-hand → arrow spawn (× scale)
   static const double _looseFadeSec = 0.18; // loose-flash decay
-  static const double _muzzleReach = 28; // bow-hand → arrow spawn (× scale)
+  // Drag distance (fraction of min arena side) that maps to FULL power; a longer
+  // pull past this is clamped. Short enough that a real draw is easy on a phone.
+  static const double _maxDragFrac = 0.28;
+  // The anti-incidental-clear gate: a release whose power is below this is NOT a
+  // shot — a bare tap / micro-drag relaxes the bow and spends no arrow.
+  static const double _minPower = 0.16;
 
-  // ── Balloon field tuning ────────────────────────────────────────────────────
-  static const double _spawnEvery = 0.62; // seconds between spawns
-  static const int _maxBalloons = 12;
-  static const int _initialBalloons = 5; // seeded so the field reads instantly
-  static const double _riseSpeedMin = 46; // px/s upward
-  static const double _riseSpeedMax = 84;
-  static const double _driftMax = 26; // px/s lateral wander
-  static const double _windShareOnBalloon = 0.25; // wind drift on balloons
-  static const double _bobRate = 2.2; // sway rad/s
-  static const double _bobSway = 10; // px lateral sway amplitude rate
-  static const double _radiusSmall = 16;
-  static const double _radiusLarge = 30;
-  static const double _radiusGolden = 34; // golden = the big, contested prize
-  static const double _goldenChance = 0.05; // RARE: golden is the scarce prize
-  static const double _goldenSuppressSec = 2.4; // no new gold this long post-pop
-  static const double _topMarginFrac = 0.10; // balloons gone above this (× h)
-  static const double _sparkleRate = 3.0; // golden glint spin rad/s
+  // ── Target field tuning ─────────────────────────────────────────────────────
+  static const double _spawnEvery = 0.85; // seconds between spawns
+  static const int _maxTargets = 7;
+  static const int _initialTargets = 4; // seeded so the field reads instantly
+  static const double _driftMin = 18; // px/s base lateral drift
+  static const double _driftMax = 42;
+  static const double _riseMin = 10; // gentle vertical wander
+  static const double _riseMax = 30;
+  static const double _windShareOnTarget = 0.18; // wind drift on targets
+  static const double _bobRate = 2.0; // sway rad/s
+  static const double _bobSway = 9; // px lateral sway amplitude rate
+  static const double _radiusPlainMin = 20;
+  static const double _radiusPlainMax = 30;
+  static const double _radiusGold = 15; // gold = small + hard
+  static const double _radiusBomb = 24;
+  static const double _goldLifeSec = 3.4; // gold self-pops (brief) if not hit
+  static const double _bombChanceBase = 0.16; // bomb share early
+  static const double _bombChanceMax = 0.34; // bomb share late (ramp)
+  static const double _goldChanceBase = 0.10; // gold share early
+  static const double _goldChanceMax = 0.18; // gold share late (ramp)
+  static const double _shieldChance = 0.32; // a (non-gold) target is shielded
+  static const double _fieldTopFrac = 0.20; // targets live below this (× h)
+  static const double _fieldBottomFrac = 0.66; // …and above this (× h)
+  static const double _sparkleRate = 3.0; // gold glint spin rad/s
+
+  // ── Barrier tuning ──────────────────────────────────────────────────────────
+  // A shielded target gets a solid wall on the field side facing the NEAREST
+  // archer, so a flat line is blocked and the shot must be arced over it.
+  static const double _barrierW = 84; // wall width (× scale)
+  static const double _barrierH = 16; // wall thickness (× scale)
+  static const double _barrierGap = 30; // wall sits this far toward the shooter
 
   // ── Wind tuning ─────────────────────────────────────────────────────────────
-  static const double _windMax = 70; // peak crosswind px/s
-  static const double _windChangeSec = 4.0; // seconds to ease to a new target
-  static const double _windEaseRate = 2.0; // ease multiplier toward target
+  static const double _windMax = 64; // peak crosswind px/s
+  static const double _windChangeSec = 4.0;
+  static const double _windEaseRate = 2.0;
   static const int _windStreakCount = 22;
 
-  // ── Steal bonus (contested pops) ─────────────────────────────────────────────
-  // Popping a balloon that a RIVAL archer's bow was aimed nearest at is a STEAL:
-  // it bumps the thief's combo + pays a bonus, so two players racing the same
-  // (scarce) golden is the core contest.
-  static const int _stealComboBump = 1; // combo steps granted on a steal
-  static const int _stealBonusPoints = 2; // flat bonus points on a steal
-  static const double _stealMaxBearingRad = 0.5; // rival "aiming at it" cone
+  // ── Difficulty ramp ───────────────────────────────────────────────────────-
+  // The round's challenge scales with how much of the (shared) quiver has been
+  // spent: targets speed up + shrink, bombs + gold grow more common. 0 → 1.
+  static const double _rampDriftMul = 0.7; // +70% drift at full ramp
+  static const double _rampShrink = 0.78; // ×radius at full ramp
+  static const double _rampSpawnMul = 0.7; // spawn interval × this at full ramp
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
-  static const double _botBaseTolerance = 0.12; // good-aim cone at full accuracy
-  static const double _botLeadSec = 0.32; // how far ahead bots lead a target
-  static const double _botWildChance = 0.35; // share of errorRate → wild loose
-  static const double _botGoldenBias = 2.2; // bots strongly favor golden lineups
-  static const double _botGoldenOnly = 0.6; // chance a bot ignores plain if gold
+  static const double _botAimErrorRad = 0.5; // steady angular error at acc 0
+  static const double _botFlinchRad = 0.22; // fresh per-shot angular flinch
+  static const double _botPowerError = 0.32; // power error at accuracy 0
+  static const double _botArcCandidates = 13; // arc-solve angle samples
+  static const int _botArcSteps = 36; // arc-solve sim steps
+  static const double _botArcDt = 0.05; // arc-solve sim step
+  static const double _botGoldBias = 0.55; // gold target distance discount
+  // A low-accuracy bot sometimes loses track and aims at NOTHING (a wild loose),
+  // and may even mistake a bomb for a target — both waste arrows like a human
+  // who shoots carelessly, keeping easy bots beatable.
+  static const double _botWildChance = 0.45; // share of errorRate → wild loose
+  static const double _botBombMistake = 0.6; // errorRate × this → may pick bomb
 
-  // ── Climax (frenzy) tuning ──────────────────────────────────────────────────
-  // The final ~30% of the round: balloons rush in faster, more of them are
-  // golden, and a FRENZY banner throbs — a clear ramp where a trailing player
-  // can still rack up a comeback off fat golden pops.
-  static const double _frenzyFrac = 0.7; // enters at this share of the limit
-  static const double _frenzySpawnMul = 0.5; // spawn interval × this in frenzy
-  static const int _frenzyMaxBalloons = 16; // higher field cap in frenzy
-  static const double _frenzyGoldenChance = 0.12; // golden share in frenzy
+  // ── Climax (final-quiver) tuning ─────────────────────────────────────────────
+  static const double _frenzyAmmoFrac = 0.7; // entered after this share spent
 
   // ── Visuals / ambient ───────────────────────────────────────────────────────
-  static const double _horizonFactor = 0.40; // horizon Y / arena height
+  static const double _horizonFactor = 0.40;
   static const int _cloudCount = 5;
   static const Color _muzzlePuff = Color(0xFFFFF0C4);
   static const Color _comboColor = Color(0xFFFFD24A);
-  static const Color _stealColor = Color(0xFFFFFFFF); // STEAL! popup text
+  static const Color _bombColor = Color(0xFFFF5A52);
 
   late Juice _juice;
   late Size _size;
   late double _scale;
   late double _horizonY;
   late Offset _sun;
+  late double _maxDragPx;
 
   final List<_Archer> _archers = <_Archer>[];
   final List<_Arrow> _arrows = <_Arrow>[];
-  final List<_Balloon> _balloons = <_Balloon>[];
+  final List<_Target> _targets = <_Target>[];
   final List<Offset> _clouds = <Offset>[];
   final List<Offset> _windAnchors = <Offset>[];
 
@@ -153,12 +186,7 @@ class ArcherPop extends MiniGameBase {
   double _animClock = 0; // real-time clock (never scaled) for ambient/flash
   double _spawnTimer = 0;
   bool _frenzyAnnounced = false;
-  bool _winnerCheered = false; // one-shot: the match winner cheers at the end
-
-  /// Seconds left during which NO new golden balloon may spawn. Set after any
-  /// golden pop so the next prize is briefly withheld — players must RACE for it
-  /// when it finally returns. Counts down on the sim clock.
-  double _goldenSuppress = 0;
+  bool _winnerCheered = false;
 
   // Wind: a single crosswind value eased toward a fresh random target.
   double _windX = 0;
@@ -172,16 +200,15 @@ class ArcherPop extends MiniGameBase {
     _size = ctx.arena;
     final minSide = math.min(_size.width, _size.height);
     _scale = (minSide / _baseScaleRef).clamp(0.7, 1.7);
+    _maxDragPx = minSide * _maxDragFrac;
     _horizonY = _size.height * _horizonFactor;
     _sun = Offset(_size.width * 0.74, _size.height * 0.16);
 
     _buildArchers();
     _seedAmbient();
     _retargetWind();
-    // Seed the field already spread vertically so every archer has nearby
-    // targets at once; later balloons rise in from the bottom edge.
-    for (var i = 0; i < _initialBalloons; i++) {
-      _spawnBalloon(seeded: true);
+    for (var i = 0; i < _initialTargets; i++) {
+      _spawnTarget(seeded: true);
     }
     begin();
   }
@@ -195,22 +222,16 @@ class ArcherPop extends MiniGameBase {
       final p = ctx.players[i];
       final side = _sideFor(i, count);
       final base = _basePos(side);
-      // Sweep band centered on the inward normal so the bow always aims into
-      // the field, regardless of which edge the archer sits on.
       final inward = -side.outward;
+      // Resting aim points into the field (used for the idle preview + as the
+      // start angle before the player draws).
       final center = math.atan2(inward.dy, inward.dx);
-      final bow = AimSweep(
-        minAngle: center - _sweepHalfBand,
-        maxAngle: center + _sweepHalfBand,
-        speed: _sweepSpeed,
-        angle: center + ctx.rng.jitter(_sweepHalfBand * 0.6),
-      );
       final facing = inward.dx >= 0 ? 1.0 : -1.0;
       final figure = StickFigure(
         proportions: proportions,
         style: _styleFor(Color(p.colorArgb)),
         facing: facing,
-        aimAngle: bow.angle,
+        aimAngle: center,
       )..setLoco(LocoState.idle);
       _archers.add(_Archer(
         playerId: p.id,
@@ -218,14 +239,14 @@ class ArcherPop extends MiniGameBase {
         base: base,
         side: side,
         facing: facing,
-        bow: bow,
+        restAngle: center,
         figure: figure,
+        ammo: _quiver,
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
     }
   }
 
-  /// Bright archer style: player-color fill, brightened outline, strong glow.
   StickStyle _styleFor(Color color) => StickStyle(
         fill: color,
         outline: _brighten(color, 0.5),
@@ -237,7 +258,6 @@ class ArcherPop extends MiniGameBase {
         smearAlpha: 0.22,
       );
 
-  /// Assign each seat to a screen edge: bottom, then top, then the sides.
   ArcherSide _sideFor(int index, int count) {
     switch (count) {
       case 1:
@@ -256,7 +276,6 @@ class ArcherPop extends MiniGameBase {
     }
   }
 
-  /// Stick-root anchor: inset from the assigned edge, centered along it.
   Offset _basePos(ArcherSide side) {
     final w = _size.width, h = _size.height;
     final inset = math.min(w, h) * _edgeInsetFactor + 30 * _scale;
@@ -283,26 +302,72 @@ class ArcherPop extends MiniGameBase {
     }
   }
 
-  // ── Input ───────────────────────────────────────────────────────────────────
+  // ── Input: DRAG to aim, RELEASE to loose ─────────────────────────────────────
 
   @override
   void onInput(PlayerInput input) {
-    if (status != MiniGameStatus.running || input.phase != InputPhase.down) {
-      return;
+    if (status != MiniGameStatus.running) return;
+    final archer = _archerOf(input.playerId);
+    if (archer == null) return;
+
+    switch (input.phase) {
+      case InputPhase.down:
+        // Begin a draw anchored at the touch point. The aim/power are derived
+        // from how far + which way the finger then drags from here.
+        archer.dragStart = _toArena(input.normPos);
+        archer.dragNow = archer.dragStart;
+        archer.drawing = true;
+      case InputPhase.holdTick:
+        // A move sample carries a position; a positionless per-frame tick
+        // (normPos == Offset.zero) just means the finger is still down.
+        if (archer.drawing && input.normPos != Offset.zero) {
+          archer.dragNow = _toArena(input.normPos);
+        }
+      case InputPhase.up:
+        if (!archer.drawing) return;
+        final shot = _resolveDraw(archer);
+        archer.drawing = false;
+        archer.dragStart = null;
+        archer.dragNow = null;
+        // THE GATE: only a deliberate draw (power ≥ _minPower) looses. A bare
+        // tap relaxes the bow and spends no arrow — you cannot clear a target by
+        // an incidental press.
+        if (shot != null) _loose(input.playerId, shot.angle, shot.power);
     }
-    _loose(input.playerId);
   }
 
-  /// Loose an arrow along the current sweep at the current draw. Shared by human
-  /// taps and bot decisions so the feel + ballistics stay identical.
-  void _loose(int id) {
+  /// Map a full-screen 0..1 touch into arena pixels.
+  Offset _toArena(Offset norm) =>
+      Offset(norm.dx * _size.width, norm.dy * _size.height);
+
+  /// Resolve the current draw to an aim (angle + power), or null when the pull
+  /// is below the usable threshold (a tap, not a shot). Slingshot feel: you
+  /// loose OPPOSITE the pull, and the pull length sets power.
+  _Shot? _resolveDraw(_Archer a) {
+    final start = a.dragStart, now = a.dragNow;
+    if (start == null || now == null) return null;
+    final pull = start - now; // launch is opposite the drag
+    final dist = pull.distance;
+    if (dist < 1e-3) return null;
+    final power = (dist / _maxDragPx).clamp(0.0, 1.0);
+    if (power < _minPower) return null; // ← anti-incidental-clear gate
+    return _Shot(math.atan2(pull.dy, pull.dx), power);
+  }
+
+  double _speedFor(double power) =>
+      lerpD(_speedMin, _speedMax, power.clamp(0.0, 1.0));
+
+  /// Loose an arrow at [angle] with [power]. Shared by human releases and bot
+  /// decisions so feel + ballistics stay identical. Consumes one arrow.
+  void _loose(int id, double angle, double power) {
     final archer = _archerOf(id);
-    if (archer == null) return;
-    final dir = archer.bow.direction;
+    if (archer == null || archer.ammo <= 0) return;
+    archer.ammo -= 1;
+    final dir = Offset(math.cos(angle), math.sin(angle));
+    archer.aimAngle = angle;
+    archer.aimPower = power.clamp(0.0, 1.0);
     final muzzle = _muzzleOf(archer);
-    // Draw scales launch speed slightly — a deeper nock flies a touch faster.
-    final draw = _drawOf(archer);
-    final speed = _arrowSpeed * (0.9 + 0.1 * draw);
+    final speed = _speedFor(power);
     _arrows.add(_Arrow(
       pos: muzzle,
       vel: dir * speed,
@@ -310,8 +375,7 @@ class ArcherPop extends MiniGameBase {
       color: archer.color,
     ));
     archer.loose = _looseFadeSec;
-    // Release punch: a small forward puff of dust + a short hit-stop kiss.
-    final baseAngle = math.atan2(dir.dy, dir.dx);
+    final baseAngle = angle;
     _juice.particles.burst(
       at: muzzle,
       count: 5,
@@ -340,31 +404,47 @@ class ArcherPop extends MiniGameBase {
 
     _stepWind(sdt);
     for (final a in _archers) {
-      a.bow.update(sdt);
-      a.figure.aimAngle = a.bow.angle;
+      // While drawing, the live aim/power follow the finger so the preview reads.
+      final shot = a.drawing ? _resolveDraw(a) : null;
+      if (shot != null) {
+        a.aimAngle = shot.angle;
+        a.aimPower = shot.power;
+      } else if (a.drawing) {
+        // Drawing but under threshold: show the rest aim at low power.
+        a.aimPower = 0;
+      }
+      a.figure.aimAngle = a.aimAngle;
       a.figure.update(dt);
       a.tickTimers(dt, _looseFadeSec);
     }
     _spawnTick(sdt);
-    _stepBalloons(sdt);
+    _stepTargets(sdt);
     _driveBots(dt);
     _stepArrows(sdt);
     _announceFrenzy();
     _checkEnd();
   }
 
-  /// True once the round has entered its climax (frenzy) window.
-  bool get _isFrenzy => _elapsed >= _timeLimit * _frenzyFrac;
+  /// 0 → 1 difficulty ramp from the share of the (combined) quiver spent.
+  double get _ramp {
+    final total = _archers.length * _quiver;
+    if (total <= 0) return 0;
+    var spent = 0;
+    for (final a in _archers) {
+      spent += _quiver - a.ammo;
+    }
+    return (spent / total).clamp(0.0, 1.0);
+  }
 
-  /// Announce the climax once (shake + center popup); the banner + faster rush
-  /// of mostly-golden balloons then carry the moment.
+  bool get _isFrenzy => _ramp >= _frenzyAmmoFrac;
+
   void _announceFrenzy() {
     if (_frenzyAnnounced || !_isFrenzy) return;
     _frenzyAnnounced = true;
     _juice.shake.medium();
-    _juice.popup(Offset(_size.width / 2, _size.height * 0.28), 'FRENZY!',
+    _juice.popup(Offset(_size.width / 2, _size.height * 0.28), 'LAST ARROWS!',
         _comboColor,
-        size: 38);
+        size: 34);
   }
 
   // ── Wind ──────────────────────────────────────────────────────────────────
@@ -372,7 +452,6 @@ class ArcherPop extends MiniGameBase {
   void _stepWind(double dt) {
     _windTimer -= dt;
     if (_windTimer <= 0) _retargetWind();
-    // Ease the live wind toward its target for smooth gusts.
     final rate = (dt / _windChangeSec).clamp(0.0, 1.0);
     _windX = lerpD(_windX, _windTarget, rate * _windEaseRate);
   }
@@ -382,131 +461,261 @@ class ArcherPop extends MiniGameBase {
     _windTimer = _windChangeSec * ctx.rng.range(0.8, 1.4);
   }
 
-  // ── Balloon spawning + motion ───────────────────────────────────────────────
+  // ── Target spawning + motion ─────────────────────────────────────────────────
 
   void _spawnTick(double dt) {
-    if (_goldenSuppress > 0) {
-      _goldenSuppress = math.max(0, _goldenSuppress - dt);
-    }
     _spawnTimer += dt;
-    // Frenzy: balloons rush in roughly twice as fast and the field holds more.
-    final every = _isFrenzy ? _spawnEvery * _frenzySpawnMul : _spawnEvery;
-    final cap = _isFrenzy ? _frenzyMaxBalloons : _maxBalloons;
-    if (_spawnTimer >= every && _balloons.length < cap) {
+    final every = lerpD(_spawnEvery, _spawnEvery * _rampSpawnMul, _ramp);
+    if (_spawnTimer >= every && _targets.length < _maxTargets) {
       _spawnTimer = 0;
-      _spawnBalloon();
+      _spawnTarget();
     }
   }
 
-  void _spawnBalloon({bool seeded = false}) {
+  void _spawnTarget({bool seeded = false}) {
     final w = _size.width, h = _size.height;
-    // Golden is the RARE prize: low base odds, a little richer in frenzy, and
-    // fully withheld for a beat right after one is popped so the next is raced.
-    final goldenChance = _isFrenzy ? _frenzyGoldenChance : _goldenChance;
-    final golden = _goldenSuppress <= 0 && ctx.rng.chance(goldenChance);
-    // Golden balloons are the BIG target (the prize + score driver); plain ones
-    // vary small→large, smaller worth more.
-    final radius =
-        golden ? _radiusGolden : ctx.rng.range(_radiusSmall, _radiusLarge);
-    // New balloons rise from just below the field; the initial seed is spread
-    // up through the play area so the field reads full from the first frame.
-    final x = ctx.rng.range(w * 0.1, w * 0.9);
-    final y = seeded
-        ? ctx.rng.range(_horizonY + radius * 2, h * 0.92)
-        : h + radius * 1.5;
-    final rise = ctx.rng.range(_riseSpeedMin, _riseSpeedMax);
-    final drift = ctx.rng.range(-_driftMax, _driftMax);
-    // Plain balloons take a random player accent; golden ones are gold-tinted.
+    final ramp = _ramp;
+    // Bomb + gold shares grow with the ramp. Roll bomb first, then gold.
+    final bombChance = lerpD(_bombChanceBase, _bombChanceMax, ramp);
+    final goldChance = lerpD(_goldChanceBase, _goldChanceMax, ramp);
+    _TargetKind kind;
+    if (ctx.rng.chance(bombChance)) {
+      kind = _TargetKind.bomb;
+    } else if (ctx.rng.chance(goldChance)) {
+      kind = _TargetKind.gold;
+    } else {
+      kind = _TargetKind.plain;
+    }
+    final shrink = lerpD(1.0, _rampShrink, ramp);
+    final radius = switch (kind) {
+      _TargetKind.gold => _radiusGold * shrink,
+      _TargetKind.bomb => _radiusBomb,
+      _TargetKind.plain =>
+        ctx.rng.range(_radiusPlainMin, _radiusPlainMax) * shrink,
+    };
+    // Targets live in a horizontal band across the upper-middle of the field.
+    final x = ctx.rng.range(w * 0.12, w * 0.88);
+    final y = ctx.rng.range(h * _fieldTopFrac, h * _fieldBottomFrac);
+    final driftMag = lerpD(_driftMin, _driftMax, ramp) *
+        lerpD(1.0, 1 + _rampDriftMul, ramp);
+    final drift = driftMag * ctx.rng.sign();
+    final rise = ctx.rng.range(_riseMin, _riseMax) * ctx.rng.sign();
+    // Only plain targets can be shielded by a barrier (gold stays a pure speed
+    // test; a bomb behind a wall would be unfair to avoid).
+    final shielded =
+        kind == _TargetKind.plain && ctx.rng.chance(_shieldChance);
     final palette = ctx.players[ctx.rng.intRange(0, ctx.players.length)];
-    _balloons.add(_Balloon(
+    final color = switch (kind) {
+      _TargetKind.gold => _comboColor,
+      _TargetKind.bomb => _bombColor,
+      _TargetKind.plain => Color(palette.colorArgb),
+    };
+    _targets.add(_Target(
       pos: Offset(x, y),
-      vel: Offset(drift, -rise),
+      vel: Offset(drift, rise),
       radius: radius,
-      color: Color(palette.colorArgb),
-      golden: golden,
+      color: color,
+      kind: kind,
+      shielded: shielded,
       bob: ctx.rng.range(0, kTau),
+      ttl: kind == _TargetKind.gold ? _goldLifeSec : double.infinity,
     ));
   }
 
-  void _stepBalloons(double dt) {
-    final topGone = -_size.height * _topMarginFrac;
-    final survivors = <_Balloon>[];
-    for (final b in _balloons) {
-      // Resolve a finishing pop animation, then drop it.
-      if (b.popT > 0) {
-        b.popT -= dt / _burstSec;
-        if (b.popT > 0) survivors.add(b);
+  void _stepTargets(double dt) {
+    final survivors = <_Target>[];
+    for (final t in _targets) {
+      if (t.popT > 0) {
+        t.popT -= dt / _burstSec;
+        if (t.popT > 0) survivors.add(t);
         continue;
       }
-      b.bob += dt * _bobRate;
-      // Lateral wander from its own drift plus a share of the wind.
-      final sway = math.sin(b.bob) * _bobSway * dt;
-      final dx = b.vel.dx + _windX * _windShareOnBalloon;
-      b.pos = b.pos + Offset(dx, b.vel.dy) * dt + Offset(sway, 0);
-      b.sparkle += dt * _sparkleRate;
-      final offTop = b.pos.dy < topGone;
-      final offSide =
-          b.pos.dx < -b.radius * 2 || b.pos.dx > _size.width + b.radius * 2;
-      if (offTop || offSide) continue; // floated away (no score)
-      survivors.add(b);
+      // Gold is brief: it self-pops (floats away) when its time is up.
+      if (t.ttl.isFinite) {
+        t.ttl -= dt;
+        if (t.ttl <= 0) continue;
+      }
+      t.bob += dt * _bobRate;
+      final sway = math.sin(t.bob) * _bobSway * dt;
+      final dx = t.vel.dx + _windX * _windShareOnTarget;
+      var np = t.pos + Offset(dx, t.vel.dy) * dt + Offset(sway, 0);
+      // Bounce gently off the field band edges so targets stay on screen.
+      final loX = t.radius * 1.5, hiX = _size.width - t.radius * 1.5;
+      final loY = _size.height * _fieldTopFrac * 0.6;
+      final hiY = _size.height * (_fieldBottomFrac + 0.06);
+      var vx = t.vel.dx, vy = t.vel.dy;
+      if (np.dx < loX) {
+        np = Offset(loX, np.dy);
+        vx = vx.abs();
+      } else if (np.dx > hiX) {
+        np = Offset(hiX, np.dy);
+        vx = -vx.abs();
+      }
+      if (np.dy < loY) {
+        np = Offset(np.dx, loY);
+        vy = vy.abs();
+      } else if (np.dy > hiY) {
+        np = Offset(np.dx, hiY);
+        vy = -vy.abs();
+      }
+      t.pos = np;
+      t.vel = Offset(vx, vy);
+      t.sparkle += dt * _sparkleRate;
+      t.barrier = t.shielded ? _barrierFor(t) : null;
+      survivors.add(t);
     }
-    _balloons
+    _targets
       ..clear()
       ..addAll(survivors);
   }
 
-  // ── Bots: line up the lead-corrected bearing, then loose on cadence ─────────
+  /// The wall for a shielded target: a slab placed [_barrierGap] toward the
+  /// NEAREST archer, so a flat shot from that archer is blocked and must arc.
+  Rect _barrierFor(_Target t) {
+    final near = _nearestArcherTo(t.pos);
+    final toShooter =
+        near == null ? const Offset(0, 1) : (_muzzleOf(near) - t.pos);
+    final d = toShooter.distance < 1e-3
+        ? const Offset(0, 1)
+        : toShooter / toShooter.distance;
+    final center = t.pos + d * (t.radius + _barrierGap * _scale);
+    final w = _barrierW * _scale, h = _barrierH * _scale;
+    // Orient the slab broadside to the incoming line: wide across the shot.
+    final horizontal = d.dy.abs() >= d.dx.abs();
+    final rw = horizontal ? w : h;
+    final rh = horizontal ? h : w;
+    return Rect.fromCenter(center: center, width: rw, height: rh);
+  }
+
+  _Archer? _nearestArcherTo(Offset p) {
+    _Archer? best;
+    var bestD = double.infinity;
+    for (final a in _archers) {
+      final d = (a.base - p).distanceSquared;
+      if (d < bestD) {
+        bestD = d;
+        best = a;
+      }
+    }
+    return best;
+  }
+
+  // ── Bots: SOLVE an arc onto the best target, perturb by accuracy, loose ──────
 
   void _driveBots(double dt) {
     for (final a in _archers) {
       final clock = a.clock;
       if (clock == null) continue;
+      if (a.ammo <= 0) continue;
       if (!clock.tick(dt)) continue;
-      if (_botShouldLoose(a)) _loose(a.playerId);
+      _botShoot(a);
       clock.arm(ctx.botProfile, ctx.rng);
     }
   }
 
-  /// A bot looses when its live sweep angle is within an accuracy-scaled cone of
-  /// the wind-lead-corrected bearing to a live balloon. To CONTEST the scarce
-  /// gold, golden balloons get a much wider, more attractive cone AND, while a
-  /// golden is on the field but not yet lined up, the bot often HOLDS its shot
-  /// on plain balloons — spending its tempo racing for the prize. Low-accuracy
-  /// bots still take occasional wild shots so they are never idle.
-  bool _botShouldLoose(_Archer archer) {
+  /// A bot picks the best live target (gold weighted closer; bombs avoided, but
+  /// a careless/low-accuracy bot may MISTAKE one), solves a launch angle + power
+  /// that would hit it, then perturbs BOTH by an accuracy-scaled error so weak
+  /// bots scatter wide + clip bombs + waste arrows, and strong bots land gold.
+  void _botShoot(_Archer a) {
     final accuracy = ctx.botProfile.accuracy.clamp(0.2, 1.0);
-    final baseTol = _botBaseTolerance / accuracy;
-    final origin = _muzzleOf(archer);
-
-    var goldenOnField = false;
-    var plainLinedUp = false;
-    for (final b in _balloons) {
-      if (b.popT > 0) continue;
-      if (b.golden) goldenOnField = true;
-      // Lead: aim where the balloon (and wind-borne arrow) will be shortly.
-      final lead =
-          b.pos + (b.vel + Offset(_windX * _windShareOnBalloon, 0)) * _botLeadSec;
-      final to = lead - origin;
-      final wanted = math.atan2(to.dy, to.dx);
-      final tol = b.golden ? baseTol * _botGoldenBias : baseTol;
-      // Accuracy error nudges the wanted angle so good lineups still sometimes
-      // miss at lower difficulties.
-      final err = ctx.rng.jitter((1 - accuracy) * _sweepHalfBand * 0.5);
-      final lined = wrapAngle(archer.bow.angle - (wanted + err)).abs() <= tol;
-      if (!lined) continue;
-      // A lined-up golden is taken immediately (the prize). A lined-up plain is
-      // remembered but may be passed up to keep contesting the gold.
-      if (b.golden) return true;
-      plainLinedUp = true;
+    final miss = 1 - accuracy;
+    final target = _botPickTarget(a);
+    if (target == null) {
+      // Nothing worth shooting: a wild loose, so a bot is never idle on ammo.
+      if (ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance)) {
+        _loose(a.playerId, a.restAngle + ctx.rng.jitter(_botAimErrorRad),
+            ctx.rng.range(_minPower, 1.0));
+      }
+      return;
     }
-
-    if (plainLinedUp) {
-      // Hold a plain shot (race for the gold) only while a golden is up and the
-      // bot rolls into its golden-focus; otherwise take the plain pop.
-      final holdForGold = goldenOnField && ctx.rng.chance(_botGoldenOnly);
-      if (!holdForGold) return true;
+    final solved = _solveArc(a, target);
+    if (solved == null) {
+      if (ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance)) {
+        _loose(a.playerId, a.restAngle + ctx.rng.jitter(_botAimErrorRad),
+            ctx.rng.range(_minPower, 1.0));
+      }
+      return;
     }
-    return ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance);
+    final angErr =
+        ctx.rng.jitter(miss * _botAimErrorRad) + ctx.rng.jitter(miss * _botFlinchRad);
+    final powErr = ctx.rng.jitter(miss * _botPowerError);
+    final power = (solved.power + powErr).clamp(_minPower, 1.0);
+    _loose(a.playerId, solved.angle + angErr, power);
+  }
+
+  /// Choose a bot's intended target. Prefers gold (distance discounted), never
+  /// *intends* a bomb — but a low-accuracy careless bot rolls a chance to grab
+  /// the nearest thing regardless, which can be a bomb (a self-inflicted miss).
+  _Target? _botPickTarget(_Archer a) {
+    final origin = _muzzleOf(a);
+    final careless =
+        ctx.rng.chance(ctx.botProfile.errorRate * _botBombMistake);
+    _Target? best;
+    var bestCost = double.infinity;
+    for (final t in _targets) {
+      if (t.popT > 0) continue;
+      if (t.kind == _TargetKind.bomb && !careless) continue;
+      var cost = (t.pos - origin).distance;
+      if (t.kind == _TargetKind.gold) cost *= _botGoldBias; // chase the prize
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  /// Solve a launch (angle, power) whose gravity+wind arc lands closest to
+  /// [target] from [a]'s muzzle. Samples a fan of angles × a few powers and
+  /// simulates each lightly. Returns null if nothing comes close (e.g. a wall
+  /// fully blocks every line at this range).
+  _Shot? _solveArc(_Archer a, _Target target) {
+    final origin = _muzzleOf(a);
+    final inward = -a.side.outward;
+    final center = math.atan2(inward.dy, inward.dx);
+    _Shot? best;
+    var bestMiss = double.infinity;
+    final n = _botArcCandidates.toInt();
+    for (var i = 0; i < n; i++) {
+      final ang = center + lerpD(-1.1, 1.1, i / (n - 1));
+      for (final power in const [0.45, 0.65, 0.85, 1.0]) {
+        final miss = _simMiss(origin, ang, power, target);
+        if (miss < bestMiss) {
+          bestMiss = miss;
+          best = _Shot(ang, power);
+        }
+      }
+    }
+    // Reachable only if some arc gets within a forgiving margin of the target.
+    return bestMiss <= target.radius * 3 ? best : null;
+  }
+
+  /// Lightly simulate an arc and return the closest approach distance to
+  /// [target] (a big penalty if a barrier eats the arrow first). The target is
+  /// LED along its own drift over the flight so a moving balloon is actually
+  /// solved for — the difference between a thoughtful shot and a hopeful one.
+  double _simMiss(Offset origin, double angle, double power, _Target target) {
+    final dir = Offset(math.cos(angle), math.sin(angle));
+    var pos = origin;
+    var vel = dir * _speedFor(power);
+    // Track where the target will be, drifting as it does in _stepTargets.
+    var tpos = target.pos;
+    final tvel = target.vel + Offset(_windX * _windShareOnTarget, 0);
+    final wall =
+        target.shielded ? target.barrier ?? _barrierFor(target) : null;
+    var closest = double.infinity;
+    for (var s = 0; s < _botArcSteps; s++) {
+      vel = vel + Offset(_windX * _botArcDt, _gravity * _botArcDt);
+      pos = pos + vel * _botArcDt;
+      tpos = tpos + tvel * _botArcDt;
+      // A wall between shooter and target eats a flat shot (forces an arc).
+      if (wall != null && wall.contains(pos)) return 1e6;
+      final d = (pos - tpos).distance;
+      if (d < closest) closest = d;
+      if (_outOfBounds(pos)) break;
+    }
+    return closest;
   }
 
   // ── Arrows ──────────────────────────────────────────────────────────────────
@@ -519,22 +728,24 @@ class ArcherPop extends MiniGameBase {
         if (s.stuck > 0) survivors.add(s);
         continue;
       }
-      // Gravity pulls down; wind drifts horizontally — the core skill.
       final vel = s.vel + Offset(_windX * dt, _gravity * dt);
       final pos = s.pos + vel * dt;
       final life = s.life - dt;
 
-      final hit = _popTarget(pos);
+      // A barrier stops the arrow dead (no pop) — the core "arc over me" wall.
+      if (_hitsBarrier(s.pos, pos)) {
+        s.stuckAt(pos, vel);
+        survivors.add(s);
+        continue;
+      }
+
+      final hit = _hitTarget(s.pos, pos);
       if (hit != null) {
-        _registerPop(s.ownerId, hit);
-        continue; // arrow consumed by the pop
+        _registerHit(s.ownerId, hit);
+        continue; // arrow consumed
       }
       if (life <= 0 || _outOfBounds(pos)) {
-        // Charm: an arrow that lived its full flight without popping anything is
-        // a wasted shot — the archer throws a light [hurt] shrug ("missed!").
-        // Only on the timeout fizzle, not a mid-flight off-screen sail.
         if (life <= 0) _shrugMiss(s.ownerId);
-        // On-field arrows linger a moment (stuck fade); off-screen ones vanish.
         if (!_outOfBounds(pos)) {
           s.stuckAt(pos, vel);
           survivors.add(s);
@@ -549,30 +760,58 @@ class ArcherPop extends MiniGameBase {
       ..addAll(survivors);
   }
 
-  _Balloon? _popTarget(Offset pos) {
-    for (final b in _balloons) {
-      if (b.popT > 0) continue;
-      if ((b.pos - pos).distance <= b.radius) return b;
+  /// True when the arrow's step segment crosses a shielded target's wall.
+  bool _hitsBarrier(Offset from, Offset to) {
+    for (final t in _targets) {
+      if (!t.shielded || t.popT > 0) continue;
+      final wall = t.barrier;
+      if (wall != null && _segHitsRect(from, to, wall)) return true;
+    }
+    return false;
+  }
+
+  /// First live target the arrow's step segment intersects (segment vs circle),
+  /// so a fast arrow cannot tunnel through a small target between frames.
+  _Target? _hitTarget(Offset from, Offset to) {
+    for (final t in _targets) {
+      if (t.popT > 0) continue;
+      if (_segHitsCircle(from, to, t.pos, t.radius)) return t;
     }
     return null;
   }
 
-  /// Award points for a pop with combo multiplier + streak bonus (+ a STEAL
-  /// bonus when the balloon was contested), fire the burst + popups, suppress the
-  /// next golden when this one was golden, and start the balloon's burst.
-  void _registerPop(int shooterId, _Balloon target) {
+  /// Award (or subtract) for a hit: plain/gold add ×combo; a BOMB subtracts a
+  /// flat penalty and breaks the combo. Fires the burst + popup + charm.
+  void _registerHit(int shooterId, _Target target) {
     final archer = _archerOf(shooterId);
     if (archer == null) return;
+    target.popT = 1.0;
 
-    // STEAL: did a RIVAL have their bow lined up nearest on this balloon? If so
-    // the shooter snatched it — bump the combo before scoring so the steal pays.
-    final stole = _isStealFrom(shooterId, target);
-    if (stole) {
-      archer.combo = (archer.combo + _stealComboBump).clamp(1, _maxCombo);
-      archer.comboTimer = _comboWindowSec;
+    if (target.kind == _TargetKind.bomb) {
+      // A bomb is a self-inflicted blow: subtract, reset combo, shrug + a red
+      // pop so loosing carelessly visibly hurts.
+      addScore(shooterId, -_bombPenalty);
+      archer.combo = 0;
+      archer.comboTimer = 0;
+      archer.streak = 0;
+      _juice.particles.burst(
+        at: target.pos,
+        count: 16,
+        color: _bombColor,
+        speed: 300,
+        size: 6,
+        gravity: 420,
+        life: 0.5,
+      );
+      _juice.shake.medium();
+      _juice.popup(target.pos.translate(0, -target.radius), '-$_bombPenalty',
+          _bombColor,
+          size: 26);
+      if (!archer.figure.actionPlaying) archer.figure.hurt();
+      return;
     }
 
-    // Combo: pops inside the window stack the multiplier; else it resets to 1.
+    // Combo: hits inside the window stack the multiplier; else reset to 1.
     if (archer.comboTimer > 0) {
       archer.combo = (archer.combo + 1).clamp(1, _maxCombo);
     } else {
@@ -581,79 +820,36 @@ class ArcherPop extends MiniGameBase {
     archer.comboTimer = _comboWindowSec;
     archer.streak += 1;
 
-    // Streak bonus grows the per-pop value every few consecutive hits; a steal
-    // adds a flat bonus on top (paid through the combo multiplier).
-    final streakBonus =
-        (archer.streak ~/ _streakForBonus).clamp(0, _maxStreakBonus);
-    final unit = target.golden ? _goldenPoints : _baseHitPoints + streakBonus;
-    final gained = unit * archer.combo + (stole ? _stealBonusPoints : 0);
+    final gold = target.kind == _TargetKind.gold;
+    final unit = gold ? _goldPoints : _plainPoints;
+    final gained = unit * archer.combo;
     addScore(shooterId, gained);
 
-    // Golden is the scarce prize: popping one withholds the next golden briefly
-    // so the table RACES for its return.
-    if (target.golden) _goldenSuppress = _goldenSuppressSec;
+    if (archer.combo >= 3 || gold) archer.figure.special();
 
-    // Charm: a hot pop reacts — a STEAL off a rival or a combo of 3+ throws a
-    // fist-pump (upper-body, so it never disturbs the bow sweep). Fires per pop.
-    if (stole || archer.combo >= 3) archer.figure.special();
-
-    // Juice: a colored burst (golden gets a hotter, bigger one) + popups.
-    final popColor = target.golden ? _comboColor : archer.color;
+    final popColor = gold ? _comboColor : archer.color;
     _juice.particles.burst(
       at: target.pos,
-      count: target.golden ? 20 : 12,
+      count: gold ? 20 : 12,
       color: popColor,
-      speed: target.golden ? 320 : 240,
-      size: target.golden ? 7 : 5,
+      speed: gold ? 320 : 240,
+      size: gold ? 7 : 5,
       gravity: 420,
-      life: target.golden ? 0.6 : 0.45,
+      life: gold ? 0.6 : 0.45,
     );
-    if (target.golden) {
-      // Popping the scarce GOLDEN prize is the signature beat: a single
-      // big-moment (heavy shake + slow-mo + zoom toward the gold + flash +
-      // 'GOLD!' banner + haptic). Plain pops stay light (just a small shake).
+    if (gold) {
       _juice.bigMoment(target.pos, archer.color, banner: 'GOLD!');
     } else {
       _juice.shake.light();
-      if (stole || archer.combo >= 3) {
-        _juice.hitStop.trigger(0.05, scale: 0.2);
-      }
+      if (archer.combo >= 3) _juice.hitStop.trigger(0.05, scale: 0.2);
     }
-    // Label the pop: a steal shouts STEAL!, else the gained points (× combo).
-    final label = stole
-        ? 'STEAL! +$gained'
-        : (archer.combo >= 2 ? '+$gained  x${archer.combo}' : '+$gained');
+    final label = archer.combo >= 2 ? '+$gained  x${archer.combo}' : '+$gained';
     _juice.popup(
       target.pos.translate(0, -target.radius),
       label,
-      stole ? _stealColor : popColor,
-      size: target.golden || stole ? 30 : 24,
+      popColor,
+      size: gold ? 30 : 24,
     );
-
-    // Start the balloon's burst animation (it self-removes after).
-    target.popT = 1.0;
-  }
-
-  /// True when a RIVAL archer (not [shooterId]) had their bow aimed nearest at
-  /// [target] — i.e. the closest-bearing bow to the balloon belongs to someone
-  /// else and is within the steal cone. That makes the shooter's pop a STEAL.
-  /// With a single archer there is never a rival, so this is always false.
-  bool _isStealFrom(int shooterId, _Balloon target) {
-    int? nearestId;
-    var nearestErr = double.infinity;
-    for (final a in _archers) {
-      final to = target.pos - _muzzleOf(a);
-      if (to.distance < 1e-3) continue;
-      final bearing = math.atan2(to.dy, to.dx);
-      final err = wrapAngle(a.bow.angle - bearing).abs();
-      if (err < nearestErr) {
-        nearestErr = err;
-        nearestId = a.playerId;
-      }
-    }
-    return nearestId != null &&
-        nearestId != shooterId &&
-        nearestErr <= _stealMaxBearingRad;
   }
 
   bool _outOfBounds(Offset p) {
@@ -667,16 +863,16 @@ class ArcherPop extends MiniGameBase {
   // ── End condition ───────────────────────────────────────────────────────────
 
   void _checkEnd() {
-    if (_elapsed >= _timeLimit) {
+    final outOfAmmo = _archers.every((a) => a.ammo <= 0);
+    // When the quivers are dry, let the last arrows finish flying before ending.
+    final settled = _arrows.every((s) => s.stuck > 0);
+    if (_elapsed >= _timeLimit || (outOfAmmo && settled)) {
       _cheerWinner();
       _juice.confetti(_size);
       finishByScore();
     }
   }
 
-  /// Charm: at the match finish the leading archer reacts instead of freezing —
-  /// a full-body arms-up cheer. Fires once for the single highest scorer (ties
-  /// break by seat order, matching the score ranking's stable fallback).
   void _cheerWinner() {
     if (_winnerCheered || _archers.isEmpty) return;
     _winnerCheered = true;
@@ -691,20 +887,10 @@ class ArcherPop extends MiniGameBase {
 
   // ── Geometry helpers (mirror ArcherRenderer) ────────────────────────────────
 
-  /// Muzzle = the bow-hand anchor (renderer-shared) plus a short reach along the
-  /// aim so the loosed arrow leaves where the drawn arrow visually sits.
   Offset _muzzleOf(_Archer a) {
     final view = _viewOf(a);
-    final dir = a.bow.direction;
+    final dir = Offset(math.cos(a.aimAngle), math.sin(a.aimAngle));
     return ArcherRenderer.bowAnchor(view) + dir * (_muzzleReach * _scale);
-  }
-
-  /// Draw amount 0..1 from the sweep progress: deepest nock toward the band ends
-  /// (where the archer "holds" before reversing), shallow through the center.
-  double _drawOf(_Archer a) {
-    final p = a.bow.progress; // 0 at minAngle, 1 at maxAngle
-    final fromCenter = (p - 0.5).abs() * 2.0; // 0 center → 1 at an end
-    return fromCenter.clamp(0.0, 1.0);
   }
 
   _Archer? _archerOf(int id) {
@@ -714,9 +900,6 @@ class ArcherPop extends MiniGameBase {
     return null;
   }
 
-  /// Charm: a light [hurt] shrug for a fizzled (wasted) shot. Upper-body only,
-  /// and skipped while another reaction (e.g. a fist-pump) is already playing so
-  /// a good beat is never cut short by a stray miss.
   void _shrugMiss(int id) {
     final archer = _archerOf(id);
     if (archer == null || archer.figure.actionPlaying) return;
@@ -741,14 +924,19 @@ class ArcherPop extends MiniGameBase {
     ArcherRenderer.drawWindStreaks(
         canvas, size, _windAnchors, _windX, _animClock);
 
-    // Aim guides first (under the archers), then balloons, then archers + bows.
+    // Barriers behind targets, then aim previews (under the archers), then
+    // targets, then in-flight arrows, then archers + bows + HUD.
+    for (final t in _targets) {
+      if (t.barrier != null && t.popT <= 0) {
+        ArcherRenderer.drawBarrier(canvas, t.barrier!, _scale);
+      }
+    }
     for (final a in _archers) {
-      ArcherRenderer.drawAimGuide(canvas, _viewOf(a));
+      ArcherRenderer.drawAimPreview(canvas, _viewOf(a), _trajectoryFor(a));
     }
-    for (final b in _balloons) {
-      ArcherRenderer.drawBalloon(canvas, _balloonView(b));
+    for (final t in _targets) {
+      ArcherRenderer.drawTarget(canvas, _targetView(t));
     }
-    // In-flight arrows behind bodies so a loosed arrow reads leaving the bow.
     for (final s in _arrows) {
       ArcherRenderer.drawArrow(canvas, s.view());
     }
@@ -762,9 +950,12 @@ class ArcherPop extends MiniGameBase {
     _juice.render(canvas);
     canvas.restore();
 
-    // Screen-space overlays (after the world transform is restored so they are
-    // never shaken or zoomed by the camera punch): the wind banner + FRENZY
-    // banner + the cinematic flash/banner from bigMoment.
+    // Screen-space overlays (after the world transform is restored): per-player
+    // ammo + score + objective HUD, the wind banner, the climax banner + the
+    // cinematic flash/banner from bigMoment.
+    for (final a in _archers) {
+      ArcherRenderer.drawHud(canvas, size, _hudView(a));
+    }
     ArcherRenderer.drawWindBanner(canvas, size, _windX);
     if (_isFrenzy) {
       ArcherFx.drawFrenzyBanner(canvas, size, 1.0, _animClock);
@@ -772,47 +963,253 @@ class ArcherPop extends MiniGameBase {
     _juice.renderOverlay(canvas, size);
   }
 
+  /// A short list of arc points previewing where the current draw would send an
+  /// arrow — only while the player is drawing with usable power.
+  List<Offset> _trajectoryFor(_Archer a) {
+    if (!a.drawing || a.aimPower < _minPower) return const <Offset>[];
+    final origin = _muzzleOf(a);
+    final dir = Offset(math.cos(a.aimAngle), math.sin(a.aimAngle));
+    var pos = origin;
+    var vel = dir * _speedFor(a.aimPower);
+    final pts = <Offset>[origin];
+    const dt = 0.045;
+    for (var i = 0; i < 16; i++) {
+      vel = vel + Offset(_windX * dt, _gravity * dt);
+      pos = pos + vel * dt;
+      if (_outOfBounds(pos)) break;
+      pts.add(pos);
+    }
+    return pts;
+  }
+
   ArcherView _viewOf(_Archer a) => ArcherView(
         base: a.base,
         color: a.color,
         side: a.side,
         facing: a.facing,
-        aimAngle: a.bow.angle,
-        draw: _drawOf(a),
+        aimAngle: a.aimAngle,
+        // The drawn-bow visual fills with the live pull while aiming; otherwise
+        // the bow is relaxed (a loosed/idle archer shows no nocked arrow).
+        draw: a.drawing ? a.aimPower : 0.0,
         combo: a.combo,
         scale: _scale,
         loose: (a.loose / _looseFadeSec).clamp(0.0, 1.0),
       );
 
-  BalloonView _balloonView(_Balloon b) => BalloonView(
-        pos: b.pos,
-        color: b.color,
-        radius: b.radius,
-        bobPhase: b.bob,
-        popT: b.popT.clamp(0.0, 1.0),
-        golden: b.golden,
-        sparklePhase: b.sparkle,
+  TargetView _targetView(_Target t) => TargetView(
+        pos: t.pos,
+        color: t.color,
+        radius: t.radius,
+        bobPhase: t.bob,
+        popT: t.popT.clamp(0.0, 1.0),
+        kind: switch (t.kind) {
+          _TargetKind.gold => TargetKind.gold,
+          _TargetKind.bomb => TargetKind.bomb,
+          _TargetKind.plain => TargetKind.plain,
+        },
+        sparklePhase: t.sparkle,
+        // Gold's brief life reads as a shrinking fuse ring (1 → 0).
+        fuse: t.ttl.isFinite ? (t.ttl / _goldLifeSec).clamp(0.0, 1.0) : 1.0,
       );
+
+  HudView _hudView(_Archer a) {
+    final zone = ctx.zones.forPlayer(a.playerId)?.normRect ??
+        const Rect.fromLTRB(0, 0, 1, 1);
+    final rot = ctx.zones.forPlayer(a.playerId)?.rotationQuarters ?? 0;
+    return HudView(
+      zone: zone,
+      rotationQuarters: rot,
+      color: a.color,
+      score: scoreOf(a.playerId),
+      ammo: a.ammo,
+      maxAmmo: _quiver,
+      playerNumber: a.playerId + 1,
+    );
+  }
 
   static Color _brighten(Color c, double t) =>
       Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
+
+  // ── Geometry: segment vs circle / rect (no tunneling through small targets) ─
+
+  static bool _segHitsCircle(Offset a, Offset b, Offset c, double r) {
+    final ab = b - a;
+    final lenSq = ab.distanceSquared;
+    if (lenSq < 1e-6) return (a - c).distance <= r;
+    var t = ((c - a).dx * ab.dx + (c - a).dy * ab.dy) / lenSq;
+    t = t.clamp(0.0, 1.0);
+    final closest = a + ab * t;
+    return (closest - c).distance <= r;
+  }
+
+  static bool _segHitsRect(Offset a, Offset b, Rect r) {
+    if (r.contains(a) || r.contains(b)) return true;
+    // Test the segment against the four rect edges.
+    final tl = r.topLeft, tr = r.topRight, br = r.bottomRight, bl = r.bottomLeft;
+    return _segHitsSeg(a, b, tl, tr) ||
+        _segHitsSeg(a, b, tr, br) ||
+        _segHitsSeg(a, b, br, bl) ||
+        _segHitsSeg(a, b, bl, tl);
+  }
+
+  static bool _segHitsSeg(Offset p1, Offset p2, Offset p3, Offset p4) {
+    double cross(Offset o, Offset a, Offset b) =>
+        (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+    final d1 = cross(p3, p4, p1);
+    final d2 = cross(p3, p4, p2);
+    final d3 = cross(p1, p2, p3);
+    final d4 = cross(p1, p2, p4);
+    return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0));
+  }
+
+  // ── Test seams (deterministic; no Flutter) ──────────────────────────────────
+
+  /// The per-player quiver size (the scarce resource), exposed for tests.
+  @visibleForTesting
+  static int get debugQuiver => _quiver;
+
+  /// Arrows currently in flight (for tests asserting shots were spent/landed).
+  @visibleForTesting
+  int get debugArrowCount => _arrows.length;
+
+  /// Remaining ammo for a player (the scarce quiver).
+  @visibleForTesting
+  int debugAmmo(int id) => _archerOf(id)?.ammo ?? 0;
+
+  /// Drive a full deliberate AIMED shot for [id] toward arena point [at] at the
+  /// given [power], routed through the real input path (down→drag→up). Used by
+  /// tests to model a skilled player. Returns true if an arrow was loosed.
+  @visibleForTesting
+  bool debugAimShotAt(int id, Offset at, {double power = 0.7}) {
+    final a = _archerOf(id);
+    if (a == null || a.ammo <= 0) return false;
+    final origin = _muzzleOf(a);
+    final solved = _solveArcPublic(a, at);
+    final angle =
+        solved?.angle ?? math.atan2(at.dy - origin.dy, at.dx - origin.dx);
+    final usePower = solved?.power ?? power;
+    final before = a.ammo;
+    _driveDrag(id, angle, usePower);
+    return a.ammo < before;
+  }
+
+  /// A solve helper exposed for the aim test (mirrors [_solveArc] against a free
+  /// point rather than a target instance).
+  _Shot? _solveArcPublic(_Archer a, Offset at) {
+    final t = _Target(
+      pos: at,
+      vel: Offset.zero,
+      radius: _radiusPlainMin,
+      color: a.color,
+      kind: _TargetKind.plain,
+      shielded: false,
+      bob: 0,
+      ttl: double.infinity,
+    );
+    return _solveArc(a, t);
+  }
+
+  /// Model a skilled player taking the cleanest available shot: pick the nearest
+  /// OPEN scoring target (its real motion is LED by the arc solver) and loose a
+  /// solved arc straight at it through the real input path. Returns true if an
+  /// arrow was loosed (false when no open target is up or ammo is dry). This is
+  /// the aimer the anti-spam test pits against a blind spammer.
+  @visibleForTesting
+  bool debugShootNearestTarget(int id) {
+    final a = _archerOf(id);
+    if (a == null || a.ammo <= 0) return false;
+    final origin = _muzzleOf(a);
+    _Target? best;
+    var bestD = double.infinity;
+    for (final t in _targets) {
+      if (t.popT > 0 || t.kind == _TargetKind.bomb || t.shielded) continue;
+      final d = (t.pos - origin).distanceSquared;
+      if (d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    if (best == null) return false;
+    final solved = _solveArc(a, best);
+    if (solved == null) return false; // no makeable shot — conserve the arrow
+    final before = a.ammo;
+    _driveDrag(id, solved.angle, solved.power);
+    return a.ammo < before;
+  }
+
+  /// Synthesize a slingshot drag (down→drag→up) for [angle]/[power] routed
+  /// through [onInput], so a test shot exercises the same gate a human does.
+  void _driveDrag(int id, double angle, double power) {
+    final a = _archerOf(id);
+    if (a == null) return;
+    final origin = _muzzleOf(a);
+    final dir = Offset(math.cos(angle), math.sin(angle));
+    final pullPx = power.clamp(_minPower, 1.0) * _maxDragPx;
+    final now = origin - dir * pullPx; // launch is opposite the pull
+    onInput(PlayerInput(
+        playerId: id, phase: InputPhase.down, normPos: _toNorm(origin)));
+    onInput(PlayerInput(
+        playerId: id, phase: InputPhase.holdTick, normPos: _toNorm(now)));
+    onInput(PlayerInput(playerId: id, phase: InputPhase.up));
+  }
+
+  Offset _toNorm(Offset arena) =>
+      Offset(arena.dx / _size.width, arena.dy / _size.height);
+
+  /// Nearest live, OPEN (non-bomb, non-shielded) scoring target to a player's
+  /// muzzle — the clean shot a skilled player takes. Used by the anti-spam test
+  /// to model an aimer that prioritizes makeable shots over walled ones.
+  @visibleForTesting
+  Offset? debugNearestTargetTo(int id) {
+    final a = _archerOf(id);
+    if (a == null) return null;
+    final origin = _muzzleOf(a);
+    Offset? best;
+    var bestD = double.infinity;
+    for (final t in _targets) {
+      if (t.popT > 0 || t.kind == _TargetKind.bomb || t.shielded) continue;
+      final d = (t.pos - origin).distanceSquared;
+      if (d < bestD) {
+        bestD = d;
+        best = t.pos;
+      }
+    }
+    return best;
+  }
 }
+
+/// A resolved shot: aim angle (radians) + power 0..1.
+class _Shot {
+  final double angle;
+  final double power;
+  const _Shot(this.angle, this.power);
+}
+
+/// Target kinds. Plain + gold SCORE; bomb SUBTRACTS.
+enum _TargetKind { plain, gold, bomb }
 
 /// One archer. Mutable round-scoped state (allowed for the duration of a round).
 class _Archer {
   final int playerId;
   final Color color;
-  final Offset base; // stick-root anchor in arena px
+  final Offset base;
   final ArcherSide side;
   final double facing;
-  final AimSweep bow;
+  final double restAngle; // resting aim into the field
   final StickFigure figure;
   final ReactionClock? clock; // null for human seats
 
-  double loose = 0; // loose-flash timer (string snap + riser kick)
-  int combo = 0; // current multiplier (0 = none, then 1..max)
-  double comboTimer = 0; // seconds left to keep the combo alive
-  int streak = 0; // total consecutive pops (drives the value bonus)
+  int ammo;
+  double aimAngle;
+  double aimPower = 0;
+  bool drawing = false;
+  Offset? dragStart; // arena px where the draw began
+  Offset? dragNow; // arena px of the latest drag sample
+
+  double loose = 0; // loose-flash timer
+  int combo = 0;
+  double comboTimer = 0;
+  int streak = 0;
 
   _Archer({
     required this.playerId,
@@ -820,17 +1217,17 @@ class _Archer {
     required this.base,
     required this.side,
     required this.facing,
-    required this.bow,
+    required this.restAngle,
     required this.figure,
+    required this.ammo,
     this.clock,
-  });
+  }) : aimAngle = restAngle;
 
   void tickTimers(double dt, double looseFadeSec) {
     if (loose > 0) loose = (loose - dt).clamp(0, looseFadeSec);
     if (comboTimer > 0) {
       comboTimer -= dt;
       if (comboTimer <= 0) {
-        // Combo + streak lapse together when the window closes.
         comboTimer = 0;
         combo = 0;
         streak = 0;
@@ -839,8 +1236,7 @@ class _Archer {
   }
 }
 
-/// One in-flight (or briefly stuck) arrow. Mutates along its arc; keeps a short
-/// trail for the motion streak. Mutable round-scoped state.
+/// One in-flight (or briefly stuck) arrow. Mutable round-scoped state.
 class _Arrow {
   Offset pos;
   Offset vel;
@@ -865,7 +1261,6 @@ class _Arrow {
     life = newLife;
   }
 
-  /// Embed where it died (on-field): stop advancing, start the stuck fade.
   void stuckAt(Offset at, Offset lastVel) {
     pos = at;
     vel = lastVel;
@@ -884,23 +1279,28 @@ class _Arrow {
       );
 }
 
-/// One floating balloon target. Mutable round-scoped state.
-class _Balloon {
+/// One target balloon. Mutable round-scoped state.
+class _Target {
   Offset pos;
-  final Offset vel; // base drift + rise (wind added at step time)
+  Offset vel;
   final double radius;
   final Color color;
-  final bool golden;
-  double bob; // sway phase
-  double sparkle = 0; // golden glint phase
+  final _TargetKind kind;
+  final bool shielded;
+  double bob;
+  double ttl; // gold self-pops when this hits 0; infinity otherwise
+  double sparkle = 0;
   double popT = 0; // 0 = whole, 1 → 0 while bursting
+  Rect? barrier; // computed each step for shielded targets
 
-  _Balloon({
+  _Target({
     required this.pos,
     required this.vel,
     required this.radius,
     required this.color,
-    required this.golden,
+    required this.kind,
+    required this.shielded,
     required this.bob,
+    required this.ttl,
   });
 }

@@ -17,6 +17,9 @@ extension ArcherSideGeometry on ArcherSide {
       };
 }
 
+/// Kind of target, mirrored from the sim so the renderer can style each one.
+enum TargetKind { plain, gold, bomb }
+
 /// Immutable snapshot of one archer handed to the renderer. Carries only what
 /// is needed to draw — no gameplay coupling, no mutation.
 class ArcherView {
@@ -25,8 +28,8 @@ class ArcherView {
   final ArcherSide side;
   final double facing; // -1 / +1
   final double aimAngle; // bow aim in radians (screen space)
-  final double draw; // 0..1 bow draw amount (1 = fully nocked, about to loose)
-  final int combo; // current pop streak (0 = none)
+  final double draw; // 0..1 bow draw / power (1 = fully drawn, about to loose)
+  final int combo; // current hit streak (0 = none)
   final double scale; // body scale factor
   final double loose; // 0..1 recent-loose flash (1 fresh → 0), kicks the bow
 
@@ -43,24 +46,26 @@ class ArcherView {
   });
 }
 
-/// Immutable snapshot of one balloon target.
-class BalloonView {
+/// Immutable snapshot of one target balloon.
+class TargetView {
   final Offset pos;
   final Color color;
   final double radius;
   final double bobPhase; // for the gentle squash/sway
   final double popT; // 0 = whole, >0 = popping (1 → 0 as it bursts)
-  final bool golden; // bonus balloon (worth more) → metallic shine + sparkle
+  final TargetKind kind;
   final double sparklePhase; // animates the golden glint
+  final double fuse; // gold's remaining life 1→0 (a shrinking timer ring)
 
-  const BalloonView({
+  const TargetView({
     required this.pos,
     required this.color,
     required this.radius,
     required this.bobPhase,
     this.popT = 0,
-    this.golden = false,
+    this.kind = TargetKind.plain,
     this.sparklePhase = 0,
+    this.fuse = 1,
   });
 }
 
@@ -82,9 +87,31 @@ class ArrowView {
   });
 }
 
-/// Pure-Canvas rendering for ArcherPop. Holds NO game state and never mutates
-/// the simulation — callers pass plain value snapshots. Every method guards its
-/// own inputs and never throws, so it is safe to call from `render`.
+/// Immutable per-player HUD snapshot: where to draw it (the player's zone +
+/// rotation), the score, and the remaining quiver ammo + objective.
+class HudView {
+  final Rect zone; // normalized 0..1 player zone
+  final int rotationQuarters; // 0 upright (bottom) / 2 flipped (top)
+  final Color color;
+  final num score;
+  final int ammo;
+  final int maxAmmo;
+  final int playerNumber; // 1-based, for the label
+
+  const HudView({
+    required this.zone,
+    required this.rotationQuarters,
+    required this.color,
+    required this.score,
+    required this.ammo,
+    required this.maxAmmo,
+    required this.playerNumber,
+  });
+}
+
+/// Pure-Canvas rendering for ArcherPop / Target Range. Holds NO game state and
+/// never mutates the simulation — callers pass plain value snapshots. Every
+/// method guards its own inputs and never throws, so it is safe from `render`.
 class ArcherRenderer {
   ArcherRenderer._();
 
@@ -113,16 +140,20 @@ class ArcherRenderer {
   static const Color _gold = Color(0xFFFFD24A);
   static const Color _goldHi = Color(0xFFFFF3C8);
   static const Color _windTint = Color(0xFFCFE6FF);
+  static const Color _barrierFill = Color(0xFF6A5236);
+  static const Color _barrierHi = Color(0xFF9C7A4E);
+  static const Color _bomb = Color(0xFF2A2A2E);
+  static const Color _bombHi = Color(0xFFFF5A52);
+  static const Color _hudBg = Color(0xAA0A1428);
 
   // ── Tuning (fractions / px) ────────────────────────────────────────────────
   static const double _bowRadius = 30; // bow limb radius at scale 1
   static const double _bowSpan = 1.5; // limb arc half-angle (radians)
-  static const double _drawDepth = 12; // px the string pulls back at full draw
+  static const double _drawDepth = 13; // px the string pulls back at full draw
   static const double _arrowLen = 26; // drawn arrow shaft length
-  static const double _aimGuideLen = 150; // px reticle reach
   static const int _hillBands = 3;
   static const double _looseKick = 6; // px the riser snaps forward on a loose
-  static const double _windRef = 70; // wind speed mapped to full streak strength
+  static const double _windRef = 64; // wind speed mapped to full streak strength
 
   // ── Background: sky gradient → sun glow → layered hills → grass strip ───────
   static void drawRange(
@@ -167,12 +198,9 @@ class ArcherRenderer {
   static void _drawClouds(
       Canvas canvas, List<Offset> clouds, Size size, double t) {
     if (clouds.isEmpty) return;
-    // Puffy clouds from a few overlapping translucent ovals — soft + cheap, no
-    // per-cloud blur. The faint alpha keeps the cluster reading as one cloud.
     final paint = Paint()..color = _cloud;
     for (var i = 0; i < clouds.length; i++) {
       final c = clouds[i];
-      // Slow horizontal drift that wraps across the width.
       final span = size.width + 240;
       final x = ((c.dx + t * (8 + (i % 3) * 4)) % span) - 120;
       final y = c.dy;
@@ -198,7 +226,6 @@ class ArcherRenderer {
     }
   }
 
-  /// Layered rolling hills receding to the horizon (far → near, darker + taller).
   static void _drawHills(Canvas canvas, Size size, double horizonY) {
     const colors = [_hillFar, _hillMid, _hillNear];
     for (var band = 0; band < _hillBands; band++) {
@@ -222,7 +249,6 @@ class ArcherRenderer {
     }
   }
 
-  /// Grass band from the horizon to the bottom with a subtle gradient + texture.
   static void _drawGrass(Canvas canvas, Size size, double horizonY) {
     final ground = Paint()
       ..shader = Gradient.linear(
@@ -232,7 +258,6 @@ class ArcherRenderer {
       );
     canvas.drawRect(Rect.fromLTRB(0, horizonY, size.width, size.height), ground);
 
-    // Soft scan-line texture (cheap, no blur) for a turf feel.
     final blade = Paint()
       ..color = _white.withValues(alpha: 0.03)
       ..strokeWidth = 1;
@@ -260,10 +285,6 @@ class ArcherRenderer {
 
   // ── Wind: drifting streaks across the field + a small heading banner ─────────
 
-  /// Faint diagonal speed-streaks blowing in the wind direction. [windX] (px/s)
-  /// sets direction + strength; a calm field is nearly clear and a strong gust
-  /// visibly rushes. Streaks are supplied as deterministic anchors so they
-  /// animate with the sim clock without per-frame allocation churn.
   static void drawWindStreaks(
     Canvas canvas,
     Size size,
@@ -281,7 +302,6 @@ class ArcherRenderer {
     final span = size.width + len * 2;
     for (var i = 0; i < anchors.length; i++) {
       final a = anchors[i];
-      // Drift with the wind, wrapping across the width.
       final speed = (60 + (i % 4) * 30) * (0.4 + strength);
       final raw = a.dx + dirSign * t * speed;
       final x = ((raw % span) + span) % span - len;
@@ -293,8 +313,7 @@ class ArcherRenderer {
     }
   }
 
-  /// A small top banner showing wind heading + strength: an arrow that grows
-  /// and brightens with the gust so players can read the drift before loosing.
+  /// A small top banner showing wind heading + strength so players lead a shot.
   static void drawWindBanner(Canvas canvas, Size size, double windX) {
     final strength = (windX.abs() / _windRef).clamp(0.0, 1.0);
     final center = Offset(size.width * 0.5, size.height * 0.052);
@@ -314,7 +333,6 @@ class ArcherRenderer {
         ..color = _windTint.withValues(alpha: 0.35),
     );
 
-    // A wind arrow whose length tracks strength, pointing with the gust.
     final arrowLen = w * (0.16 + 0.5 * strength);
     final cy = center.dy;
     final from = Offset(center.dx - dirSign * arrowLen * 0.5, cy);
@@ -325,7 +343,6 @@ class ArcherRenderer {
       ..strokeWidth = math.max(2.0, h * 0.16)
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(from, to, body);
-    // Arrowhead.
     final back = to - Offset(dirSign * h * 0.34, 0);
     final head = Path()
       ..moveTo(to.dx, to.dy)
@@ -335,21 +352,61 @@ class ArcherRenderer {
     canvas.drawPath(head, Paint()..color = col);
   }
 
-  // ── Balloon target ──────────────────────────────────────────────────────────
+  // ── Barrier (the arc-over-me wall) ──────────────────────────────────────────
 
-  /// A bobbing balloon with a teardrop bulb, glossy highlight, knot and a wavy
-  /// string. When [b.popT] > 0 it renders a quick rubber-burst flash instead.
-  /// Golden balloons add a metallic gradient, a glow halo and a rotating glint.
-  static void drawBalloon(Canvas canvas, BalloonView b) {
+  /// A solid wooden plank that eats a flat arrow, forcing an arc. Drawn under
+  /// its target. [scale] sizes the plank seam thickness.
+  static void drawBarrier(Canvas canvas, Rect rect, double scale) {
+    if (rect.isEmpty) return;
+    final rr = RRect.fromRectAndRadius(rect, Radius.circular(3 * scale));
+    // Drop shadow under the plank.
+    canvas.drawRRect(
+      rr.shift(Offset(0, 2 * scale)),
+      Paint()..color = _black.withValues(alpha: 0.3),
+    );
+    canvas.drawRRect(rr, Paint()..color = _barrierFill);
+    // Top highlight strip so the plank reads as solid.
+    final hi = Rect.fromLTWH(
+        rect.left, rect.top, rect.width, math.max(2.0, rect.height * 0.3));
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(hi, Radius.circular(3 * scale)),
+      Paint()..color = _barrierHi.withValues(alpha: 0.8),
+    );
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, 1.4 * scale)
+        ..color = _black.withValues(alpha: 0.4),
+    );
+  }
+
+  // ── Target balloon ──────────────────────────────────────────────────────────
+
+  /// A bobbing target. Plain = a player-colored balloon; GOLD = small, metallic
+  /// + a shrinking fuse ring (it floats off soon); BOMB = a black orb with a lit
+  /// fuse + a danger ring (hitting it costs points). A popping target shows a
+  /// quick burst instead.
+  static void drawTarget(Canvas canvas, TargetView b) {
     final r = b.radius;
     if (r <= 0) return;
 
     if (b.popT > 0) {
-      _drawPopFlash(canvas, b.pos, r, b.golden ? _gold : b.color, b.popT);
+      final c = switch (b.kind) {
+        TargetKind.gold => _gold,
+        TargetKind.bomb => _bombHi,
+        TargetKind.plain => b.color,
+      };
+      _drawPopFlash(canvas, b.pos, r, c, b.popT);
       return;
     }
 
-    // Gentle squash + sway from the bob phase.
+    if (b.kind == TargetKind.bomb) {
+      _drawBomb(canvas, b);
+      return;
+    }
+
+    final golden = b.kind == TargetKind.gold;
     final squash = 1.0 + math.sin(b.bobPhase) * 0.05;
     final sway = math.sin(b.bobPhase * 0.7) * r * 0.12;
     final center = b.pos.translate(sway, 0);
@@ -357,17 +414,16 @@ class ArcherRenderer {
     canvas.save();
     canvas.translate(center.dx, center.dy);
 
-    // Golden balloons get a soft outer glow (two stacked translucent rings,
-    // wide+faint under tight+stronger) so the bonus reads without a per-balloon
-    // blur.
-    if (b.golden) {
+    if (golden) {
       canvas.drawCircle(Offset.zero, r * 1.7,
           Paint()..color = _gold.withValues(alpha: 0.12));
       canvas.drawCircle(Offset.zero, r * 1.34,
           Paint()..color = _gold.withValues(alpha: 0.2));
+      // Shrinking fuse ring: how long the prize is still catchable.
+      _drawTimerRing(canvas, r, b.fuse, _goldHi);
     }
 
-    // String: a wavy tail with a small knot.
+    // String tail with a small knot.
     final stringPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(1.0, r * 0.06)
@@ -383,7 +439,6 @@ class ArcherRenderer {
     }
     canvas.drawPath(tail, stringPaint);
 
-    // Teardrop bulb: a circle pinched to a knot at the bottom.
     final bulb = Path()
       ..addOval(Rect.fromCenter(
           center: Offset.zero, width: r * 2 / squash, height: r * 2 * squash))
@@ -392,21 +447,20 @@ class ArcherRenderer {
       ..lineTo(r * 0.22, r * 0.86 * squash)
       ..close();
 
-    final baseColor = b.golden ? _gold : b.color;
+    final baseColor = golden ? _gold : b.color;
     final body = Paint()
       ..shader = Gradient.radial(
         Offset(-r * 0.32, -r * 0.38),
         r * 1.5,
         [
-          _blend(baseColor, _white, b.golden ? 0.55 : 0.4),
+          _blend(baseColor, _white, golden ? 0.55 : 0.4),
           baseColor,
-          _blend(baseColor, _black, b.golden ? 0.3 : 0.4),
+          _blend(baseColor, _black, golden ? 0.3 : 0.4),
         ],
         const [0.0, 0.55, 1.0],
       );
     canvas.drawPath(bulb, body);
 
-    // Rim outline.
     canvas.drawPath(
       bulb,
       Paint()
@@ -415,7 +469,6 @@ class ArcherRenderer {
         ..color = _blend(baseColor, _black, 0.35).withValues(alpha: 0.8),
     );
 
-    // Glossy vertical highlight + specular dot.
     canvas.drawOval(
       Rect.fromCenter(
           center: Offset(-r * 0.3, -r * 0.2), width: r * 0.42, height: r * 0.9),
@@ -424,19 +477,99 @@ class ArcherRenderer {
     canvas.drawCircle(
         Offset(-r * 0.38, -r * 0.42), r * 0.14, Paint()..color = _white);
 
-    // Golden rotating glint (a tiny 4-point sparkle).
-    if (b.golden) {
+    if (golden) {
       _drawSparkle(canvas, Offset(r * 0.2, -r * 0.1), r * 0.4, b.sparklePhase);
     }
 
-    // Knot pip.
     canvas.drawCircle(Offset(0, r * 0.96 * squash), r * 0.16,
         Paint()..color = _blend(baseColor, _black, 0.25));
 
     canvas.restore();
   }
 
-  /// A short-lived rubber-pop: an expanding torn ring + a bright inner flash.
+  /// A black bomb decoy: a dark orb with a glossy rim, a danger ring and a lit,
+  /// sparking fuse so it reads clearly as "do NOT shoot me".
+  static void _drawBomb(Canvas canvas, TargetView b) {
+    final r = b.radius;
+    final center = b.pos;
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+
+    // Pulsing danger halo.
+    final pulse = 0.5 + 0.5 * math.sin(b.bobPhase * 2);
+    canvas.drawCircle(
+      Offset.zero,
+      r * (1.35 + 0.12 * pulse),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(2.0, r * 0.12)
+        ..color = _bombHi.withValues(alpha: (0.4 + 0.3 * pulse).clamp(0.0, 1.0)),
+    );
+
+    // Body.
+    canvas.drawCircle(
+      Offset.zero,
+      r,
+      Paint()
+        ..shader = Gradient.radial(
+          Offset(-r * 0.3, -r * 0.35),
+          r * 1.5,
+          [_blend(_bomb, _white, 0.4), _bomb, _black],
+          const [0.0, 0.5, 1.0],
+        ),
+    );
+    canvas.drawCircle(
+      Offset.zero,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, r * 0.07)
+        ..color = _bombHi.withValues(alpha: 0.5),
+    );
+    // Specular dot.
+    canvas.drawCircle(Offset(-r * 0.34, -r * 0.36), r * 0.16,
+        Paint()..color = _white.withValues(alpha: 0.8));
+
+    // Fuse cap + a sparking tip.
+    final fuseBase = Offset(0, -r * 0.96);
+    canvas.drawRect(
+      Rect.fromCenter(
+          center: Offset(0, -r * 1.06), width: r * 0.36, height: r * 0.34),
+      Paint()..color = _blend(_bomb, _white, 0.25),
+    );
+    final spark = Offset(math.sin(b.sparklePhase * 3) * r * 0.18, -r * 1.28);
+    canvas.drawLine(
+      fuseBase,
+      spark,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, r * 0.08)
+        ..color = _gold,
+    );
+    canvas.drawCircle(spark, r * (0.12 + 0.06 * pulse),
+        Paint()..color = _goldHi);
+
+    canvas.restore();
+  }
+
+  /// A countdown ring drawn around a (gold) target showing fraction [f] left.
+  static void _drawTimerRing(Canvas canvas, double r, double f, Color color) {
+    final frac = f.clamp(0.0, 1.0);
+    if (frac <= 0) return;
+    final rect = Rect.fromCircle(center: Offset.zero, radius: r * 1.5);
+    canvas.drawArc(
+      rect,
+      -math.pi / 2,
+      math.pi * 2 * frac,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, r * 0.12)
+        ..strokeCap = StrokeCap.round
+        ..color = color.withValues(alpha: 0.8),
+    );
+  }
+
   static void _drawPopFlash(
       Canvas canvas, Offset at, double r, Color color, double popT) {
     final p = popT.clamp(0.0, 1.0);
@@ -456,7 +589,6 @@ class ArcherRenderer {
     );
   }
 
-  /// A four-point sparkle glint that rotates with [phase].
   static void _drawSparkle(
       Canvas canvas, Offset at, double r, double phase) {
     canvas.save();
@@ -473,65 +605,59 @@ class ArcherRenderer {
     canvas.restore();
   }
 
-  // ── Archer (stick figure + drawn bow + aim guide) ───────────────────────────
+  // ── Aim preview (the drag-aim trajectory + power) ────────────────────────────
 
-  /// Faint dashed aim guide along the bow heading, fading out, with a small
-  /// reticle ring — drawn under the archers so it never hides a body. The guide
-  /// brightens with [a.draw] so a fully-nocked shot reads as "ready to loose".
-  static void drawAimGuide(Canvas canvas, ArcherView a) {
-    final dir = Offset(math.cos(a.aimAngle), math.sin(a.aimAngle));
-    final origin = _bowAnchor(a);
-    final end = origin + dir * (_aimGuideLen * a.scale);
-    const steps = 12;
+  /// While a player is drawing, show a dotted ARC of where the arrow would land
+  /// (the gravity+wind path computed by the sim) fading along its length, with a
+  /// reticle at the end. An empty [trajectory] (no usable draw) draws nothing —
+  /// so a bare tap shows no shot. The dots brighten with [a.draw] (power).
+  static void drawAimPreview(
+      Canvas canvas, ArcherView a, List<Offset> trajectory) {
+    if (trajectory.length < 2) return;
     final ready = a.draw.clamp(0.0, 1.0);
-    final seg = Paint()
-      ..strokeWidth = 2
-      ..strokeCap = StrokeCap.round;
-    for (var i = 0; i < steps; i++) {
-      if (i.isOdd) continue;
-      final f0 = i / steps, f1 = (i + 1) / steps;
-      final base = (1 - f0) * (0.28 + 0.34 * ready);
-      seg.color = a.color.withValues(alpha: base.clamp(0.0, 1.0));
-      canvas.drawLine(
-          Offset.lerp(origin, end, f0)!, Offset.lerp(origin, end, f1)!, seg);
+    final dot = Paint()..style = PaintingStyle.fill;
+    final n = trajectory.length;
+    for (var i = 0; i < n; i++) {
+      final f = i / (n - 1);
+      final fade = (1 - f) * (0.35 + 0.45 * ready);
+      dot.color = a.color.withValues(alpha: fade.clamp(0.0, 1.0));
+      final rad = (2.6 - 1.4 * f) * a.scale;
+      canvas.drawCircle(trajectory[i], math.max(1.0, rad), dot);
     }
+    final end = trajectory.last;
     canvas.drawCircle(
       end,
-      6 * a.scale,
+      7 * a.scale,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2
-        ..color = a.color.withValues(alpha: (0.3 + 0.4 * ready).clamp(0.0, 1.0)),
+        ..color = a.color.withValues(alpha: (0.4 + 0.4 * ready).clamp(0.0, 1.0)),
     );
+    // Small power pip at the reticle so the draw strength reads.
+    canvas.drawCircle(end, 7 * a.scale * ready,
+        Paint()..color = a.color.withValues(alpha: 0.5));
   }
 
-  /// Render the stick archer body. The bow + nocked arrow are drawn separately
-  /// (on top) so the string sits in front of the bow hand.
   static void drawArcherBody(Canvas canvas, StickFigure figure, Offset root) {
     figure.render(canvas, root);
   }
 
-  /// The recurve bow: two glowing wooden limbs forming an arc, a taut string
-  /// that pulls back with [a.draw], and a nocked arrow that slides back as the
-  /// draw deepens. Anchored at the bow hand so it tracks the aim. A recent
-  /// [a.loose] snaps the riser forward + flashes the string for release punch.
+  /// The recurve bow: two glowing wooden limbs, a taut string that pulls back
+  /// with [a.draw], and a nocked arrow that slides back as the draw deepens.
+  /// Anchored at the bow hand so it tracks the aim. A recent [a.loose] snaps the
+  /// riser forward + flashes the string for release punch.
   static void drawBow(Canvas canvas, ArcherView a) {
     final dir = Offset(math.cos(a.aimAngle), math.sin(a.aimAngle));
     final perp = Offset(-dir.dy, dir.dx);
-    // The loose kick shoves the whole bow forward briefly on release.
     final kick = a.loose.clamp(0.0, 1.0) * _looseKick * a.scale;
     final hand = _bowAnchor(a) + dir * kick;
     final r = _bowRadius * a.scale;
     final draw = a.draw.clamp(0.0, 1.0);
 
-    // Limb tips: arc opening toward the aim direction.
     final tipTop = hand + perp * (math.sin(_bowSpan) * r) + dir * _bowCurve(r);
     final tipBot = hand - perp * (math.sin(_bowSpan) * r) + dir * _bowCurve(r);
-    // Control point bows the limbs back behind the hand (away from aim).
     final ctrl = hand - dir * (r * 0.5);
 
-    // Soft colored aura under the wood: a wide, faint stroke (no blur) beneath
-    // the crisp limbs fakes the glow far cheaper per archer.
     final bowPath = Path()
       ..moveTo(tipTop.dx, tipTop.dy)
       ..quadraticBezierTo(ctrl.dx, ctrl.dy, tipBot.dx, tipBot.dy);
@@ -544,7 +670,6 @@ class ArcherRenderer {
         ..color = a.color.withValues(alpha: 0.22),
     );
 
-    // Wooden limbs (dark base + bright inner riser line).
     canvas.drawPath(
       bowPath,
       Paint()
@@ -562,13 +687,10 @@ class ArcherRenderer {
         ..color = _bowWoodHi.withValues(alpha: 0.9),
     );
 
-    // Nock point: string pulled back behind the hand proportional to draw. On a
-    // fresh loose the string snaps forward past the hand (overshoot) + flashes.
     final loose = a.loose.clamp(0.0, 1.0);
     final nockBack = draw * _drawDepth * a.scale - loose * _drawDepth * a.scale;
     final nock = hand - dir * nockBack;
 
-    // String from tip → nock → tip.
     final stringAlpha = (0.95 - 0.3 * loose).clamp(0.0, 1.0);
     final stringPaint = Paint()
       ..style = PaintingStyle.stroke
@@ -595,7 +717,6 @@ class ArcherRenderer {
     final dir = v.dir;
     final perp = Offset(-dir.dy, dir.dx);
 
-    // Motion trail (only while flying).
     if (v.stuck <= 0 && v.trail.length >= 2) {
       final paint = Paint()..strokeCap = StrokeCap.round;
       final n = v.trail.length;
@@ -614,12 +735,10 @@ class ArcherRenderer {
     _drawArrowShaft(canvas, tail, tip, dir, perp, v.color, 1.0, alpha: alpha);
   }
 
-  /// Shared arrow art: shaft, two fletching vanes at the tail, metallic head.
   static void _drawArrowShaft(Canvas canvas, Offset tail, Offset tip,
       Offset dir, Offset perp, Color color, double scale,
       {double alpha = 1.0}) {
     final w = math.max(1.4, 2.2 * scale);
-    // Shaft (dark under + light core for a round look).
     canvas.drawLine(
       tail,
       tip,
@@ -637,7 +756,6 @@ class ArcherRenderer {
         ..strokeCap = StrokeCap.round,
     );
 
-    // Fletching: two angled vanes near the tail in the owner color.
     final vaneBase = tail + dir * (6 * scale);
     final vaneSpan = 5.0 * scale;
     final vanePaint = Paint()..color = _fletch.withValues(alpha: alpha);
@@ -651,11 +769,9 @@ class ArcherRenderer {
         ..close();
       canvas.drawPath(p, vanePaint);
     }
-    // Owner-color band so arrows read at a glance.
     canvas.drawCircle(
         vaneBase, w * 0.9, Paint()..color = color.withValues(alpha: alpha));
 
-    // Metallic broadhead.
     final headBack = tip - dir * (7 * scale);
     final head = Path()
       ..moveTo(tip.dx, tip.dy)
@@ -678,25 +794,97 @@ class ArcherRenderer {
   /// A combo badge floating above an archer when its streak is hot (≥2).
   static void drawComboBadge(Canvas canvas, ArcherView a) {
     if (a.combo < 2) return;
-    final up = -a.side.outward; // toward the field
+    final up = -a.side.outward;
     final at = a.base + up * (66 * a.scale);
     final pulse = 1.0 + 0.12 * math.sin(a.combo.toDouble());
     _drawBadgeText(canvas, at, 'x${a.combo}', 22 * a.scale * pulse, a.color);
   }
 
+  // ── HUD: per-player ammo + score + objective (screen space) ─────────────────
+
+  /// A compact card anchored in the player's zone, rotated to face them: a
+  /// "P# HIT TARGETS" objective line, the live SCORE, and a row of arrow pips
+  /// showing the remaining quiver (spent pips dim). Makes ammo + objective
+  /// unmistakable for 1..4 players.
+  static void drawHud(Canvas canvas, Size size, HudView h) {
+    final zone = h.zone;
+    final flipped = h.rotationQuarters == 2;
+    final cx = (zone.left + zone.right) * 0.5 * size.width;
+    final pad = size.height * 0.012;
+    final cardW = math.min(size.width * 0.42, 230.0);
+    final cardH = math.max(36.0, size.height * 0.052);
+    // Place the card just inside the player's near edge (facing them).
+    final nearY = flipped ? zone.top * size.height : zone.bottom * size.height;
+    final cy = flipped ? nearY + cardH * 0.5 + pad : nearY - cardH * 0.5 - pad;
+
+    canvas.save();
+    canvas.translate(cx, cy);
+    if (flipped) canvas.rotate(math.pi);
+
+    final rect =
+        Rect.fromCenter(center: Offset.zero, width: cardW, height: cardH);
+    final rr = RRect.fromRectAndRadius(rect, Radius.circular(cardH * 0.28));
+    canvas.drawRRect(rr, Paint()..color = _hudBg);
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = h.color.withValues(alpha: 0.7),
+    );
+
+    final fs = cardH * 0.34;
+    // Objective (left) + score (right) on the top line of the card.
+    _drawLeftText(
+        canvas,
+        'P${h.playerNumber}  HIT TARGETS',
+        Offset(-cardW * 0.5 + cardH * 0.32, -cardH * 0.5 + cardH * 0.12),
+        _white.withValues(alpha: 0.85),
+        fs * 0.78,
+        cardW);
+    _drawRightText(
+        canvas,
+        '${h.score}',
+        Offset(cardW * 0.5 - cardH * 0.32, -cardH * 0.5 + cardH * 0.06),
+        h.color,
+        fs * 1.18,
+        cardW);
+
+    // Ammo pips row along the bottom of the card.
+    _drawAmmoPips(canvas, rect, h);
+
+    canvas.restore();
+  }
+
+  static void _drawAmmoPips(Canvas canvas, Rect card, HudView h) {
+    final n = h.maxAmmo.clamp(1, 24);
+    final left = card.left + card.height * 0.3;
+    final right = card.right - card.height * 0.3;
+    final y = card.bottom - card.height * 0.26;
+    final span = right - left;
+    final step = span / n;
+    final r = math.max(1.5, math.min(step * 0.32, card.height * 0.1));
+    for (var i = 0; i < n; i++) {
+      final x = left + step * (i + 0.5);
+      final live = i < h.ammo;
+      canvas.drawCircle(
+        Offset(x, y),
+        r,
+        Paint()..color = live ? h.color : _white.withValues(alpha: 0.16),
+      );
+    }
+  }
+
   // ── Geometry shared with gameplay (so visuals + the loosed arrow agree) ─────
 
-  /// The bow-hand anchor: lifted off the pelvis toward the chest, then nudged
-  /// along the aim so the riser sits where the figure's front hand reaches.
   static Offset bowAnchor(ArcherView a) => _bowAnchor(a);
   static Offset _bowAnchor(ArcherView a) {
     final dir = Offset(math.cos(a.aimAngle), math.sin(a.aimAngle));
-    // Chest is ~30px up the spine from the pelvis root at scale 1.
     final shoulder = a.base.translate(0, -34 * a.scale);
     return shoulder + dir * (18 * a.scale);
   }
 
-  static double _bowCurve(double r) => r * 0.28; // how far limbs bow forward
+  static double _bowCurve(double r) => r * 0.28;
 
   // ── Small private helpers ──────────────────────────────────────────────────
 
@@ -715,12 +903,11 @@ class ArcherRenderer {
     final paragraph = builder.build()
       ..layout(ParagraphConstraints(width: fontSize * 4));
 
-    // Rounded pill backing in the player color.
     final w = paragraph.maxIntrinsicWidth + fontSize * 0.8;
-    final h = fontSize * 1.5;
+    final hgt = fontSize * 1.5;
     final rect = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: center, width: w, height: h),
-      Radius.circular(h * 0.5),
+      Rect.fromCenter(center: center, width: w, height: hgt),
+      Radius.circular(hgt * 0.5),
     );
     canvas.drawRRect(rect, Paint()..color = color);
     canvas.drawRRect(
@@ -735,6 +922,38 @@ class ArcherRenderer {
       Offset(center.dx - paragraph.maxIntrinsicWidth / 2,
           center.dy - fontSize * 0.62),
     );
+  }
+
+  /// Left-aligned label drawn from a top-left [at] (used inside a rotated HUD).
+  static void _drawLeftText(Canvas canvas, String text, Offset at, Color color,
+      double fontSize, double maxWidth) {
+    if (fontSize <= 1) return;
+    final builder = ParagraphBuilder(ParagraphStyle(
+      textAlign: TextAlign.left,
+      fontSize: fontSize,
+      fontWeight: FontWeight.w700,
+    ))
+      ..pushStyle(TextStyle(color: color))
+      ..addText(text);
+    final paragraph = builder.build()
+      ..layout(ParagraphConstraints(width: maxWidth));
+    canvas.drawParagraph(paragraph, at);
+  }
+
+  /// Right-aligned label whose right edge sits at [at] (the score readout).
+  static void _drawRightText(Canvas canvas, String text, Offset at, Color color,
+      double fontSize, double maxWidth) {
+    if (fontSize <= 1) return;
+    final builder = ParagraphBuilder(ParagraphStyle(
+      textAlign: TextAlign.right,
+      fontSize: fontSize,
+      fontWeight: FontWeight.w900,
+    ))
+      ..pushStyle(TextStyle(color: color))
+      ..addText(text);
+    final paragraph = builder.build()
+      ..layout(ParagraphConstraints(width: maxWidth));
+    canvas.drawParagraph(paragraph, Offset(at.dx - maxWidth, at.dy));
   }
 
   static Color _readableText(Color bg) {
