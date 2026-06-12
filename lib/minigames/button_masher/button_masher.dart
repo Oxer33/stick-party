@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_skeleton.dart';
@@ -10,126 +12,138 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'masher_render.dart';
 
-/// Button Masher — a carnival "high striker" (test-your-strength) race with an
-/// OVERHEAT gauge. Every player owns a strength tower; each tap swings their
-/// little stickman's hammer onto the lever and feeds HEAT into the striker.
+/// Tower Climb — a race UP a tall tower to the FLAG at the top, past sweeping
+/// hazard bars. (Keeps the legacy `button_masher` id; the old spam-a-button
+/// "high striker" is gone.)
 ///
-/// Depth — the real per-tap DECISION (still one-touch MASH):
-///  * **Heat gauge / sweet-zone**: every tap adds heat; heat bleeds off when you
-///    ease up. A tap only kicks the puck a FULL notch while heat sits in the
-///    GREEN band. Mash past the redline into the RED overheat zone and a tap
-///    gives almost nothing AND the puck DROPS — a wild masher boils over and
-///    slides back down. So you tap fast to get hot, then *ease off the throttle*
-///    to stay in the green: a steady, listening player out-climbs a button-mash.
-///  * **Score = HEIGHT, not taps**: a player is scored by the highest the puck
-///    ever reached ([_Striker.peakHeight]), so managing heat — not raw mash
-///    count — wins. The bell at the top is the clear goal.
-///  * **FRENZY finale + comeback assist**: the final stretch gives the climb an
-///    extra shove (a swingy late rally) and a trailing player a gentle catch-up
-///    boost, both shaped so they help you climb without rewarding a redline mash.
+/// OBJECTIVE (obvious from the scene): be FIRST to climb your stickman to the
+/// FLAG atop the tower. If nobody summits before the buzzer, the climber who
+/// reached the HIGHEST rung wins. The flag sits at the top of every lane and the
+/// score is the best rung ever reached ([_Climber.peakRung]).
 ///
-/// Kid read: keep the gauge GREEN, don't let it go RED. Tap-tap-tap… ease…
-/// tap-tap. Bots ride the green band on a [BotProfile]-driven cadence (harder
-/// tiers hold the sweet zone tighter), so the towers feel like a real scramble.
+/// CORE — one-touch, NOT a mash:
+///  * **One TAP = climb ONE rung.** No tap = hold your rung. That is the whole
+///    control: when to step, when to wait.
+///
+/// INTERPOSING DIFFICULTY — sweeping HAZARD BARS:
+///  * Horizontal bars sweep left↔right across the tower at fixed HEIGHTS (bands).
+///    Each bar is **telegraphed**: it spends a beat in a flashing WARN state
+///    (harmless) before it goes LIVE and lethal, so a reading player always gets
+///    a tell. If your climber sits in a bar's band while the LIVE bar sweeps
+///    across your lane, you are KNOCKED DOWN several rungs and briefly STUNNED.
+///  * So you climb through the GAP — step up when no live bar is at your level,
+///    and WAIT a beat when one is sweeping through. Bars sweep FASTER and the
+///    bands pack CLOSER together higher up (a calibrated ramp), so the top is a
+///    real gauntlet.
+///  * A blind masher taps every frame, climbs straight into the next bar, gets
+///    knocked down, climbs into it again → it loses height to a measured climber
+///    who steps only in the safe windows. (Proven by a deterministic test.)
+///
+/// BOTS: climb on a [BotProfile] cadence but PAUSE when a live/telegraphing bar
+/// threatens the rung just above them — strong bots read the tell and thread the
+/// gap, weak bots ([errorRate]) sometimes step anyway and eat a bar. A real,
+/// beatable 1+CPU contest.
+///
+/// Kid read: tap to climb, stop when a bar swings past your guy, go for the flag.
 class ButtonMasher extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
         id: 'button_masher',
-        name: 'Button Masher',
+        name: 'Tower Climb',
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.ffa],
-        inputHint: 'MASH',
+        inputHint: 'TAP',
       );
 
   // ── Round tuning (no magic numbers inline) ──────────────────────────────────
-  static const double _timeLimit = 10;
-  static const int _levels = 12; // lit strength rungs on each tower
-  // peakHeight is 0..1; scale it to a tidy integer score so the HUD reads big.
-  static const double _scorePerHeight = 1000;
+  // Nobody-summits ceiling. A measured solo climber summits in ~25s (well
+  // inside this), so a clean run ends on the flag; the timer only bites when
+  // the gauntlet keeps everyone short (the ~25-40s target band).
+  static const double _timeLimit = 34;
+  // A tall tower: a measured climb takes ~25s, but a blind masher gets knocked
+  // out of the upper bands so hard it plateaus around rung ~22 and never tops
+  // out before the buzzer (the whole anti-spam point — verified across seeds).
+  static const int _rungs = 40; // rungs from ground (0) to the flag (_rungs)
+  // peakRung is 0.._rungs; the HUD shows the rung count directly as the score.
 
-  // ── Heat gauge (the sweet-zone DECISION) ────────────────────────────────────
-  // Heat 0..1. Each tap shoves it up; it bleeds down when you ease off. The puck
-  // only climbs at full strength while heat is inside the GREEN band; below the
-  // band a tap is a weak warm-up nudge, and ABOVE the redline the striker has
-  // boiled over — taps stop climbing and the puck slides back down.
-  static const double _heatPerTap = 0.13; // heat added per tap
-  static const double _heatDecayPerSec = 0.55; // bleeds when you slack off
-  static const double _heatGreenLo = 0.45; // green band lower edge
-  static const double _heatGreenHi = 0.82; // green band upper edge (redline)
-  // Below-green taps still nudge the puck a little so a timid player climbs
-  // slowly instead of being stuck at zero (kid-forgiving warm-up).
-  static const double _coldKickFrac = 0.4;
-  // Overheated taps give almost nothing — the climb essentially stalls in red.
-  static const double _overheatKickFrac = 0.06;
+  // ── Climb ─────────────────────────────────────────────────────────────────
+  static const double _climbPerTap = 1.0; // rungs gained per tap
+  // The climber visually eases toward its target rung so a step reads as a
+  // spring up rather than a teleport.
+  static const double _climbSpringPerSec = 16.0;
 
-  // ── Puck climb ──────────────────────────────────────────────────────────────
-  static const double _baseKickPerTap = 0.05; // puck height per green tap
-  static const double _puckGravityPerSec = 0.16; // puck eases back down if idle
-  // While overheated the puck doesn't just idle-bleed — it actively DROPS faster
-  // (reuses the same gravity unit, scaled up) so boiling over is clearly costly.
-  static const double _overheatDropMult = 2.2;
-  static const double _puckSpringPerSec = 14.0; // puck chases its target height
+  // ── Knockback on a bar hit ──────────────────────────────────────────────────
+  // A hit is HEAVY: it must cost a continuous masher MORE height than it can
+  // regain before the next sweep catches it, so a blind climb nets negative in
+  // the upper tower and stalls. A careful climber takes the hit ~never.
+  static const double _knockbackRungs = 8.0; // rungs lost when a bar hits you
+  static const double _stunSec = 1.5; // taps ignored while stunned
+  // A climber is only re-hittable after a short grace so one sweep = one hit
+  // (not a per-frame grind while the bar overlaps).
+  static const double _hitGraceSec = 0.7;
 
-  // ── Hammer swing (per tap) ──────────────────────────────────────────────────
-  static const double _swingSec = 0.18; // one hammer down-stroke duration
+  // ── Hazard bands + sweeping bars (the interposing difficulty) ───────────────
+  // Bands are evenly spaced up the climb. The bottom of the tower has a safe
+  // run-up with no band; bands then pack the rest up to just below the flag.
+  static const int _bandCount = 10;
+  static const double _firstBandRung = 5.0; // safe run-up below this
+  static const double _lastBandRung = 37.0; // top band sits just under the flag
+  // A bar's lethal half-height in rungs: you are "in the band" within this many
+  // rungs of the band center.
+  static const double _bandHalfRungs = 1.25;
 
-  // ── Overheat recoil (body tell) ─────────────────────────────────────────────
-  // While boiled over, the striker flinches on a throttle so the boil-over reads
-  // on the BODY (not just the gauge) without restarting the hurt clip every frame.
-  static const double _overheatRecoilSec = 0.42; // gap between recoil flinches
+  // Sweep speed (phase units/sec, phase 0..1 = one lane crossing). Higher bands
+  // sweep faster — the top is busier. Speed lerps from lo (bottom band) to hi
+  // (top band) by band height.
+  static const double _sweepSpeedLo = 0.45;
+  static const double _sweepSpeedHi = 0.95;
+  // Telegraph: each LIVE pass is preceded by a WARN beat where the bar parks at
+  // the lane edge and flashes (harmless). warnSec shrinks higher up so top bars
+  // give less lead time (still always a tell).
+  static const double _warnSecLo = 0.95;
+  static const double _warnSecHi = 0.5;
+  // The lethal core only covers the MIDDLE of the lane sweep; a margin at each
+  // edge is the safe pocket where a climber can pass while the bar is parked.
+  static const double _barCoverFrac = 0.72; // fraction of lane width the bar spans
+  // Idle dwell at the far edge between passes (a breath where the band is open).
+  static const double _dwellSec = 0.4;
+
+  // ── Summit / flag ───────────────────────────────────────────────────────────
+  // Reaching the flag (the top rung) ends the climb for that player (they plant
+  // the flag) and, if they're first, ends the round immediately.
+  static const double _summitRung = _rungs * 1.0; // _rungs as a double
 
   // ── Tap feedback ────────────────────────────────────────────────────────────
-  static const double _flashLifeSec = 0.22; // tap flash ring life
-  static const int _maxFlashes = 6; // flashes kept per striker
+  static const double _flashLifeSec = 0.22;
+  static const int _maxFlashes = 5;
+  static const double _stepLungeSec = 0.16; // a quick reach-up clip per step
 
-  // ── Heat-gauge sizing (render-only crowding fix) ────────────────────────────
-  // The HEAT gauge is centered under each lane. With few lanes it can be wide and
-  // bold; once 4 towers pack the width the wide gauge would bleed into the
-  // neighbouring lane (and crowd the striker), so its width factor lerps down as
-  // the field fills. RENDER-only — lane count, layout and scoring are untouched.
-  static const double _heatGaugeWidthFew = 1.7; // gauge width / towerW at ≤2 lanes
-  static const double _heatGaugeWidthFull = 1.15; // gauge width / towerW at 4 lanes
-
-  // ── FRENZY climax ─────────────────────────────────────────────────────────
-  // In the final stretch a green tap kicks the puck harder (a finale climb
-  // surge) with a one-shot "FRENZY!" banner + shake, so the last seconds are a
-  // swingy scramble where a late, well-managed rally can still steal the win.
-  static const double _frenzyFrac = 0.75; // fraction of timeLimit → frenzy begins
-  static const double _frenzyKickBoost = 0.6; // +60% green-tap climb during frenzy
-
-  // ── Comeback (kid-assist) ────────────────────────────────────────────────────
-  // A player whose puck sits below the leader's peak gets a small climb boost on
-  // a GREEN tap, scaled by the height gap — keeps a trailing kid's tower rising
-  // without ever rewarding a redline mash (the assist rides the same green tap).
-  static const double _catchUpMaxBoost = 0.6; // +60% green climb at full gap
-  static const double _catchUpGapFull = 0.5; // peak-height gap for the full boost
-
-  // ── Bot mash cadence (sec/tap); harder bots ride the green band tighter ─────
-  static const double _botBaseInterval = 0.16;
-  static const double _botAccuracyBonus = 0.05; // faster at high accuracy
-  static const double _botJitterBase = 0.05; // sloppier at low accuracy
-  // A bot eases off the throttle when its own heat climbs near the redline, so a
-  // strong bot hovers in the green instead of boiling over — its skill reads as
-  // "holds the sweet zone". Weaker bots react later (higher trigger) so they
-  // overheat more, mirroring a wild human masher.
-  static const double _botEaseHeatBase = 0.7; // heat at which a bot starts easing
-  static const double _botEasePause = 0.22; // sec a bot waits while it cools
-  // Bots wait a beat before they start hammering so a human gets a fair head
-  // start and an idle player is never instantly buried at the gun.
-  static const double _botWarmupSec = 1.5;
+  // ── Bot climb cadence (sec/step); harder bots read bars + step crisper ──────
+  static const double _botBaseInterval = 0.34;
+  static const double _botAccuracyBonus = 0.16; // faster steps at high accuracy
+  static const double _botJitterBase = 0.12; // sloppier cadence at low accuracy
+  // How far ahead (seconds of sweep) a bot looks for a threatening bar before it
+  // commits a step. Strong bots scan a wide window (wait early, thread cleanly);
+  // weak bots scan a narrow one so they step late and eat sweeps.
+  static const double _botLookaheadLo = 0.18; // low accuracy
+  static const double _botLookaheadHi = 0.6; // high accuracy
+  // Bots wait a beat at the gun so a human gets a fair head start.
+  static const double _botWarmupSec = 1.2;
 
   late Juice _juice;
   late Size _size;
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for bg shimmer
-  bool _frenzyFired = false; // one-shot "FRENZY!" climax cue latch
   bool _resultReacted = false; // one-shot end-of-round body reactions latch
+  int? _summitWinner; // first climber to plant the flag (ends the round)
 
-  final Map<int, _Striker> _strikers = <int, _Striker>{};
-  // Lane layout depends only on the (fixed) arena + roster, so build it once at
-  // init rather than re-allocating the whole map every frame AND every tap
-  // (bots tap many times a second, so the per-tap rebuild was the hot path).
+  final Map<int, _Climber> _climbers = <int, _Climber>{};
+  // The shared ladder of sweeping hazard bands. One set of bars for the whole
+  // tower; each lane reads the same band phases so the contest is identical for
+  // everyone (fair race). Built once at init.
+  late final List<_Band> _bands;
+  // Lane layout depends only on the (fixed) arena + roster, so build it once.
   late final Map<int, _Lane> _laneByPlayer;
 
   @override
@@ -138,34 +152,30 @@ class ButtonMasher extends MiniGameBase {
     _juice = Juice(rng: ctx.rng);
     _size = ctx.arena;
     _laneByPlayer = _lanes(_size);
+    _bands = _buildBands();
 
-    final proportions = _strikerProportions();
-    // Legs are near-vertical at rest, so pelvis→foot ≈ thigh + shin.
-    final footReach = proportions.thigh + proportions.shin;
+    final proportions = _climberProportions();
 
     for (final p in ctx.players) {
-      _strikers[p.id] = _Striker(
+      _climbers[p.id] = _Climber(
         slot: p,
         figure: StickFigure(
           proportions: proportions,
           style: _styleFor(Color(p.colorArgb)),
           facing: 1,
         )..setLoco(LocoState.idle),
-        footReach: footReach,
         botInterval: _botInterval(),
         botJitter: _botJitter(),
-        botEaseHeat: _botEaseHeat(),
+        botLookahead: _botLookahead(),
       );
     }
     begin();
   }
 
-  /// Stocky carnival build derived from the hero proportions — scaled up so the
-  /// hammer-swinging striker reads clearly at the foot of its tower.
-  StickProportions _strikerProportions() => StickProportions.hero.scaled(1.9);
+  /// Lithe climber build — a touch lighter than the carnival striker so it reads
+  /// clinging to the tower rail.
+  StickProportions _climberProportions() => StickProportions.hero.scaled(1.7);
 
-  /// Bright player style: color fill, brightened outline, strong glow. We draw
-  /// our own contact shadow so the figure's own ground shadow is disabled.
   StickStyle _styleFor(Color color) => StickStyle(
         fill: color,
         outline: _brighten(color, 0.5),
@@ -177,26 +187,49 @@ class ButtonMasher extends MiniGameBase {
         smearAlpha: 0.28,
       );
 
-  double _botInterval() {
-    final prof = ctx.botProfile;
-    return math.max(0.05, _botBaseInterval - _botAccuracyBonus * prof.accuracy);
+  /// Evenly spaced hazard bands, the lowest at [_firstBandRung] and the highest
+  /// at [_lastBandRung]. Higher bands sweep faster, warn for less time and start
+  /// out of phase with one another (staggered so they don't all open at once).
+  List<_Band> _buildBands() {
+    final bands = <_Band>[];
+    final span = _lastBandRung - _firstBandRung;
+    for (var i = 0; i < _bandCount; i++) {
+      final t = _bandCount <= 1 ? 0.0 : i / (_bandCount - 1); // 0 (low)..1 (high)
+      final rung = _firstBandRung + span * t;
+      bands.add(_Band(
+        rung: rung,
+        sweepSpeed: lerpD(_sweepSpeedLo, _sweepSpeedHi, t),
+        warnSec: lerpD(_warnSecLo, _warnSecHi, t),
+        // Stagger start: alternate edges + a phase offset so the gauntlet is a
+        // shifting pattern, not a synced wall.
+        dir: i.isEven ? 1 : -1,
+        phase: (i * 0.37) % 1.0,
+        state: _BandState.sweeping,
+        // Deterministic per-band warm-in so the bottom band isn't lethal on the
+        // very first frame (the run-up stays open a moment).
+        timer: ctx.rng.range(0, _dwellSec),
+      ));
+    }
+    return bands;
   }
 
-  /// Sloppier (more jitter) at low accuracy so weak bots stutter and strong
-  /// bots stay metronomic.
+  double _botInterval() {
+    final prof = ctx.botProfile;
+    return math.max(0.12, _botBaseInterval - _botAccuracyBonus * prof.accuracy);
+  }
+
   double _botJitter() {
     final prof = ctx.botProfile;
     return _botJitterBase * (1.0 - prof.accuracy.clamp(0.0, 1.0)) +
         _botJitterBase * 0.25;
   }
 
-  /// The heat at which a bot eases off to cool down. A high-accuracy bot eases
-  /// early (just under the redline) so it rides the green; a low-accuracy bot
-  /// eases late (or past the line) so it boils over like a wild masher.
-  double _botEaseHeat() {
+  /// Seconds of sweep a bot looks ahead before stepping — wide for strong bots
+  /// (they wait early and thread the gap) and narrow for weak ones (they step
+  /// late and clip bars).
+  double _botLookahead() {
     final prof = ctx.botProfile;
-    // accuracy 1 → ease at the green ceiling; accuracy 0 → ease well into red.
-    return _botEaseHeatBase + (1.0 - prof.accuracy.clamp(0.0, 1.0)) * 0.25;
+    return lerpD(_botLookaheadLo, _botLookaheadHi, prof.accuracy.clamp(0.0, 1.0));
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -219,205 +252,146 @@ class ButtonMasher extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
-    _maybeFireFrenzy();
+    _tickBands(sdt);
     _driveBots(sdt);
 
-    for (final s in _strikers.values) {
-      _tickStriker(s, sdt);
-      // Score = HEIGHT reached (×scale, rounded). Managing heat — not raw mash
-      // count — drives the climb, so a steady player out-scores a spammer.
-      setScore(s.slot.id, (s.peakHeight * _scorePerHeight).round());
+    for (final c in _climbers.values) {
+      _tickClimber(c, sdt);
+      // Score = best rung reached. A climber knocked down keeps its peak, so
+      // ranking rewards how HIGH you got, not how many times you tapped.
+      setScore(c.slot.id, c.peakRung.round());
     }
 
-    if (_elapsed >= _timeLimit) {
-      _reactToResult(); // winner cheers, the rest slump — once, on the body
-      finishByScore(); // most height (≡ best heat management) wins
+    if (_summitWinner != null || _elapsed >= _timeLimit) {
+      _reactToResult();
+      finishByScore(); // highest rung wins (summit already pins the max)
     }
   }
 
-  /// One-shot end-of-round body reactions: the striker with the highest peak
-  /// (the scored quantity) throws a VICTORY cheer, everyone else slumps with a
-  /// hurt. Guarded by [_resultReacted] so it fires exactly once at the buzzer.
-  void _reactToResult() {
-    if (_resultReacted || _strikers.isEmpty) return;
-    _resultReacted = true;
-    var winnerId = _strikers.values.first.slot.id;
-    var best = -1.0;
-    for (final s in _strikers.values) {
-      if (s.peakHeight > best) {
-        best = s.peakHeight;
-        winnerId = s.slot.id;
+  /// Advance every band's sweep + telegraph clock. Pure phase bookkeeping; the
+  /// hit test reads the resulting [_Band.coversLaneCenter].
+  void _tickBands(double dt) {
+    for (final b in _bands) {
+      switch (b.state) {
+        case _BandState.dwell:
+          b.timer -= dt;
+          if (b.timer <= 0) {
+            b.dir = -b.dir; // turn around for the next pass
+            b.state = _BandState.warn;
+            b.timer = b.warnSec;
+          }
+          break;
+        case _BandState.warn:
+          // Parked at the start edge, flashing — harmless lead time.
+          b.timer -= dt;
+          if (b.timer <= 0) {
+            b.state = _BandState.sweeping;
+            b.phase = b.dir > 0 ? 0.0 : 1.0;
+          }
+          break;
+        case _BandState.sweeping:
+          b.phase += b.dir * b.sweepSpeed * dt;
+          if (b.phase >= 1.0 || b.phase <= 0.0) {
+            b.phase = b.phase.clamp(0.0, 1.0);
+            b.state = _BandState.dwell;
+            b.timer = _dwellSec;
+          }
+          break;
       }
     }
-    for (final s in _strikers.values) {
-      if (s.slot.id == winnerId) {
-        s.figure
-          ..setLoco(LocoState.idle)
-          ..victory();
-      } else {
-        s.figure.hurt();
-      }
+  }
+
+  void _tickClimber(_Climber c, double dt) {
+    // Stun + hit-grace clocks.
+    if (c.stun > 0) c.stun = math.max(0.0, c.stun - dt);
+    if (c.hitGrace > 0) c.hitGrace = math.max(0.0, c.hitGrace - dt);
+
+    // Ease the rendered rung toward the target rung (a step springs up).
+    final follow = (1.0 - math.exp(-_climbSpringPerSec * dt)).clamp(0.0, 1.0);
+    c.rung += (c.targetRung - c.rung) * follow;
+    if (c.rung < 0) c.rung = 0;
+    c.peakRung = math.max(c.peakRung, c.rung);
+
+    // Hazard hit test: a LIVE bar whose band straddles this climber's rung and
+    // whose lethal core currently covers the lane (center) knocks the climber
+    // down. Off-grace only, and never after planting the flag.
+    if (!c.planted && c.stun <= 0 && c.hitGrace <= 0) {
+      final band = _bandHitting(c);
+      if (band != null) _knockDown(c, band);
     }
-  }
 
-  /// True once the round enters the final stretch — green taps climb harder so
-  /// the finale is a swingy scramble.
-  bool get _inFrenzy => _elapsed >= _timeLimit * _frenzyFrac;
+    // Plant the flag the first time a climber tops out.
+    if (!c.planted && c.targetRung >= _summitRung) _plantFlag(c);
 
-  /// Fire the one-shot "FRENZY!" climax cue over the towers when frenzy begins.
-  void _maybeFireFrenzy() {
-    if (_frenzyFired || !_inFrenzy) return;
-    _frenzyFired = true;
-    _juice.popup(
-      Offset(_size.width / 2, _size.height * 0.16),
-      'FRENZY!',
-      MasherRenderer.bellGold,
-      size: 40,
-    );
-    _juice.shake.medium();
-  }
-
-  void _tickStriker(_Striker s, double dt) {
-    // Heat bleeds off so you must keep tapping to stay hot — but easing off is
-    // exactly how you drop OUT of the red back into the green.
-    s.heat = math.max(0.0, s.heat - _heatDecayPerSec * dt);
-
-    // Puck eases toward its target. While overheated it drops faster (an active
-    // boil-over slide), otherwise it just idle-bleeds toward the target.
-    final drop = _isOverheated(s.heat)
-        ? _puckGravityPerSec * _overheatDropMult
-        : _puckGravityPerSec;
-    s.targetHeight = math.max(0.0, s.targetHeight - drop * dt);
-    final follow = (1.0 - math.exp(-_puckSpringPerSec * dt)).clamp(0.0, 1.0);
-    s.puckHeight += (s.targetHeight - s.puckHeight) * follow;
-    s.peakHeight = math.max(s.peakHeight, s.puckHeight);
-
-    // Hammer swing + tap-flash clocks.
-    if (s.swing > 0) s.swing = math.max(0.0, s.swing - dt);
-    for (final f in s.flashes) {
+    // Step lunge + tap-flash clocks.
+    if (c.lunge > 0) c.lunge = math.max(0.0, c.lunge - dt);
+    for (final f in c.flashes) {
       f.life -= dt;
     }
-    s.flashes.removeWhere((f) => f.life <= 0);
-    s.sinceTap += dt;
+    c.flashes.removeWhere((f) => f.life <= 0);
 
-    _tickOverheatRecoil(s, dt);
-
-    s.figure.update(dt);
+    c.figure.update(dt);
   }
 
-  /// While the striker is boiled over (and hasn't already rung its bell), throw a
-  /// throttled hurt flinch so the overheat shows on the BODY, not just the gauge.
-  /// The throttle keeps the 0.3s hurt clip from restarting every frame; easing
-  /// back into the green re-arms an immediate flinch on the next boil-over.
-  void _tickOverheatRecoil(_Striker s, double dt) {
-    if (s.belled || !_isOverheated(s.heat)) {
-      s.recoilTimer = 0; // re-arm so a fresh boil-over flinches at once
-      return;
+  /// The band currently hitting [c] (LIVE bar, band straddles the climber's
+  /// rung, lethal core over the lane center) — or null when the climber is in a
+  /// safe pocket. The lane center is at sweep-fraction 0.5, so the core covers
+  /// it only while the bar sweeps through the middle [_barCoverFrac] of its run.
+  _Band? _bandHitting(_Climber c) {
+    for (final b in _bands) {
+      if (b.state != _BandState.sweeping) continue; // warn/dwell are harmless
+      if ((c.rung - b.rung).abs() > _bandHalfRungs) continue; // not in the band
+      if (b.coversLaneCenter(_barCoverFrac)) return b;
     }
-    s.recoilTimer -= dt;
-    if (s.recoilTimer <= 0) {
-      s.figure.hurt();
-      s.recoilTimer = _overheatRecoilSec;
-    }
+    return null;
   }
 
-  /// True when heat has crossed the redline into the overheat (RED) zone.
-  bool _isOverheated(double heat) => heat > _heatGreenHi;
+  /// Knock [c] down several rungs + stun it, with a hurt flinch and a puff. The
+  /// peak rung is untouched, so a hit costs progress on THIS attempt but never
+  /// erases how high the climber has been (fair, readable scoring).
+  void _knockDown(_Climber c, _Band band) {
+    c.targetRung = math.max(0.0, c.targetRung - _knockbackRungs);
+    c.stun = _stunSec;
+    c.hitGrace = _hitGraceSec;
+    c.figure.hurt();
 
-  /// True when heat sits inside the GREEN band (full-strength climb).
-  bool _isInGreen(double heat) => heat >= _heatGreenLo && heat <= _heatGreenHi;
-
-  // ── Tap → heat + puck kick + swing + feedback ───────────────────────────────
-
-  void _tap(int id) {
-    final s = _strikers[id];
-    if (s == null) return;
-
-    s.sinceTap = 0;
-
-    // Add heat FIRST, then judge the band — a tap that tips you over the redline
-    // boils over on that very tap (so spamming is self-punishing).
-    s.heat = math.min(1.0, s.heat + _heatPerTap);
-
-    // Climb strength by band: green = full, cold = weak warm-up, red = stall.
-    final double bandFrac;
-    if (_isOverheated(s.heat)) {
-      bandFrac = _overheatKickFrac;
-    } else if (_isInGreen(s.heat)) {
-      bandFrac = 1.0;
-    } else {
-      bandFrac = _coldKickFrac; // below the green band
-    }
-
-    // FRENZY shoves a green climb harder; COMEBACK gives a trailing striker a
-    // gentle extra push — both ride the green tap so neither rewards a redline.
-    final frenzyMult = _inFrenzy ? (1.0 + _frenzyKickBoost) : 1.0;
-    final catchUpMult = 1.0 + _catchUpBoost(s);
-    final kick = _baseKickPerTap * bandFrac * frenzyMult * catchUpMult;
-    s.targetHeight = math.min(1.0, s.targetHeight + kick);
-
-    // Swing the hammer down-stroke + a chop drives the lever.
-    s.swing = _swingSec;
-    s.figure.attack(1);
-
-    _spawnTapFeedback(s);
-    _maybeRingBell(s);
-  }
-
-  /// Extra green-tap climb for a trailing striker, scaled 0..1 by how far its
-  /// puck sits below the current leader's peak (capped at [_catchUpGapFull]).
-  /// Zero for the leader. Gap is on peak height (the scored quantity).
-  double _catchUpBoost(_Striker s) {
-    final gap = _leadPeak() - s.peakHeight;
-    if (gap <= 0) return 0;
-    final t = (gap / _catchUpGapFull).clamp(0.0, 1.0);
-    return _catchUpMaxBoost * t;
-  }
-
-  /// The highest peak height across all strikers (the current leader).
-  double _leadPeak() {
-    var best = 0.0;
-    for (final s in _strikers.values) {
-      if (s.peakHeight > best) best = s.peakHeight;
-    }
-    return best;
-  }
-
-  /// Each tap = a flash ring + a small spark spray off the lever plate. A red
-  /// (overheated) tap sprays in the danger color so a boil-over reads instantly.
-  void _spawnTapFeedback(_Striker s) {
-    final base = _leverAnchor(s);
-    final color =
-        _isOverheated(s.heat) ? MasherRenderer.overheatRed : _colorOf(s.slot.id);
-    s.flashes.add(_Flash(at: base, life: _flashLifeSec));
-    if (s.flashes.length > _maxFlashes) s.flashes.removeAt(0);
+    final at = _rungAnchor(c, c.rung);
     _juice.particles.burst(
-      at: base,
-      count: 4,
-      color: color,
-      speed: 150,
-      baseAngle: -math.pi / 2,
-      spread: math.pi * 0.8,
-      size: 4,
-      gravity: 500,
-      life: 0.3,
+      at: at,
+      count: 8,
+      color: MasherRenderer.hazardRed,
+      speed: 220,
+      spread: math.pi * 1.6,
+      size: 5,
+      gravity: 600,
+      life: 0.4,
     );
+    _juice.popup(at.translate(0, -_size.height * 0.02), 'BONK!',
+        MasherRenderer.hazardRed,
+        size: 26);
+    _juice.shake.light();
   }
 
-  /// The first time a puck tops out, ring the bell: a full cinematic SMASH!
-  /// beat — golden burst + DING popup + the signature [Juice.bigMoment]
-  /// (burst+shake+slow-mo+zoom toward the bell+flash+banner+haptic). Fires once
-  /// per striker per round (guarded by [_Striker.belled]).
-  void _maybeRingBell(_Striker s) {
-    if (s.belled || s.targetHeight < 1.0) return;
-    s.belled = true;
-    s.figure.special(); // a triumphant fist-pump the instant the bell rings
-    final bell = _bellAnchor(s);
-    final color = _colorOf(s.slot.id);
+  /// First climber to reach the flag plants it: a full cinematic SUMMIT! beat
+  /// (golden burst + popup + signature [Juice.bigMoment]) and the round ends.
+  /// Later summiteers still plant their own flag (cheer) but don't re-trigger
+  /// the win.
+  void _plantFlag(_Climber c) {
+    c.planted = true;
+    c.targetRung = _summitRung;
+    c.figure
+      ..setLoco(LocoState.idle)
+      ..special(); // triumphant fist-pump as the flag goes in
+
+    final flag = _flagAnchor(c);
+    final color = _colorOf(c.slot.id);
+    final firstToTop = _summitWinner == null;
+    if (firstToTop) _summitWinner = c.slot.id;
+
     _juice.particles.burst(
-      at: bell,
-      count: 20,
-      color: MasherRenderer.bellGold,
+      at: flag,
+      count: firstToTop ? 22 : 12,
+      color: MasherRenderer.flagGold,
       speed: 360,
       spread: math.pi * 2,
       size: 7,
@@ -425,55 +399,145 @@ class ButtonMasher extends MiniGameBase {
       life: 0.7,
     );
     _juice.particles.burst(
-      at: bell,
+      at: flag,
       count: 12,
       color: color,
       speed: 260,
       size: 5,
       life: 0.6,
     );
-    _juice.popup(
-      bell.translate(0, -_size.height * 0.04),
-      'DING!',
-      MasherRenderer.bellGold,
-      size: 38,
-    );
-    // Signature SMASH! cinematic: zoom-punch toward the bell that just rang.
-    _juice.bigMoment(bell, color, banner: 'SMASH!');
+    if (firstToTop) {
+      _juice.popup(
+        flag.translate(0, -_size.height * 0.04),
+        'SUMMIT!',
+        MasherRenderer.flagGold,
+        size: 38,
+      );
+      _juice.bigMoment(flag, color, banner: 'SUMMIT!');
+    }
   }
 
-  /// Bots mash on a cadence clock with [BotProfile]-driven interval + jitter, and
-  /// — the skill layer — EASE OFF when their heat nears the redline so a strong
-  /// bot rides the green band instead of boiling over. The guard caps catch-up
-  /// taps for huge frame steps.
-  void _driveBots(double dt) {
-    if (_elapsed < _botWarmupSec) return; // let the human get a head start
-    for (final s in _strikers.values) {
-      if (!s.slot.isBot) continue;
-      // Cooling pause: while easing, the bot holds off tapping so its heat
-      // bleeds back down into the green (mirrors a human laying off the button).
-      if (s.botCooldown > 0) {
-        s.botCooldown = math.max(0.0, s.botCooldown - dt);
-        continue;
-      }
-      s.botClock += dt;
-      var guard = 0;
-      while (s.botClock >= s.nextTapAt && guard++ < 8) {
-        s.botClock -= s.nextTapAt;
-        _tap(s.slot.id);
-        // After tapping, if heat has climbed to this bot's ease point, take a
-        // cooling beat before the next tap.
-        if (s.heat >= s.botEaseHeat) {
-          s.botCooldown = _botEasePause;
-          break;
+  /// One-shot end-of-round body reactions: the highest climber (the scored
+  /// quantity / summit winner) throws a VICTORY cheer, the rest slump. Fires once
+  /// at the buzzer (or the instant someone summits).
+  void _reactToResult() {
+    if (_resultReacted || _climbers.isEmpty) return;
+    _resultReacted = true;
+    var winnerId = _summitWinner ?? _climbers.values.first.slot.id;
+    if (_summitWinner == null) {
+      var best = -1.0;
+      for (final c in _climbers.values) {
+        if (c.peakRung > best) {
+          best = c.peakRung;
+          winnerId = c.slot.id;
         }
-        s.nextTapAt = _nextBotInterval(s);
+      }
+    }
+    for (final c in _climbers.values) {
+      if (c.slot.id == winnerId) {
+        c.figure
+          ..setLoco(LocoState.idle)
+          ..victory();
+      } else {
+        c.figure.hurt();
       }
     }
   }
 
-  double _nextBotInterval(_Striker s) =>
-      math.max(0.04, s.botInterval + ctx.rng.jitter(s.botJitter));
+  // ── Tap → climb one rung + lunge + feedback ─────────────────────────────────
+
+  void _tap(int id) {
+    final c = _climbers[id];
+    if (c == null) return;
+    // A stunned or summited climber ignores taps (the knockdown is the cost of
+    // mashing into a bar; once you've planted the flag you're done).
+    if (c.stun > 0 || c.planted) return;
+
+    c.targetRung = math.min(_summitRung, c.targetRung + _climbPerTap);
+
+    // Reach-up lunge clip + a little hop-loco for life.
+    c.lunge = _stepLungeSec;
+    c.figure.attack(1);
+
+    _spawnStepFeedback(c);
+    if (c.targetRung >= _summitRung) _plantFlag(c);
+  }
+
+  /// Each step = a flash ring + a small dust kick off the rung the climber
+  /// reaches, so a step reads as a grab even amid a frantic climb.
+  void _spawnStepFeedback(_Climber c) {
+    final at = _rungAnchor(c, c.targetRung);
+    final color = _colorOf(c.slot.id);
+    c.flashes.add(_Flash(at: at, life: _flashLifeSec));
+    if (c.flashes.length > _maxFlashes) c.flashes.removeAt(0);
+    _juice.particles.burst(
+      at: at,
+      count: 4,
+      color: color,
+      speed: 130,
+      baseAngle: -math.pi / 2,
+      spread: math.pi * 0.8,
+      size: 3.5,
+      gravity: 500,
+      life: 0.3,
+    );
+  }
+
+  /// Bots step on a [BotProfile] cadence, but only AFTER checking the rung just
+  /// above them is clear within their lookahead window. A strong bot scans far
+  /// ahead (waits for the gap, threads it); a weak bot scans little and, on an
+  /// [errorRate] slip, steps into a closing bar anyway. The guard caps catch-up
+  /// steps for huge frame steps.
+  void _driveBots(double dt) {
+    if (_elapsed < _botWarmupSec) return; // human head start
+    for (final c in _climbers.values) {
+      if (!c.slot.isBot) continue;
+      if (c.planted) continue;
+      if (c.stun > 0) {
+        c.botClock = 0; // re-time after the stun clears
+        continue;
+      }
+      c.botClock += dt;
+      var guard = 0;
+      while (c.botClock >= c.nextStepAt && guard++ < 6) {
+        c.botClock -= c.nextStepAt;
+        if (_botShouldStep(c)) {
+          _tap(c.slot.id);
+        }
+        c.nextStepAt = _nextBotInterval(c);
+        if (c.planted) break;
+      }
+    }
+  }
+
+  /// A bot steps unless stepping would carry it into a bar. It reads the band it
+  /// would enter (the rung just above) and waits while that band's bar is LIVE
+  /// over the lane OR is about to be (telegraphing / arriving within the bot's
+  /// lookahead). On an [errorRate] slip it ignores the tell and steps anyway —
+  /// mistiming into the bar exactly like a careless human.
+  bool _botShouldStep(_Climber c) {
+    final nextRung = c.targetRung + _climbPerTap;
+    final threat = _threatForRung(c, nextRung);
+    if (threat == null) return true; // clear above → climb
+    // Careless slip: step into the closing bar and (likely) eat it.
+    if (ctx.rng.chance(ctx.botProfile.errorRate)) return true;
+    return false; // read the bar, hold this beat
+  }
+
+  /// The band threatening a climb to [rung] for [c] within its bot lookahead —
+  /// LIVE-and-over-lane now, or warning / sweeping toward the lane soon — or null
+  /// if that rung is safe to step into.
+  _Band? _threatForRung(_Climber c, double rung) {
+    final look = c.botLookahead;
+    for (final b in _bands) {
+      if ((rung - b.rung).abs() > _bandHalfRungs) continue; // not this band
+      if (b.threatensLaneSoon(_barCoverFrac, look)) return b;
+    }
+    return null;
+  }
+
+  double _nextBotInterval(_Climber c) =>
+      math.max(0.1, c.botInterval + ctx.rng.jitter(c.botJitter));
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -485,10 +549,10 @@ class ButtonMasher extends MiniGameBase {
     MasherRenderer.drawBackground(canvas, size, _animClock);
 
     for (final p in ctx.players) {
-      final s = _strikers[p.id];
+      final c = _climbers[p.id];
       final lane = _laneByPlayer[p.id];
-      if (s == null || lane == null) continue;
-      _drawStriker(canvas, s, lane);
+      if (c == null || lane == null) continue;
+      _drawClimber(canvas, c, lane);
     }
 
     _juice.render(canvas);
@@ -499,100 +563,85 @@ class ButtonMasher extends MiniGameBase {
     _juice.renderOverlay(canvas, size);
   }
 
-  void _drawStriker(Canvas canvas, _Striker s, _Lane lane) {
-    final color = _colorOf(s.slot.id);
-    final tower = _Tower.of(lane);
+  void _drawClimber(Canvas canvas, _Climber c, _Lane lane) {
+    final color = _colorOf(c.slot.id);
+    final tower = _Tower.of(lane, _rungs);
 
     MasherRenderer.drawTower(
       canvas,
       tower.spec,
       color: color,
-      levels: _levels,
-      litFraction: s.puckHeight,
-      number: s.slot.id + 1,
-      glowPulse: 0.5 + 0.5 * math.sin(_animClock * 3.0 + s.slot.id),
-    );
-    MasherRenderer.drawPuck(
-      canvas,
-      tower.spec,
-      heightFrac: s.puckHeight,
-      color: color,
-    );
-    MasherRenderer.drawBell(
-      canvas,
-      tower.spec,
-      color: color,
-      rung: s.belled,
-      glowPulse: 0.5 + 0.5 * math.sin(_animClock * 6.0 + s.slot.id),
+      rungs: _rungs,
+      reachedFraction: c.peakRung / _summitRung,
+      number: c.slot.id + 1,
+      glowPulse: 0.5 + 0.5 * math.sin(_animClock * 3.0 + c.slot.id),
     );
 
-    // Tap flash rings over the lever plate (behind the striker so the figure
-    // stays readable even during a frantic mash).
-    for (final f in s.flashes) {
+    // Sweeping hazard bars across this lane. Each band reads its phase/state so
+    // a LIVE bar is a solid danger slab and a WARN bar is a flashing ghost — the
+    // telegraph the player reads to time a step.
+    for (final b in _bands) {
+      MasherRenderer.drawHazardBar(
+        canvas,
+        tower.spec,
+        bandRung: b.rung,
+        rungs: _rungs,
+        laneFrac: b.laneFrac,
+        coverFrac: _barCoverFrac,
+        live: b.state == _BandState.sweeping,
+        warn: b.state == _BandState.warn,
+        warnPulse: 0.5 + 0.5 * math.sin(_animClock * 14.0 + b.rung),
+      );
+    }
+
+    MasherRenderer.drawFlag(
+      canvas,
+      tower.spec,
+      color: color,
+      planted: c.planted,
+      wave: _animClock * 4.0 + c.slot.id,
+    );
+
+    // Step flash rings on the rungs the climber grabs.
+    for (final f in c.flashes) {
       final t = (f.life / _flashLifeSec).clamp(0.0, 1.0);
       MasherRenderer.drawTapFlash(canvas, f.at, t, color, tower.width);
     }
 
-    // Striker stickman + hammer, standing to the left of the tower hardware and
-    // swinging the hammer rightward onto the lever plate. Kept inside the lane.
-    final feet = Offset(lane.center - tower.width * 0.66, lane.feet.dy);
-    final root = Offset(feet.dx, feet.dy - s.footReach);
-    MasherRenderer.drawContactShadow(canvas, feet, tower.width * 0.5);
-    MasherRenderer.drawStriker(
+    // The climber stickman clinging to the rail at its current rung, reaching up
+    // on a step. A stunned climber is drawn knocked-loose (lean + dim).
+    final root = tower.spec.rungAt(c.rung / _summitRung);
+    MasherRenderer.drawClimber(
       canvas,
-      s.figure,
+      c.figure,
       root,
-      hammerSwing: _swingPhase(s),
-      hammerHead: tower.leverPlate,
+      reach: _lungePhase(c),
+      stunned: c.stun > 0,
       color: color,
       scale: tower.width,
     );
-
-    // HEAT gauge at the lane base: the green sweet-zone band, the red overheat
-    // zone, and the live heat fill. This is the player's decision readout — keep
-    // the fill in the green, off the red. Its width slims as lanes fill so a
-    // 4-tower field stops the gauges colliding with neighbours (render-only).
-    MasherRenderer.drawHeatGauge(
-      canvas,
-      Offset(lane.center, lane.feet.dy + tower.width * 0.55),
-      tower.width * _heatGaugeWidthFactor(),
-      heat: s.heat,
-      greenLo: _heatGreenLo,
-      greenHi: _heatGreenHi,
-      color: color,
-      pulse: 0.5 + 0.5 * math.sin(_animClock * 12.0 + s.slot.id),
-    );
   }
 
-  /// Render-only HEAT-gauge width factor for the current field size: wide at ≤2
-  /// lanes, lerping down to [_heatGaugeWidthFull] by 4 lanes so the gauges never
-  /// collide once the towers pack the width. Does not affect layout or scoring.
-  double _heatGaugeWidthFactor() {
-    final n = ctx.players.length;
-    final t = ((n - 2) / 2.0).clamp(0.0, 1.0); // 0 at ≤2 lanes, 1 at 4 lanes
-    return lerpD(_heatGaugeWidthFew, _heatGaugeWidthFull, t);
-  }
-
-  /// 0 (rest) → 1 (hammer slammed onto the plate) → 0 over a swing, eased so the
-  /// down-stroke snaps and the recovery is gentle.
-  double _swingPhase(_Striker s) {
-    if (s.swing <= 0) return 0;
-    final p = 1.0 - (s.swing / _swingSec).clamp(0.0, 1.0); // 0..1 through swing
-    // Fast down to the plate by ~40% of the swing, then ease back up.
+  /// 0 (clinging) → 1 (arm fully reached up) → 0 over a step, eased so the grab
+  /// snaps up and settles.
+  double _lungePhase(_Climber c) {
+    if (c.lunge <= 0) return 0;
+    final p = 1.0 - (c.lunge / _stepLungeSec).clamp(0.0, 1.0); // 0..1 through step
     return p < 0.4 ? easeOut(p / 0.4) : easeOut((1 - p) / 0.6);
   }
 
   // ── Layout ──────────────────────────────────────────────────────────────────
 
-  /// One vertical lane per player, split evenly across the width.
+  /// One vertical tower lane per player, split evenly across the width.
   Map<int, _Lane> _lanes(Size size) {
     final players = ctx.players;
     final n = players.length;
     final result = <int, _Lane>{};
-    final groundY = size.height * 0.86; // foot line
+    final groundY = size.height * 0.9; // foot of the tower
     for (var i = 0; i < n; i++) {
       final center = size.width * (i + 0.5) / n;
-      final width = (size.width / n) * 0.5; // tower base width
+      // Narrower per-lane towers when the field fills so 4 towers don't collide.
+      final width = (size.width / n) * (n >= 3 ? 0.42 : 0.5);
       result[players[i].id] = _Lane(
         center: center,
         width: width,
@@ -603,16 +652,17 @@ class ButtonMasher extends MiniGameBase {
     return result;
   }
 
-  Offset _leverAnchor(_Striker s) {
-    final lane = _laneByPlayer[s.slot.id];
+  /// World position of [rung] on player [c]'s tower.
+  Offset _rungAnchor(_Climber c, double rung) {
+    final lane = _laneByPlayer[c.slot.id];
     if (lane == null) return Offset(_size.width / 2, _size.height / 2);
-    return _Tower.of(lane).leverPlate;
+    return _Tower.of(lane, _rungs).spec.rungAt(rung / _summitRung);
   }
 
-  Offset _bellAnchor(_Striker s) {
-    final lane = _laneByPlayer[s.slot.id];
+  Offset _flagAnchor(_Climber c) {
+    final lane = _laneByPlayer[c.slot.id];
     if (lane == null) return Offset(_size.width / 2, _size.height * 0.1);
-    return _Tower.of(lane).bell;
+    return _Tower.of(lane, _rungs).spec.flag;
   }
 
   Color _colorOf(int id) {
@@ -624,14 +674,37 @@ class ButtonMasher extends MiniGameBase {
 
   static Color _brighten(Color c, double t) =>
       Color.lerp(c, const Color(0xFFFFFFFF), t.clamp(0.0, 1.0)) ?? c;
+
+  // ── Test seams (read-only) ──────────────────────────────────────────────────
+
+  /// The rung [id]'s climber is stepping toward (0 = ground), or -1 if there is
+  /// no such climber. Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  double rungOf(int id) => _climbers[id]?.targetRung ?? -1;
+
+  /// The best rung [id]'s climber ever reached (the scored quantity), or -1 if
+  /// there is no such climber. Read-only; for deterministic gameplay tests.
+  @visibleForTesting
+  double peakRungOf(int id) => _climbers[id]?.peakRung ?? -1;
+
+  /// Whether [id]'s climber can safely step up ONE rung right now — i.e. the
+  /// rung just above it is not threatened by any LIVE-or-imminent hazard bar.
+  /// This is exactly the read a careful player (or a hint cue) makes before
+  /// stepping. Read-only; for deterministic gameplay tests + smart play.
+  @visibleForTesting
+  bool isStepSafe(int id) {
+    final c = _climbers[id];
+    if (c == null) return false;
+    return _threatForRung(c, c.targetRung + _climbPerTap) == null;
+  }
 }
 
 /// A player's vertical column of the arena. Pure layout value.
 class _Lane {
   final double center; // x of the lane center
   final double width; // tower base width
-  final double topY; // top of the playable column (bell sits near here)
-  final Offset feet; // ground line under the striker
+  final double topY; // top of the playable column (flag sits near here)
+  final Offset feet; // ground line under the tower
 
   const _Lane({
     required this.center,
@@ -641,71 +714,128 @@ class _Lane {
   });
 }
 
-/// Derived geometry of one high-striker tower. Wraps a [TowerSpec] (the value
-/// the renderer consumes) plus a couple of sim-side anchors so render and sim
-/// agree on where the lever plate and bell sit.
+/// Derived geometry of one climbing tower. Wraps a [TowerSpec] (the value the
+/// renderer consumes) so render and sim agree on rung + flag positions.
 class _Tower {
   final TowerSpec spec;
 
   const _Tower(this.spec);
 
-  factory _Tower.of(_Lane lane) {
-    // Lever plate sits low (near the striker's knees) like a real high striker,
-    // so the hammer swings down onto it and the rail climbs up from there.
-    final plateY = lane.feet.dy - lane.width * 0.45;
-    final topY = lane.topY + lane.width * 0.9; // leave room for the bell
+  factory _Tower.of(_Lane lane, int rungs) {
+    final railBottom = lane.feet.dy - lane.width * 0.2; // ground rung
+    final railTop = lane.topY + lane.width * 0.9; // leave room for the flag
     return _Tower(TowerSpec(
       center: lane.center,
       width: lane.width,
-      railTop: topY,
-      railBottom: plateY,
+      railTop: railTop,
+      railBottom: railBottom,
+      rungs: rungs,
     ));
   }
 
   double get width => spec.width;
-  Offset get leverPlate => spec.leverPlate;
-  Offset get bell => spec.bell;
 }
 
-/// A short-lived tap flash ring over the lever. Mutable round-scoped state.
+/// A short-lived step flash ring on a rung. Mutable round-scoped state.
 class _Flash {
   final Offset at;
   double life;
   _Flash({required this.at, required this.life});
 }
 
-/// Per-player tower state for one round. Mutable round-scoped state (allowed for
+/// Telegraph state of a sweeping hazard band.
+enum _BandState { sweeping, dwell, warn }
+
+/// One horizontal hazard band on the shared ladder: a bar that sweeps across the
+/// lane at a fixed rung [rung], with a WARN tell before each LIVE pass and a
+/// DWELL breath at the far edge. Mutable round-scoped state.
+class _Band {
+  final double rung; // band center height (in rungs)
+  final double sweepSpeed; // phase units/sec while sweeping
+  final double warnSec; // telegraph lead time before a live pass
+
+  int dir; // +1 sweeping right, -1 sweeping left
+  double phase; // 0..1 sweep fraction across the lane (0 = left edge)
+  _BandState state;
+  double timer; // counts down in warn/dwell
+
+  _Band({
+    required this.rung,
+    required this.sweepSpeed,
+    required this.warnSec,
+    required this.dir,
+    required this.phase,
+    required this.state,
+    required this.timer,
+  });
+
+  /// Sweep fraction for rendering: the parked WARN bar sits at its start edge.
+  double get laneFrac {
+    if (state == _BandState.warn) return dir > 0 ? 0.0 : 1.0;
+    return phase.clamp(0.0, 1.0);
+  }
+
+  /// True while the LIVE lethal core (the middle [coverFrac] of the sweep)
+  /// covers the lane center (sweep-fraction 0.5).
+  bool coversLaneCenter(double coverFrac) {
+    if (state != _BandState.sweeping) return false;
+    final half = coverFrac.clamp(0.0, 1.0) / 2;
+    return (phase - 0.5).abs() <= half;
+  }
+
+  /// True if this band threatens the lane center NOW or within [lookSec] of
+  /// sweep — i.e. it is warning (a live pass is imminent), or it is sweeping and
+  /// its core is over / arriving at the center within the lookahead. Used by
+  /// bots to wait for a safe pocket.
+  bool threatensLaneSoon(double coverFrac, double lookSec) {
+    switch (state) {
+      case _BandState.warn:
+        // A live pass is coming the instant warn ends; treat as a threat if the
+        // warn ends within the lookahead.
+        return timer <= lookSec;
+      case _BandState.dwell:
+        return false; // breathing at the edge — safe for now
+      case _BandState.sweeping:
+        final half = coverFrac.clamp(0.0, 1.0) / 2;
+        // Distance (in phase) from the core's leading edge to the center.
+        final aheadOfCenter = (dir > 0 && phase < 0.5) || (dir < 0 && phase > 0.5);
+        final distToCore = (phase - 0.5).abs() - half;
+        if (distToCore <= 0) return true; // already over the center
+        if (!aheadOfCenter) return false; // core already passed the center
+        final secsToCore = distToCore / sweepSpeed;
+        return secsToCore <= lookSec;
+    }
+  }
+}
+
+/// Per-player climb state for one round. Mutable round-scoped state (allowed for
 /// the duration of a single round).
-class _Striker {
+class _Climber {
   final PlayerSlot slot;
   final StickFigure figure;
-  final double footReach;
   final double botInterval;
   final double botJitter;
-  final double botEaseHeat; // heat at which this bot eases off to cool down
+  final double botLookahead; // seconds of sweep this bot reads ahead
 
-  double heat = 0; // 0..1 sweet-zone gauge (the decision)
-  double puckHeight = 0; // 0..1 current rendered puck height
-  double targetHeight = 0; // 0..1 height the puck eases toward
-  double peakHeight = 0; // best height reached — THIS is the score source
-  double swing = 0; // seconds of hammer down-stroke remaining
-  bool belled = false; // rang the bell at least once
-  double sinceTap = 1e9; // seconds since this striker's last tap
-  double recoilTimer = 0; // throttle between overheat hurt flinches
+  double rung = 0; // current rendered rung (eased)
+  double targetRung = 0; // rung the climber is stepping toward
+  double peakRung = 0; // best rung reached — THIS is the score source
+  double stun = 0; // seconds of stun remaining (taps ignored)
+  double hitGrace = 0; // seconds before this climber can be hit again
+  double lunge = 0; // seconds of reach-up clip remaining
+  bool planted = false; // reached the flag and planted it
 
-  // Bot cadence clock + cooling beat.
+  // Bot cadence clock.
   double botClock = 0;
-  double nextTapAt;
-  double botCooldown = 0; // seconds the bot holds off to cool back into green
+  double nextStepAt;
 
   final List<_Flash> flashes = <_Flash>[];
 
-  _Striker({
+  _Climber({
     required this.slot,
     required this.figure,
-    required this.footReach,
     required this.botInterval,
     required this.botJitter,
-    required this.botEaseHeat,
-  }) : nextTapAt = botInterval;
+    required this.botLookahead,
+  }) : nextStepAt = botInterval;
 }

@@ -7,6 +7,9 @@ import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/minigames/button_masher/button_masher.dart';
 
+/// Tower Climb (legacy id `button_masher`): tap = climb one rung; sweeping,
+/// telegraphed hazard bars knock a climber down if it steps into one. Ranked by
+/// the highest rung reached; first to the flag wins.
 void main() {
   MiniGameContext soloCtx(int seed) => MiniGameContext(
         players: [PlayerSlot.defaults(0)],
@@ -16,12 +19,17 @@ void main() {
       );
 
   /// Run a solo round to the finish, calling [tapOnFrame] once per frame; when it
-  /// returns true a single tap is delivered that frame. Deterministic (fixed dt).
-  ButtonMasher runSolo(int seed, bool Function(int frame) tapOnFrame) {
+  /// returns true a single tap is delivered that frame. The callback receives the
+  /// frame index AND the live game so a "measured" climber can read the bars
+  /// (via the read-only [ButtonMasher.isStepSafe] seam). Deterministic (fixed dt).
+  ButtonMasher runSolo(
+    int seed,
+    bool Function(int frame, ButtonMasher g) tapOnFrame,
+  ) {
     final g = ButtonMasher()..init(soloCtx(seed));
     var f = 0;
     while (g.status != MiniGameStatus.finished && f++ < 60 * 80) {
-      if (tapOnFrame(f)) g.onInput(PlayerInput.down(0));
+      if (tapOnFrame(f, g)) g.onInput(PlayerInput.down(0));
       g.update(1 / 60);
     }
     return g;
@@ -49,49 +57,87 @@ void main() {
     expect(g.winResult!.ranking.toSet(), {0, 1, 2, 3});
 
     // Sim-length floor + ceiling: the all-bot round must outlast the bot warmup
-    // and still resolve inside the (~10s) hard time limit.
+    // and still resolve inside the (~34s) hard time limit (or sooner if a bot
+    // summits and plants the flag).
     final simSeconds = n / 60.0;
-    expect(simSeconds, greaterThan(1.5));
-    expect(simSeconds, lessThanOrEqualTo(11.0));
+    expect(simSeconds, greaterThan(1.0));
+    expect(simSeconds, lessThanOrEqualTo(35.0));
   });
 
-  test('score tracks puck HEIGHT, not raw tap count', () {
-    // A wild masher slams the button every single frame for the whole 10s round
-    // (≈600 taps). Under the old "score == tapCount" model that would be a huge
-    // score; under the heat/height model the gauge pegs into the RED overheat
-    // zone so taps stall and the puck slides back down — the height (and thus the
-    // score) stays modest, far below the raw tap count and capped by the
-    // height→score scale.
-    final spam = runSolo(5, (f) => true);
+  test('score tracks the rung reached, not the raw tap count', () {
+    // A blind masher slams the button every single frame for the whole round
+    // (~2000 taps over 34s). The score is the highest RUNG reached (capped at the
+    // tower height of 40), so it can never approach the raw tap count — and
+    // because the masher climbs into every sweeping bar and is knocked back hard,
+    // its peak rung plateaus well below the flag (~22 in practice).
+    final spam = runSolo(5, (f, g) => true);
     final spamScore = spam.scores.of(0);
 
     expect(spam.status, MiniGameStatus.finished);
-    // Not zero — even an overheated tower creeps up a little.
+    // Some progress (the bottom run-up is open) but bounded hard by the rung
+    // count — never the ~2000 taps the masher produced.
     expect(spamScore, greaterThan(0));
-    // Height-based: score is height(0..1) × the scale, so it can never approach
-    // the ~600 taps an every-frame masher produced (the old count-score would).
-    expect(spamScore, lessThan(600),
-        reason: 'a ~600-tap spam must NOT score ~600 — score is height, not taps');
+    expect(spamScore, lessThanOrEqualTo(40),
+        reason: 'score is the rung reached (≤ tower height 40), never the tap count');
 
     // An idle player (never taps) never climbs, so it scores nothing.
-    final idle = runSolo(5, (f) => false);
+    final idle = runSolo(5, (f, g) => false);
     expect(idle.scores.of(0), 0);
   });
 
-  test('steady in-band tapping out-climbs spamming into the redline', () {
-    // Steady player: a measured cadence (~5 taps/sec) keeps heat hovering in the
-    // GREEN sweet-zone band, so most taps land a full-strength puck kick.
-    final steady = runSolo(5, (f) => f % 12 == 0);
-    // Spam player: hammering every frame pegs heat into the RED overheat zone,
-    // where taps give almost nothing and the puck actively drops.
-    final spam = runSolo(5, (f) => true);
+  test('a measured climber beats a blind spammer head-to-head', () {
+    // THE WHOLE DESIGN, proven deterministically in one shared 1v1 round (both
+    // climbers see the SAME bar pattern):
+    //
+    //  * P0 MEASURED: steps on a calm cadence and ONLY when the rung above is
+    //    clear (reading the telegraphed bars via [isStepSafe]). It threads every
+    //    safe window, takes essentially no hits, and summits in ~25s.
+    //  * P1 BLIND SPAMMER: taps EVERY frame, ignoring the bars. It climbs into
+    //    each sweeping band, gets knocked back hard + stunned, and never reaches
+    //    the flag — when the measured climber plants first, the round ends and
+    //    the spammer is frozen far below.
+    final players = [
+      PlayerSlot.defaults(0), // measured human
+      PlayerSlot.defaults(1), // blind spammer (also human-driven)
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(5),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = ButtonMasher()..init(ctx);
 
-    expect(steady.status, MiniGameStatus.finished);
-    expect(spam.status, MiniGameStatus.finished);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      if (n % 10 == 0 && g.isStepSafe(0)) g.onInput(PlayerInput.down(0)); // measured
+      g.onInput(PlayerInput.down(1)); // blind spam every frame
+      g.update(1 / 60);
+    }
 
-    // The whole DECISION: easing into the green out-climbs a flat-out mash.
-    expect(steady.scores.of(0), greaterThan(spam.scores.of(0)),
-        reason: 'a steady in-band player must out-climb a redline masher');
+    expect(g.status, MiniGameStatus.finished);
+    expect(g.scores.of(0), greaterThan(g.scores.of(1)),
+        reason: 'reading the bars and stepping in safe windows must beat a '
+            'blind mash that climbs into every sweep');
+  });
+
+  test('stepping into a live hazard bar knocks the climber down', () {
+    // Drive a climber straight up with a blind mash until a bar knocks it down:
+    // its target rung must, at some point, DROP from one frame to the next (a
+    // knockback). A pure climb with no hits could only ever go up.
+    final g = ButtonMasher()..init(soloCtx(5));
+    var prev = g.rungOf(0);
+    var sawKnockdown = false;
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 40) {
+      g.onInput(PlayerInput.down(0)); // mash every frame
+      g.update(1 / 60);
+      final cur = g.rungOf(0);
+      if (cur < prev - 0.5) sawKnockdown = true; // a real knockback step
+      prev = cur;
+    }
+    expect(sawKnockdown, isTrue,
+        reason: 'a blind mash must walk into a sweeping bar and get knocked down');
   });
 
   test('a human tap registers and bots remain competitive climbers', () {
@@ -107,15 +153,15 @@ void main() {
     );
     final g = ButtonMasher()..init(ctx);
 
-    // Human eases into the green with a measured cadence over the round.
+    // Human steps on a measured cadence, gated on a clear rung above.
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
-      if (n % 12 == 0) g.onInput(PlayerInput.down(0));
+      if (n % 10 == 0 && g.isStepSafe(0)) g.onInput(PlayerInput.down(0));
       g.update(1 / 60);
     }
 
     expect(g.status, MiniGameStatus.finished);
-    // The bot rode its tower the whole round, so it climbed to a real height.
+    // The bot climbed its own tower the whole round, so it reached a real rung.
     expect(g.scores.of(1), greaterThan(0));
   });
 
