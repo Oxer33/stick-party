@@ -9,134 +9,133 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'catch_render.dart';
 
-/// Catch the Star — a single glowing star roams a night sky and EVERY player
-/// chases it: you DRAG your net around your own zone to get under the star, then
-/// TAP to snatch it. It is a shared, contested prize — first net there wins it,
-/// so 1-4 players are racing for position, not waiting in a fixed slot.
+/// Star Catcher — CATCH FALLING STARS, DODGE BOMBS.
 ///
-/// Depth (still one-touch — drag to move, tap to grab):
-///  * The star steers smoothly toward a free roaming waypoint (velocity +
-///    steering, re-picked on arrival or timeout) so it curves rather than
-///    snapping, drifting across the WHOLE arena instead of being fed to a
-///    catcher — players must move to it. It drags a fading comet trail.
-///  * Each player's net STEERS toward their latest drag point ([input.normPos]),
-///    clamped to that player's zone so nobody reaches into a rival's slice. A TAP
-///    (the [InputPhase.down]) also snatches: if the star is within [_snatchRadius]
-///    of your net you score. Consecutive catches inside [_comboWindowSec] build a
-///    combo that multiplies the award ("+N xC"), with a shockwave, net flash and
-///    burst; the star keeps roaming (it teleports away on a catch so the next
-///    chase starts fresh and nobody can camp the kill spot).
-///  * Occasional GOLDEN bonus stars are worth [_bonusPoints] and a great catch
-///    (golden, or a high combo) triggers a brief slow-mo (hit-stop) for impact.
+/// OBJECTIVE: catch the MOST stars before the clock runs out (or be first to the
+/// [_targetScore] target). The HUD shows your live count and the objective.
 ///
-/// Most catches at [_timeLimit] wins via [finishByScore]; the round always runs
-/// to the limit so it can never stall.
+/// CORE (one-touch, position-is-everything): you DRAG inside your own zone to
+/// slide your basket left-right along a fixed catch line near the bottom of your
+/// lane. Stars, golden stars and BOMBS rain down your column. A catch is PURELY a
+/// physical overlap: the item is caught only if it crosses the catch line while
+/// your basket mouth is actually under it. There is NO tap-to-grab — you cannot
+/// luck into a star by tapping; you must BE under it.
 ///
-/// Bots DRIVE their net toward the star (clamped to their zone) and TAP when it
-/// is in range, gated by their reaction clock; a deliberate-mistake roll
-/// ([BotProfile.errorRate]) makes them whiff and the remaining
-/// [BotProfile.accuracy] decides whether the in-range snatch lands, so a weaker
-/// bot is slower to the prize and a human can out-position it.
+/// INTERPOSING DIFFICULTY (the rework — bombs literally get between you and the
+/// stars):
+///  * BOMBS fall mixed with the stars. Catch one and you are PENALIZED: you lose
+///    points, your basket is STUNNED for [_stunSec] (it ignores your drag and
+///    slides to a halt) and it DROPS a star — so eating a bomb both costs points
+///    and leaves you helpless while more stars fall past.
+///  * GOLD stars are rarer and worth [_goldPoints]. Normal stars are worth
+///    [_starPoints].
+///  * The field RAMPS: items fall FASTER, spawn DENSER and the BOMB ratio climbs
+///    as the round wears on (calibrated so the open is readable and the finish is
+///    a frantic gauntlet). A basket has movement INERTIA (it accelerates toward
+///    your finger and decelerates, capped at [_basketMaxSpeed]) so snapping
+///    between a far star and a near bomb is a real positioning skill, not a tap.
+///
+/// ANTI-INCIDENTAL: because catching is overlap-only at the catch line, sitting
+/// still or flailing randomly catches almost nothing AND sits under bombs — that
+/// player loses. You must READ each falling item, position under STARS and slide
+/// AWAY from bombs. Reading + precise positioning is the entire skill.
+///
+/// 1–4 players: each player owns a vertical lane (their [PlayerZone]) with its own
+/// falling stream of stars + bombs, fed by the SAME calibrated ramp, so it is a
+/// fair simultaneous race. Bombs interpose for everyone.
+///
+/// BOTS steer their basket toward the nearest catchable STAR and AWAY from any
+/// imminent bomb, gated by [BotProfile]: a weak bot reacts late, misreads (targets
+/// the wrong item or fails to flee a bomb) and eats bombs; a strong bot tracks
+/// cleanly. A human who reads better out-catches a weak CPU — a real, beatable
+/// 1+CPU contest.
+///
+/// The round runs to [_timeLimit] (or ends early once someone reaches
+/// [_targetScore]) and resolves via [finishByScore]; it can never stall.
 class CatchTheStar extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
         id: 'catch_the_star',
-        name: 'Catch the Star',
+        name: 'Star Catcher',
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.ffa],
-        inputHint: 'TAP',
+        inputHint: 'DRAG',
       );
 
   // ── Round tuning (no magic numbers inline) ─────────────────────────────────
-  static const double _timeLimit = 30;
-  static const double _snatchRadius = 0.17; // normalized snatch distance
-  static const double _contestRadius = 0.27; // rival this close = contested grab
+  static const double _timeLimit = 32;
+  static const int _targetScore = 30; // first to this ends the round early
 
-  // ── Climax: the GOLD RUSH flurry (the unmistakable peak near the end) ───────
-  // In the last [_flurrySec] every fresh star is (almost) always golden, bigger
-  // and worth its bonus — a frantic shouting finish where a trailing player can
-  // still swing the round. A one-shot cue (banner + shake + burst) announces it.
-  static const double _flurrySec = 7.0; // length of the end flurry
-  static const double _flurryGoldenChance = 0.92; // golden odds during flurry
-  static const double _flurryStarScale = 1.5; // mega-star radius multiplier
-  static const double _flurrySpawnPopScale = 0.55; // faster respawns in flurry
+  // ── Item kinds + worth ───────────────────────────────────────────────────────
+  static const int _starPoints = 1;
+  static const int _goldPoints = 3;
+  static const int _bombPenalty = 2; // points lost on catching a bomb
+
+  // ── Catch geometry (normalized; per-lane the catch is overlap-only) ──────────
+  // The catch line sits this far down each lane; the basket mouth is this wide.
+  static const double _catchLineFrac = 0.84; // y of catch line within a lane
+  static const double _basketHalfWidth = 0.085; // half basket mouth (norm x)
+  static const double _itemHalfWidth = 0.05; // half item width for overlap
+  // A catch counts when the item centre is within (basketHalf + itemHalf) of the
+  // basket centre AS the item crosses the line. Pure overlap — no tap, no snap.
+  static double get _catchOverlap => _basketHalfWidth + _itemHalfWidth;
+
+  // ── Basket control (inertia makes precise positioning a skill) ───────────────
+  static const double _basketAccel = 18.0; // accel toward target (1/sec^2-ish)
+  static const double _basketDamp = 9.0; // velocity damping per sec
+  static const double _basketMaxSpeed = 3.6; // cap on basket speed (norm/sec)
+  static const double _stunSec = 0.9; // basket frozen after catching a bomb
+  static const double _laneInset = 0.06; // keep basket off the lane walls
+
+  // ── Falling-field ramp (calibrated: readable open → frantic finish) ──────────
+  // Fall speed (normalized lane-heights per second) and spawn cadence both ramp
+  // with elapsed time; the bomb ratio climbs too so the gauntlet thickens.
+  static const double _fallSpeedStart = 0.34; // norm/sec at t=0
+  static const double _fallSpeedEnd = 0.78; // norm/sec at the end
+  static const double _spawnEveryStart = 1.05; // s between drops (per lane)
+  static const double _spawnEveryEnd = 0.42; // floor on spawn interval
+  static const double _spawnWarmupSec = 0.7; // first drop delayed (read time)
+  static const double _bombRatioStart = 0.18; // bomb odds early
+  static const double _bombRatioEnd = 0.42; // bomb odds at the finish
+  static const double _goldRatio = 0.12; // of the NON-bomb drops, gold odds
+  static const double _spawnXMargin = 0.16; // keep spawns off the lane walls
+
+  // ── Climax: BOMB STORM finish (the unmistakable peak) ────────────────────────
+  // In the last [_stormSec] the spawn cadence tightens and the bomb ratio is
+  // pinned high — a frantic dodge-heavy finish. A one-shot cue announces it.
+  static const double _stormSec = 7.0;
+  static const double _stormSpawnEvery = 0.34; // very dense drops in the storm
+  static const double _stormBombRatio = 0.5; // half the drops are bombs
 
   // ── Comeback: a subtle catch-up for trailing players ───────────────────────
-  // A player below the leader gets a slightly wider effective snatch radius,
-  // scaled by how far behind they are (capped). Kept gentle so a strong player
-  // still usually wins, but a struggling kid stays in the shouting.
-  static const double _comebackMaxBonus = 0.06; // max extra snatch radius (norm)
-  static const int _comebackRefGap = 6; // score gap that earns the full bonus
-
-  // ── Star motion tuning (normalized units / sec) ────────────────────────────
-  // The star roams FREE — waypoints are random points across the whole arena, so
-  // it never homes onto a player. It is a touch slower than a top-speed chase so
-  // a net that positions well can get under it (you can still just miss it). This
-  // is what makes the round a positioning RACE: the prize moves on its own and
-  // everyone has to drive their net to it.
-  static const double _maxSpeed = 0.52; // top speed
-  static const double _goldenSpeedBoost = 1.18; // golden stars are friskier
-  static const double _accel = 2.4; // steering acceleration
-  static const double _retargetSec = 1.0; // force a new waypoint after this
-  static const double _arriveDist = 0.05; // waypoint reached threshold
-  static const double _margin = 0.1; // keep the star off the edges
-  static const double _wallDamp = 0.4; // velocity kept on a wall bounce
-
-  // ── Catcher (net) control tuning ────────────────────────────────────────────
-  // A net eases toward its steer target (a human drag point, or a bot's chase
-  // point) with a frame-rate-independent follow so a drag reads as a smooth glide
-  // rather than a teleport. Bots cap their net travel so a weak bot can be
-  // out-raced to the star by a human.
-  static const double _netFollowPerSec = 16.0; // net → target ease speed
-  static const double _botNetSpeed = 0.62; // bot net travel (units/sec)
-  static const double _zoneInset = 0.02; // keep the net off the zone seam
-
-  // ── Trail tuning ───────────────────────────────────────────────────────────
-  static const double _trailSampleSec = 1 / 60; // sample cadence
-  static const int _trailMaxPoints = 22; // comet length
-
-  // ── Scoring / combo tuning ─────────────────────────────────────────────────
-  static const int _basePoints = 1;
-  static const int _bonusPoints = 3; // golden star award (pre-combo)
-  static const double _goldenChance = 0.22; // chance a fresh star is golden
-  static const double _comboWindowSec = 2.2; // chain window to keep a combo
-  static const int _comboMax = 5; // multiplier cap
-  static const int _greatComboThreshold = 3; // combo that earns slow-mo
+  // A player below the leader gets a slightly wider effective basket mouth,
+  // scaled by how far behind they are (capped). The leader gets the base width,
+  // so a strong player still wins; a struggling kid stays in the shouting.
+  static const double _comebackMaxBonus = 0.03; // max extra half-width (norm)
+  static const int _comebackRefGap = 8; // score gap earning the full bonus
 
   // ── Juice tuning ───────────────────────────────────────────────────────────
-  static const double _slowMoSec = 0.22; // great-catch hit-stop length
-  static const double _slowMoScale = 0.25; // time scale during slow-mo
-  static const double _shockwaveSec = 0.45; // shockwave lifetime
-  static const double _catcherFlashSec = 0.4; // catcher flash decay
-  static const int _bgStarCount = 90; // parallax background stars
+  static const double _slowMoSec = 0.20; // gold-catch hit-stop length
+  static const double _slowMoScale = 0.3; // time scale during slow-mo
+  static const double _flashSec = 0.4; // basket flash decay
+  static const int _bgStarCount = 80; // parallax background stars
 
-  // ── Render sizing (fractions of the min screen side) ───────────────────────
-  static const double _starRadiusFrac = 0.05;
-  static const double _shockwaveRadiusFrac = 0.26;
-  static const Color _normalGlow = Color(0xFFFFD24A);
-  static const Color _goldenGlow = Color(0xFFFF9E1B);
-  static const Color _goldenBody = Color(0xFFFFE070);
+  // ── Render sizing / palette ──────────────────────────────────────────────────
+  static const Color _starGlow = Color(0xFFFFD24A);
+  static const Color _goldBody = Color(0xFFFFE070);
+  static const Color _bombColor = Color(0xFFE5484D);
 
   late Juice _juice;
-  final List<_Catcher> _catchers = <_Catcher>[];
-  final List<_Shockwave> _shockwaves = <_Shockwave>[];
-  final List<Offset> _trail = <Offset>[]; // newest→oldest, normalized
+  final List<_Lane> _lanes = <_Lane>[];
 
   // Fixed parallax background field (positions + packed depth/phase seeds).
   final List<Offset> _bgStars = <Offset>[];
   final List<double> _bgSeeds = <double>[];
 
-  Offset _star = const Offset(0.5, 0.5);
-  Offset _vel = Offset.zero; // normalized units/sec
-  Offset _target = const Offset(0.5, 0.5);
-  bool _golden = false;
   double _elapsed = 0;
   double _animClock = 0; // real-time clock (never scaled) for shimmer/spin
-  double _retargetAcc = 0;
-  double _trailAcc = 0;
-  double _spawnPop = 0; // 1 right after a teleport, decays to 0
-  bool _flurryAnnounced = false; // the GOLD RUSH cue fired once
+  bool _stormAnnounced = false; // the BOMB STORM cue fired once
   bool _finishFired = false; // one-shot winner banner latch
   Size _lastSize = const Size(1, 1);
 
@@ -144,36 +143,31 @@ class CatchTheStar extends MiniGameBase {
   void init(MiniGameContext ctx) {
     prepare(ctx);
     _juice = Juice(rng: ctx.rng);
-    _spawnCatchers();
+    _spawnLanes();
     _seedBackground();
-    _star = _randomPoint();
-    _vel = Offset.zero;
-    _target = _randomPoint();
-    _golden = ctx.rng.chance(_goldenChance);
-    _trail
-      ..clear()
-      ..add(_star);
     begin();
   }
 
-  void _spawnCatchers() {
+  void _spawnLanes() {
     final count = ctx.players.length;
     for (var i = 0; i < count; i++) {
       final p = ctx.players[i];
       final zone = _zoneFor(p.id, i, count);
-      final start = zone.center;
-      _catchers.add(_Catcher(
+      _lanes.add(_Lane(
         playerId: p.id,
         displayNumber: p.id + 1,
         color: Color(p.colorArgb),
         zone: zone,
-        pos: start,
+        basketX: zone.center.dx,
+        targetX: zone.center.dx,
+        // Stagger the first drop so lanes don't pulse in lockstep.
+        spawnTimer: _spawnWarmupSec + ctx.rng.range(0, _spawnEveryStart),
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
     }
   }
 
-  /// The slice of the arena a player's net is confined to. Prefer the real
+  /// The slice of the arena a player's basket lives in. Prefer the real
   /// [PlayerZone]; fall back to an even split so the game still works if a
   /// context arrives without a matching zone for a player id.
   Rect _zoneFor(int id, int index, int count) {
@@ -195,140 +189,38 @@ class CatchTheStar extends MiniGameBase {
     }
   }
 
-  Offset _randomPoint() => Offset(
-        ctx.rng.range(_margin, 1 - _margin),
-        ctx.rng.range(_margin, 1 - _margin),
-      );
-
-  /// Pick the star's next waypoint: a free random point anywhere in the play
-  /// area. It deliberately does NOT home onto any catcher, so the star is a
-  /// neutral roaming prize that every player must chase down with their net —
-  /// the source of the positioning race. Identical for the whole field, so fair.
-  Offset _nextWaypoint() => _randomPoint();
+  // ── Input ─────────────────────────────────────────────────────────────────
 
   @override
   void onInput(PlayerInput input) {
     if (status != MiniGameStatus.running) return;
-    final c = _catcherOf(input.playerId);
-    if (c == null) return;
-
+    final lane = _laneOf(input.playerId);
+    if (lane == null) return;
     switch (input.phase) {
       case InputPhase.down:
-        // A press both aims the net at the touch and tries to snatch right away,
-        // so a quick tap exactly where the star is grabs it in one motion.
-        _steerNet(c, input.normPos);
-        _trySnatch(input.playerId);
       case InputPhase.holdTick:
-        // Dragging glides the net toward the latest touch point; a positionless
-        // per-frame tick (normPos == Offset.zero) carries no new target.
-        if (input.normPos != Offset.zero) _steerNet(c, input.normPos);
+        // A press or drag aims the basket at the touch x; a positionless per-frame
+        // tick (normPos == Offset.zero) carries no new target. The basket EASES to
+        // it with inertia in [_steerBaskets] — there is no tap-to-grab.
+        if (input.normPos != Offset.zero) _aimBasket(lane, input.normPos);
       case InputPhase.up:
         break;
     }
   }
 
-  /// Aim a human net's steering target at [normPos] (full-screen), clamped into
-  /// that player's zone so a net can only roam its own slice of the arena.
-  void _steerNet(_Catcher c, Offset normPos) {
-    if (!normPos.dx.isFinite || !normPos.dy.isFinite) return;
-    c.target = _clampToZone(c.zone, normPos);
+  /// Aim a human basket's target at [normPos.dx] (full-screen), clamped into that
+  /// player's lane so a basket can only roam its own column.
+  void _aimBasket(_Lane lane, Offset normPos) {
+    if (!normPos.dx.isFinite) return;
+    lane.targetX = _clampX(lane.zone, normPos.dx);
   }
 
-  /// Clamp a normalized point into [zone] with a tiny inset so the net centre
-  /// never sits exactly on a zone seam.
-  Offset _clampToZone(Rect zone, Offset p) => Offset(
-        p.dx.clamp(zone.left + _zoneInset, zone.right - _zoneInset),
-        p.dy.clamp(zone.top + _zoneInset, zone.bottom - _zoneInset),
-      );
+  /// Clamp a normalized x into [zone] with a small inset so the basket never sits
+  /// exactly on a lane wall.
+  double _clampX(Rect zone, double x) =>
+      x.clamp(zone.left + _laneInset, zone.right - _laneInset);
 
-  /// Award a catch if the star is in range of [id]'s catcher. Returns true on a
-  /// successful snatch. Drives combo, popup, shockwave, flash and slow-mo.
-  bool _trySnatch(int id) {
-    final c = _catcherOf(id);
-    if (c == null) return false;
-    if ((_star - c.pos).distance > _snatchRadiusFor(c)) return false;
-
-    final wasGolden = _golden;
-    final wasContested = _starWasContested(c);
-    final combo = c.registerCatch(_comboWindowSec, _comboMax);
-    final award = (wasGolden ? _bonusPoints : _basePoints) * combo;
-    addScore(id, award);
-
-    _emitCatchJuice(c, award, combo, wasGolden, wasContested);
-    _respawnStar();
-    return true;
-  }
-
-  /// True when at least one rival net was also closing on the star (within
-  /// [_contestRadius]) at the moment [winner] snatched it — i.e. a genuinely
-  /// contested grab worth a cinematic punch, not a lone routine pickup.
-  bool _starWasContested(_Catcher winner) {
-    for (final c in _catchers) {
-      if (identical(c, winner)) continue;
-      if ((_star - c.pos).distance <= _contestRadius) return true;
-    }
-    return false;
-  }
-
-  void _emitCatchJuice(
-      _Catcher c, int award, int combo, bool golden, bool contested) {
-    final at = _toPixels(_star);
-    c.flash = _catcherFlashSec;
-
-    final label = combo > 1 ? '+$award x$combo' : '+$award';
-    final popColor = golden ? _goldenBody : c.color;
-    _juice.popup(at, label, popColor, size: golden ? 38 : 30);
-
-    final sparks = golden ? 18 : 11;
-    _juice.hit(at, popColor, sparks: sparks);
-    if (golden) {
-      _juice.particles.burst(
-        at: at,
-        count: 16,
-        color: _normalGlow,
-        speed: 320,
-        size: 6,
-        life: 0.7,
-      );
-    }
-
-    _shockwaves.add(_Shockwave(pos: _star, color: c.color, life: _shockwaveSec));
-
-    // A great catch (golden, or a strong combo) earns a brief slow-mo + shake.
-    if (golden || combo >= _greatComboThreshold) {
-      _juice.hitStop.trigger(_slowMoSec, scale: _slowMoScale);
-      _juice.shake.medium();
-    }
-
-    // Signature beat: snatching a CONTESTED star (a rival was right there) earns
-    // a one-shot zoom-punch toward the star + a quick color flash, so winning a
-    // 50/50 scramble feels earned. Fires per snatch event, gated by contention.
-    if (contested) {
-      _juice.cameraPunch(at);
-      _juice.flashScreen(c.color, strength: 0.4);
-    }
-  }
-
-  /// Respawn far from all catchers (so nobody can camp) with a fresh waypoint,
-  /// a possible golden upgrade and a pop-in. Velocity is re-aimed toward the new
-  /// waypoint so the comet immediately reads as "zipping away".
-  void _respawnStar() {
-    _star = _farRespawn();
-    // Pick a fresh free waypoint and aim the comet at it so the star immediately
-    // reads as zipping away to a new spot the field now has to chase down.
-    _target = _nextWaypoint();
-    _golden = ctx.rng.chance(_goldenChanceNow());
-    // Snappier pop-in during the flurry so goldens keep flooding the field.
-    _spawnPop = _inFlurry ? _flurrySpawnPopScale : 1;
-    final toTarget = _target - _star;
-    _vel = toTarget.distance < 1e-6
-        ? Offset.zero
-        : (toTarget / toTarget.distance) * _currentMaxSpeed();
-    _trail
-      ..clear()
-      ..add(_star);
-    _trailAcc = 0;
-  }
+  // ── Update ──────────────────────────────────────────────────────────────────
 
   @override
   void update(double dt) {
@@ -340,206 +232,329 @@ class CatchTheStar extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
-    _maybeAnnounceFlurry();
-    _moveStar(sdt);
-    _sampleTrail(sdt);
+    _maybeAnnounceStorm();
     _driveBots(sdt);
-    _steerNets(sdt);
-    _tickEffects(dt);
+    _steerBaskets(sdt);
+    for (final lane in _lanes) {
+      _spawnTick(lane, sdt);
+      _stepItems(lane, sdt);
+      lane.tick(dt);
+    }
 
-    if (_elapsed >= _timeLimit) _finish();
+    if (_elapsed >= _timeLimit || _someoneReachedTarget()) _finish();
   }
 
-  double _currentMaxSpeed() => _maxSpeed * (_golden ? _goldenSpeedBoost : 1.0);
+  bool _someoneReachedTarget() {
+    for (final lane in _lanes) {
+      if (scoreOf(lane.playerId).toInt() >= _targetScore) return true;
+    }
+    return false;
+  }
 
-  /// True once the round enters its final GOLD RUSH flurry window.
-  bool get _inFlurry => _elapsed >= _timeLimit - _flurrySec;
+  // ── Falling-field ramp ────────────────────────────────────────────────────────
 
-  /// Golden odds for a freshly spawned star: the usual chance early, ramping to
-  /// [_flurryGoldenChance] in the end flurry so the finish is a gold storm.
-  double _goldenChanceNow() => _inFlurry ? _flurryGoldenChance : _goldenChance;
+  /// 0..1 progress through the round, used to ramp speed / density / bomb ratio.
+  double get _ramp => (_elapsed / _timeLimit).clamp(0.0, 1.0);
 
-  /// Fire the one-shot GOLD RUSH cue the moment the flurry begins: a banner
-  /// popup, a shake and a bright burst so every kid knows the big finish is on.
-  void _maybeAnnounceFlurry() {
-    if (_flurryAnnounced || !_inFlurry) return;
-    _flurryAnnounced = true;
+  /// True once the round enters its final BOMB STORM window.
+  bool get _inStorm => _elapsed >= _timeLimit - _stormSec;
+
+  double get _fallSpeed =>
+      _fallSpeedStart + (_fallSpeedEnd - _fallSpeedStart) * _ramp;
+
+  double get _spawnEvery => _inStorm
+      ? _stormSpawnEvery
+      : _spawnEveryStart + (_spawnEveryEnd - _spawnEveryStart) * _ramp;
+
+  double get _bombRatio => _inStorm
+      ? _stormBombRatio
+      : _bombRatioStart + (_bombRatioEnd - _bombRatioStart) * _ramp;
+
+  /// Fire the one-shot BOMB STORM cue the moment the storm begins: a banner, a
+  /// shake and a red burst so every kid knows the dodge-heavy finish is on.
+  void _maybeAnnounceStorm() {
+    if (_stormAnnounced || !_inStorm) return;
+    _stormAnnounced = true;
     final center = Offset(_lastSize.width / 2, _lastSize.height * 0.42);
-    _juice.popup(center, 'GOLD RUSH!', _goldenBody, size: 46);
+    _juice.popup(center, 'BOMB STORM!', _bombColor, size: 44);
     _juice.shake.medium();
     _juice.particles.burst(
       at: center,
       count: 22,
-      color: _goldenGlow,
-      speed: 360,
+      color: _bombColor,
+      speed: 340,
       size: 7,
       life: 0.8,
     );
   }
 
-  /// Effective snatch radius for [c]: the base reach plus a subtle comeback bonus
-  /// for a player trailing the current leader (scaled by the gap, capped). The
-  /// leader (and a fresh round at 0–0) gets exactly the base radius, so better
-  /// players still win — laggards just get a slightly more forgiving window.
-  double _snatchRadiusFor(_Catcher c) {
+  void _spawnTick(_Lane lane, double dt) {
+    if (_elapsed < _spawnWarmupSec) return;
+    lane.spawnTimer -= dt;
+    if (lane.spawnTimer > 0) return;
+    lane.spawnTimer = _spawnEvery;
+    _dropItem(lane);
+  }
+
+  /// Drop a fresh item at a random x within the lane (off the walls): a bomb at
+  /// the current ramped [_bombRatio], else a star that is GOLD at [_goldRatio].
+  void _dropItem(_Lane lane) {
+    final z = lane.zone;
+    final marginX = z.width * _spawnXMargin;
+    final x = ctx.rng.range(z.left + marginX, z.right - marginX);
+    final _ItemKind kind;
+    if (ctx.rng.chance(_bombRatio)) {
+      kind = _ItemKind.bomb;
+    } else if (ctx.rng.chance(_goldRatio)) {
+      kind = _ItemKind.gold;
+    } else {
+      kind = _ItemKind.star;
+    }
+    lane.items.add(_Item(
+      kind: kind,
+      x: x,
+      y: z.top, // spawn at the top of the lane
+      spin: ctx.rng.range(0, math.pi * 2),
+    ));
+  }
+
+  /// Advance every item down its lane, resolving a catch/miss exactly once as it
+  /// crosses the catch line. Catching is PURE OVERLAP at the line — the basket
+  /// mouth must be under the item — so there is no way to luck into a star.
+  void _stepItems(_Lane lane, double dt) {
+    final lineY = _catchLineYNorm(lane.zone);
+    final survivors = <_Item>[];
+    final fall = _fallSpeed * lane.zone.height; // lane-relative fall distance
+    for (final item in lane.items) {
+      final prevY = item.y;
+      item.y += fall * dt;
+
+      if (!item.resolved && prevY <= lineY && item.y >= lineY) {
+        item.resolved = true;
+        if (_overlapsBasket(lane, item)) {
+          _onCatch(lane, item);
+          continue; // caught item leaves the field
+        }
+      }
+      if (item.y > lane.zone.bottom + lane.zone.height * 0.1) continue; // gone
+      survivors.add(item);
+    }
+    lane.items
+      ..clear()
+      ..addAll(survivors);
+  }
+
+  /// True when [item] is horizontally within the basket's (comeback-scaled) mouth
+  /// at the moment it crosses the catch line. This is the ONLY way a catch happens.
+  bool _overlapsBasket(_Lane lane, _Item item) =>
+      (item.x - lane.basketX).abs() <= _overlapFor(lane);
+
+  /// Effective catch overlap for [lane]: the base mouth plus a subtle comeback
+  /// bonus for a player trailing the leader (scaled by the gap, capped). The
+  /// leader (and a fresh 0–0 round) gets exactly the base, so better players win.
+  double _overlapFor(_Lane lane) {
     final lead = _leaderScore();
-    if (lead <= 0) return _snatchRadius;
-    final behind = lead - scoreOf(c.playerId).toInt();
-    if (behind <= 0) return _snatchRadius;
+    if (lead <= 0) return _catchOverlap;
+    final behind = lead - scoreOf(lane.playerId).toInt();
+    if (behind <= 0) return _catchOverlap;
     final t = (behind / _comebackRefGap).clamp(0.0, 1.0);
-    return _snatchRadius + _comebackMaxBonus * t;
+    return _catchOverlap + _comebackMaxBonus * t;
   }
 
-  /// Steer the star toward its waypoint with smooth acceleration + a speed cap,
-  /// re-picking a waypoint on arrival or timeout, and softly bouncing off the
-  /// playfield margins so it never sticks to an edge.
-  void _moveStar(double dt) {
+  /// Resolve an item the basket actually overlapped at the line:
+  ///  * STAR / GOLD → bank its worth, flash + sparks (+ slow-mo on gold).
+  ///  * BOMB → PENALTY: lose points (floored at 0), STUN the basket, drop a star,
+  ///    and a shake/red flash so the punishment is unmistakable.
+  void _onCatch(_Lane lane, _Item item) {
+    final at = _toPixels(Offset(item.x, _catchLineYNorm(lane.zone)));
+    switch (item.kind) {
+      case _ItemKind.bomb:
+        _resolveBombHit(lane, at);
+      case _ItemKind.gold:
+        _resolveStarCatch(lane, at, _goldPoints, gold: true);
+      case _ItemKind.star:
+        _resolveStarCatch(lane, at, _starPoints, gold: false);
+    }
+  }
+
+  void _resolveStarCatch(_Lane lane, Offset at, int worth,
+      {required bool gold}) {
+    addScore(lane.playerId, worth);
+    lane.flash = _flashSec;
+    final color = gold ? _goldBody : lane.color;
+    _juice.popup(at, '+$worth', color, size: gold ? 34 : 28);
+    _juice.hit(at, color, sparks: gold ? 16 : 9);
+    if (gold) {
+      _juice.particles.burst(
+        at: at,
+        count: 14,
+        color: _starGlow,
+        speed: 300,
+        size: 6,
+        life: 0.7,
+      );
+      _juice.hitStop.trigger(_slowMoSec, scale: _slowMoScale);
+      _juice.shake.light();
+    }
+  }
+
+  /// A bomb in the basket: subtract the penalty (never below 0), stun the basket
+  /// so it ignores input and slides to a halt, and emit a clear punish beat.
+  void _resolveBombHit(_Lane lane, Offset at) {
+    final cur = scoreOf(lane.playerId).toInt();
+    final lost = math.min(cur, _bombPenalty);
+    if (lost > 0) setScore(lane.playerId, cur - lost);
+    lane.stun = _stunSec;
+    lane.targetX = lane.basketX; // drop the steer; it coasts to rest
+    _juice.popup(
+      at,
+      lost > 0 ? '-$lost' : 'BOOM!',
+      _bombColor,
+      size: 32,
+    );
+    _juice.particles.burst(
+      at: at,
+      count: 18,
+      color: _bombColor,
+      speed: 360,
+      size: 6,
+      life: 0.7,
+    );
+    _juice.shake.medium();
+    _juice.flashScreen(_bombColor, strength: 0.35);
+  }
+
+  /// Glide every basket toward its target x with INERTIA: accelerate toward the
+  /// target, damp the velocity, cap the speed, and clamp into the lane. A stunned
+  /// basket ignores its target (it just coasts to a halt) so eating a bomb really
+  /// costs control. Bots get the same physics (their target is set in
+  /// [_driveBots]) so they cannot teleport onto a star either.
+  void _steerBaskets(double dt) {
     if (dt <= 0) return;
-    _retargetAcc += dt;
-    final toTarget = _target - _star;
-    if (toTarget.distance <= _arriveDist || _retargetAcc >= _retargetSec) {
-      _target = _nextWaypoint();
-      _retargetAcc = 0;
-    }
-
-    // Steering: accelerate toward the waypoint, clamp to max speed.
-    final desired =
-        toTarget.distance < 1e-6 ? Offset.zero : (toTarget / toTarget.distance);
-    _vel += desired * (_accel * dt);
-    final speed = _vel.distance;
-    final maxSpeed = _currentMaxSpeed();
-    if (speed > maxSpeed && speed > 0) _vel = _vel / speed * maxSpeed;
-
-    var next = _star + _vel * dt;
-    next = _bounceMargins(next);
-    _star = next;
-  }
-
-  /// Reflect the star (and damp its velocity) when it reaches a margin so it
-  /// stays inside the readable play area.
-  Offset _bounceMargins(Offset p) {
-    var x = p.dx;
-    var y = p.dy;
-    var vx = _vel.dx;
-    var vy = _vel.dy;
-    const lo = _margin;
-    final hi = 1 - _margin;
-    if (x < lo) {
-      x = lo;
-      vx = vx.abs() * _wallDamp;
-    } else if (x > hi) {
-      x = hi;
-      vx = -vx.abs() * _wallDamp;
-    }
-    if (y < lo) {
-      y = lo;
-      vy = vy.abs() * _wallDamp;
-    } else if (y > hi) {
-      y = hi;
-      vy = -vy.abs() * _wallDamp;
-    }
-    _vel = Offset(vx, vy);
-    return Offset(x, y);
-  }
-
-  /// Append the star's position to the comet trail at a fixed cadence and trim
-  /// it to the configured length (newest at index 0).
-  void _sampleTrail(double dt) {
-    _trailAcc += dt;
-    if (_trailAcc < _trailSampleSec) return;
-    _trailAcc = 0;
-    _trail.insert(0, _star);
-    if (_trail.length > _trailMaxPoints) {
-      _trail.removeRange(_trailMaxPoints, _trail.length);
+    for (final lane in _lanes) {
+      // Stunned: no steering force, just damp to a stop.
+      final toTarget = lane.stun > 0 ? 0.0 : (lane.targetX - lane.basketX);
+      var v = lane.basketVel + toTarget * _basketAccel * dt;
+      v -= v * (_basketDamp * dt).clamp(0.0, 1.0);
+      if (v > _basketMaxSpeed) v = _basketMaxSpeed;
+      if (v < -_basketMaxSpeed) v = -_basketMaxSpeed;
+      final nextX = lane.basketX + v * dt;
+      final clamped = _clampX(lane.zone, nextX);
+      if (clamped != nextX) v = 0; // hit a wall: kill the velocity
+      lane.basketVel = v;
+      lane.basketX = clamped;
     }
   }
 
-  /// Bots CHASE the star with their net and snatch when it is in range. Each
-  /// frame the bot aims its net at the star's position (clamped to its own zone,
-  /// so it can only contest the part of the arena it owns) and glides toward it
-  /// at [_botNetSpeed] — a capped speed, so a faster human can beat a weak bot to
-  /// the prize. When the star is within reach the bot taps on its reaction clock;
-  /// an [BotProfile.errorRate] roll fumbles the attempt outright, otherwise
-  /// [BotProfile.accuracy] decides whether the in-range snatch actually lands.
+  // ── Bots ──────────────────────────────────────────────────────────────────────
+
+  /// Bots play the SAME positioning game: each frame a bot picks the nearest
+  /// catchable STAR in its lane and steers its basket under it — UNLESS a bomb is
+  /// about to reach the line near the basket, in which case it slides AWAY to
+  /// dodge. [BotProfile] gates skill: the bot only re-reads the field on its
+  /// reaction clock (weak bots react late), an [errorRate] roll makes it MISREAD
+  /// (chase a bomb as if a star, or fail to flee), and below-perfect [accuracy]
+  /// adds aim slop so it can just miss. So a weak bot eats bombs and whiffs while
+  /// a sharp bot tracks cleanly — and a reading human can out-catch a weak CPU.
   void _driveBots(double dt) {
-    for (final c in _catchers) {
-      final clock = c.clock;
+    for (final lane in _lanes) {
+      final clock = lane.clock;
       if (clock == null) continue;
+      if (lane.stun > 0) continue; // stunned bots can't steer either
 
-      // Drive the net toward the star (clamped to the bot's zone). Steering the
-      // target each frame lets [_steerNets] glide the net smoothly like a human.
-      c.target = _clampToZone(c.zone, _star);
-
-      if ((_star - c.pos).distance > _snatchRadiusFor(c)) continue;
-      if (!clock.tick(dt)) continue;
-      clock.arm(ctx.botProfile, ctx.rng);
-      // Deliberate miss, scaled by difficulty.
-      if (ctx.rng.chance(ctx.botProfile.errorRate)) continue;
-      if (ctx.rng.chance(ctx.botProfile.accuracy)) {
-        _trySnatch(c.playerId);
+      // Re-read the field only when the reaction clock fires (keeps weak bots
+      // sluggish + beatable); between reads it keeps gliding to its last target.
+      if (clock.tick(dt)) {
+        clock.arm(ctx.botProfile, ctx.rng);
+        lane.targetX = _botPickTargetX(lane);
       }
     }
   }
 
-  /// Glide every net toward its steering target. Humans set the target by
-  /// dragging ([_steerNet]); bots set it toward the star in [_driveBots]. A net
-  /// eases with a frame-rate-independent follow so motion reads as a smooth slide
-  /// rather than a snap, and stays clamped inside its owner's zone. Bot nets are
-  /// additionally speed-capped so they can be out-raced.
-  void _steerNets(double dt) {
-    if (dt <= 0) return;
-    final follow = (1.0 - math.exp(-_netFollowPerSec * dt)).clamp(0.0, 1.0);
-    for (final c in _catchers) {
-      final to = c.target - c.pos;
-      Offset next;
-      if (c.clock != null) {
-        // Bot: capped travel toward the target so weak bots stay beatable.
-        final step = _botNetSpeed * dt;
-        next = to.distance <= step || to.distance < 1e-6
-            ? c.target
-            : c.pos + to / to.distance * step;
-      } else {
-        next = Offset(
-          c.pos.dx + to.dx * follow,
-          c.pos.dy + to.dy * follow,
-        );
-      }
-      c.pos = _clampToZone(c.zone, next);
+  /// Decide where a bot wants its basket: dodge an imminent bomb if one threatens,
+  /// otherwise track the nearest descending star. Difficulty colors the read.
+  double _botPickTargetX(_Lane lane) {
+    final profile = ctx.botProfile;
+    final misread = ctx.rng.chance(profile.errorRate);
+
+    final bomb = _nearestThreateningBomb(lane);
+    // A competent read flees an imminent bomb; a misread ignores the danger.
+    if (bomb != null && !misread) {
+      return _dodgeXFrom(lane, bomb.x);
     }
+
+    final star = _nearestDescendingStar(lane);
+    if (star == null) {
+      // Nothing to chase: a misread bot may even drift toward a bomb (sloppy).
+      if (misread && bomb != null) return _clampX(lane.zone, bomb.x);
+      return lane.basketX; // hold position
+    }
+    // Aim under the star, with accuracy slop so a weak bot can just miss the
+    // overlap, and a misread can send it the wrong way entirely.
+    final slop = (1.0 - profile.accuracy.clamp(0.0, 1.0)) * _catchOverlap * 2.2;
+    var aim = star.x + ctx.rng.jitter(slop);
+    if (misread) aim = star.x + ctx.rng.sign() * _catchOverlap * 3.0;
+    return _clampX(lane.zone, aim);
   }
 
-  /// Advance render-only effects on real (unscaled) time: catcher flashes,
-  /// per-player combo timers, the spawn pop-in and expiring shockwaves.
-  void _tickEffects(double dt) {
-    for (final c in _catchers) {
-      c.tick(dt);
-    }
-    if (_spawnPop > 0) {
-      _spawnPop = math.max(0, _spawnPop - dt / _slowMoSec);
-    }
-    for (final s in _shockwaves) {
-      s.life -= dt;
-    }
-    _shockwaves.removeWhere((s) => s.dead);
-  }
-
-  /// Respawn far from all catchers so a single player can't camp one spot.
-  Offset _farRespawn() {
-    var best = _randomPoint();
-    var bestDist = -1.0;
-    for (var i = 0; i < 6; i++) {
-      final cand = _randomPoint();
-      var nearest = double.infinity;
-      for (final c in _catchers) {
-        nearest = math.min(nearest, (cand - c.pos).distance);
-      }
-      if (nearest > bestDist) {
-        bestDist = nearest;
-        best = cand;
+  /// The lowest (closest to the line) star still descending toward the catch line.
+  _Item? _nearestDescendingStar(_Lane lane) {
+    final lineY = _catchLineYNorm(lane.zone);
+    _Item? best;
+    var bestY = -1.0;
+    for (final item in lane.items) {
+      if (item.kind == _ItemKind.bomb || item.resolved) continue;
+      if (item.y > lineY) continue; // already past the line
+      if (item.y > bestY) {
+        bestY = item.y;
+        best = item;
       }
     }
     return best;
   }
+
+  /// A bomb close enough to the catch line (within [_botBombLeadFrac] of the lane)
+  /// AND near the basket's current x — i.e. the kind of bomb a real player would
+  /// slide to dodge. Returns the most imminent such bomb, or null.
+  _Item? _nearestThreateningBomb(_Lane lane) {
+    final lineY = _catchLineYNorm(lane.zone);
+    final lead = lane.zone.height * _botBombLeadFrac;
+    _Item? best;
+    var bestY = -1.0;
+    for (final item in lane.items) {
+      if (item.kind != _ItemKind.bomb || item.resolved) continue;
+      if (item.y > lineY || item.y < lineY - lead) continue;
+      // Only a bomb roughly over the basket is a threat worth dodging.
+      if ((item.x - lane.basketX).abs() > _catchOverlap * 1.4) continue;
+      if (item.y > bestY) {
+        bestY = item.y;
+        best = item;
+      }
+    }
+    return best;
+  }
+
+  static const double _botBombLeadFrac = 0.55; // lookahead for bomb dodging
+
+  /// Slide to the side of [bombX] that stays inside the lane — far enough that the
+  /// basket mouth clears the bomb.
+  double _dodgeXFrom(_Lane lane, double bombX) {
+    final z = lane.zone;
+    final step = _catchOverlap * 2.2;
+    final left = bombX - step;
+    final right = bombX + step;
+    // Prefer whichever side keeps the basket in-lane and is the shorter move.
+    final leftOk = left >= z.left + _laneInset;
+    final rightOk = right <= z.right - _laneInset;
+    if (leftOk && rightOk) {
+      return (lane.basketX <= bombX) ? left : right;
+    }
+    if (leftOk) return left;
+    if (rightOk) return right;
+    return _clampX(z, bombX); // pinned (very narrow lane); best effort
+  }
+
+  // ── Finish ──────────────────────────────────────────────────────────────────
 
   void _finish() {
     if (status == MiniGameStatus.finished) return;
@@ -547,7 +562,7 @@ class CatchTheStar extends MiniGameBase {
     // the round resolves. Latched so it fires exactly once.
     if (!_finishFired) {
       _finishFired = true;
-      _juice.bigBanner('WINNER!', color: _leaderColor() ?? _goldenBody);
+      _juice.bigBanner('WINNER!', color: _leaderColor() ?? _goldBody);
     }
     finishByScore();
   }
@@ -565,12 +580,16 @@ class CatchTheStar extends MiniGameBase {
         canvas, size, _bgStars, _bgSeeds, _animClock);
     CatchRenderer.drawVignette(canvas, size);
 
-    _drawCatchers(canvas);
-    _drawShockwaves(canvas);
-    _drawStar(canvas);
+    _drawLanes(canvas);
 
     CatchRenderer.drawHud(
-        canvas, size, _timeLimit - _elapsed, _leaderColor(), _leaderScore());
+      canvas,
+      size,
+      _timeLimit - _elapsed,
+      _leaderColor(),
+      _leaderScore(),
+      _targetScore,
+    );
 
     _juice.render(canvas);
     canvas.restore();
@@ -578,83 +597,75 @@ class CatchTheStar extends MiniGameBase {
     _juice.renderOverlay(canvas, size);
   }
 
-  void _drawCatchers(Canvas canvas) {
-    final starPx = _toPixels(_star);
-    for (final c in _catchers) {
-      final center = _toPixels(c.pos);
-      // Draw the catcher at its effective reach so a trailing player's wider
-      // comeback window is visible (and the in-range telegraph stays honest).
-      final radius = _snatchRadiusFor(c);
-      final reach = radius * _minSide;
-      final inRange = (_star - c.pos).distance <= radius;
-      // Hint line to a near-catch (drawn under the catcher art).
-      if (inRange) {
-        CatchRenderer.drawSnatchHint(canvas, center, starPx, c.color, 1.0);
-      }
-      CatchRenderer.drawCatcher(
+  void _drawLanes(Canvas canvas) {
+    final laneCount = _lanes.length;
+    for (final lane in _lanes) {
+      final zonePx = _rectToPixels(lane.zone);
+      final lineY = _toPixels(Offset(0, _catchLineYNorm(lane.zone))).dy;
+      CatchRenderer.drawLane(
         canvas,
-        center,
-        reach,
-        c.color,
-        c.displayNumber,
-        flash: c.flashFill(_catcherFlashSec),
-        armed: inRange ? 1.0 : 0.0,
+        zonePx,
+        lineY,
+        lane.color,
+        lane.displayNumber,
+        score: scoreOf(lane.playerId).toInt(),
+        multiPlayer: laneCount > 1,
+      );
+
+      // Falling items: clearly distinct + telegraphed (bombs read RED with a fuse,
+      // gold stars glow brighter, normal stars are warm).
+      for (final item in lane.items) {
+        final center = _toPixels(Offset(item.x, item.y));
+        final r = _itemHalfWidth * _minSide;
+        CatchRenderer.drawItem(
+          canvas,
+          center,
+          r,
+          isBomb: item.kind == _ItemKind.bomb,
+          gold: item.kind == _ItemKind.gold,
+          spin: item.spin + _animClock * 1.4,
+          t: _animClock,
+        );
+      }
+
+      // The basket at the catch line, sized to its (comeback-scaled) mouth.
+      final basketPx =
+          _toPixels(Offset(lane.basketX, _catchLineYNorm(lane.zone)));
+      CatchRenderer.drawBasket(
+        canvas,
+        basketPx,
+        _overlapFor(lane) * _minSide,
+        lane.color,
+        flash: lane.flashFill(_flashSec),
+        stun: lane.stunFill(_stunSec),
         t: _animClock,
       );
     }
   }
 
-  void _drawShockwaves(Canvas canvas) {
-    final maxR = _shockwaveRadiusFrac * _minSide;
-    for (final s in _shockwaves) {
-      CatchRenderer.drawShockwave(
-          canvas, _toPixels(s.pos), maxR, s.color, s.progress(_shockwaveSec));
-    }
-  }
-
-  void _drawStar(Canvas canvas) {
-    // During the GOLD RUSH the star swells into a readable mega-star.
-    final r = _starRadiusFrac * _minSide * (_inFlurry ? _flurryStarScale : 1.0);
-    final pulse = 0.5 + 0.5 * math.sin(_animClock * 5.0);
-    final rot = _animClock * 0.7;
-    CatchRenderer.drawCometTrail(
-      canvas,
-      [for (final p in _trail) _toPixels(p)],
-      r,
-      _golden ? _goldenGlow : _normalGlow,
-      pulse: pulse,
-    );
-    CatchRenderer.drawStar(
-      canvas,
-      _toPixels(_star),
-      r,
-      pulse: pulse,
-      golden: _golden,
-      rot: rot,
-      spawn: _spawnPop,
-    );
-  }
-
-  // ── Small helpers ──────────────────────────────────────────────────────────
+  // ── Small helpers ────────────────────────────────────────────────────────────
 
   double get _minSide => math.min(_lastSize.width, _lastSize.height);
 
-  _Catcher? _catcherOf(int id) {
-    for (final c in _catchers) {
-      if (c.playerId == id) return c;
+  /// Normalized y of the catch line within [zone].
+  double _catchLineYNorm(Rect zone) => zone.top + zone.height * _catchLineFrac;
+
+  _Lane? _laneOf(int id) {
+    for (final lane in _lanes) {
+      if (lane.playerId == id) return lane;
     }
     return null;
   }
 
   /// Current leader's color (null on a fresh round with no points yet).
   Color? _leaderColor() {
-    _Catcher? best;
+    _Lane? best;
     var bestScore = 0;
-    for (final c in _catchers) {
-      final s = scoreOf(c.playerId).toInt();
+    for (final lane in _lanes) {
+      final s = scoreOf(lane.playerId).toInt();
       if (s > bestScore) {
         bestScore = s;
-        best = c;
+        best = lane;
       }
     }
     return best?.color;
@@ -662,8 +673,8 @@ class CatchTheStar extends MiniGameBase {
 
   int _leaderScore() {
     var best = 0;
-    for (final c in _catchers) {
-      best = math.max(best, scoreOf(c.playerId).toInt());
+    for (final lane in _lanes) {
+      best = math.max(best, scoreOf(lane.playerId).toInt());
     }
     return best;
   }
@@ -671,82 +682,112 @@ class CatchTheStar extends MiniGameBase {
   Offset _toPixels(Offset norm) =>
       Offset(norm.dx * _lastSize.width, norm.dy * _lastSize.height);
 
-  /// Test-only view of the roaming star's normalized position so deterministic
-  /// tests can steer a net exactly onto it (the core chase mechanic). Not used
-  /// by gameplay or rendering.
-  @visibleForTesting
-  Offset get starPosForTest => _star;
+  Rect _rectToPixels(Rect r) => Rect.fromLTRB(
+        r.left * _lastSize.width,
+        r.top * _lastSize.height,
+        r.right * _lastSize.width,
+        r.bottom * _lastSize.height,
+      );
 
-  /// Test-only view of a player's net position so tests can assert the net stays
-  /// clamped inside its zone. Returns null for an unknown id. Not used by
-  /// gameplay or rendering.
+  /// Test-only view of a lane's basket x so deterministic tests can assert it
+  /// stays clamped to its zone and tracks stars. Not used by gameplay/render.
   @visibleForTesting
-  Offset? netPosForTest(int id) => _catcherOf(id)?.pos;
+  double? basketXForTest(int id) => _laneOf(id)?.basketX;
+
+  /// Test-only: the catch line y (normalized) for a player's lane, so a test can
+  /// drive a basket exactly under a star at the line. Not used by gameplay.
+  @visibleForTesting
+  double? catchLineYForTest(int id) {
+    final lane = _laneOf(id);
+    return lane == null ? null : _catchLineYNorm(lane.zone);
+  }
+
+  /// Test-only: the x of the lowest descending STAR (gold or normal) in a lane, or
+  /// null if none — lets a deterministic test position a basket under the next
+  /// star to prove tracking beats sitting still. Not used by gameplay/render.
+  @visibleForTesting
+  double? nextStarXForTest(int id) {
+    final lane = _laneOf(id);
+    if (lane == null) return null;
+    return _nearestDescendingStar(lane)?.x;
+  }
+
+  /// Test-only: the x of the lowest descending BOMB in a lane, or null. Lets a
+  /// test confirm a flailing player sits under bombs. Not used by gameplay.
+  @visibleForTesting
+  double? nextBombXForTest(int id) {
+    final lane = _laneOf(id);
+    if (lane == null) return null;
+    final lineY = _catchLineYNorm(lane.zone);
+    _Item? best;
+    var bestY = -1.0;
+    for (final item in lane.items) {
+      if (item.kind != _ItemKind.bomb || item.resolved) continue;
+      if (item.y > lineY) continue;
+      if (item.y > bestY) {
+        bestY = item.y;
+        best = item;
+      }
+    }
+    return best?.x;
+  }
 }
 
-/// Per-player catcher (net) bookkeeping: the zone it is confined to, its live
-/// position + steering target, color, optional bot clock and the round-scoped
-/// flash + combo state. Mutable for the duration of one round (allowed by
+/// What a falling item is. A bomb PENALIZES; a star/gold rewards.
+enum _ItemKind { star, gold, bomb }
+
+/// A single falling item in a lane. Round-scoped mutable state (allowed by
 /// [MiniGameBase]).
-class _Catcher {
+class _Item {
+  final _ItemKind kind;
+  final double x; // normalized 0..1 (constant during the fall)
+  double y; // normalized 0..1, increases as it falls
+  final double spin; // render-only base spin phase
+  bool resolved = false; // catch/miss decided at the line exactly once
+
+  _Item({required this.kind, required this.x, required this.y, this.spin = 0});
+}
+
+/// Per-player lane: the basket it controls (with inertia), its falling stream,
+/// color, optional bot reaction clock and the round-scoped flash + stun timers.
+/// Mutable for the duration of one round (allowed by [MiniGameBase]).
+class _Lane {
   final int playerId;
   final int displayNumber;
   final Color color;
-  final Rect zone; // this player's slice of the arena (normalized)
+  final Rect zone; // this player's column (normalized)
   final ReactionClock? clock;
+  final List<_Item> items = <_Item>[];
 
-  Offset pos; // normalized 0..1 net position (steered by drag / bot)
-  Offset target; // where the net is gliding toward (clamped into [zone])
-  double flash = 0; // seconds of snatch flash remaining
-  int _combo = 0; // current combo count (1.. on a live chain)
-  double _comboTimer = 0; // seconds left to keep the chain alive
+  double basketX; // normalized 0..1 basket centre x
+  double targetX; // where the basket is easing toward (clamped to [zone])
+  double basketVel = 0; // basket velocity (norm/sec) — gives inertia
+  double spawnTimer; // seconds until the next drop
+  double flash = 0; // seconds of catch flash remaining
+  double stun = 0; // seconds of bomb stun remaining
 
-  _Catcher({
+  _Lane({
     required this.playerId,
     required this.displayNumber,
     required this.color,
     required this.zone,
-    required this.pos,
+    required this.basketX,
+    required this.targetX,
+    required this.spawnTimer,
     this.clock,
-  }) : target = pos;
+  });
 
-  /// Register a successful catch: extend/grow the combo within its window and
-  /// return the resulting multiplier (1..[max]).
-  int registerCatch(double windowSec, int max) {
-    _combo = (_comboTimer > 0 ? _combo + 1 : 1).clamp(1, max);
-    _comboTimer = windowSec;
-    return _combo;
-  }
-
-  /// Advance flash + combo timers on real time.
+  /// Advance render/state timers on real time.
   void tick(double dt) {
     if (flash > 0) flash = math.max(0, flash - dt);
-    if (_comboTimer > 0) {
-      _comboTimer = math.max(0, _comboTimer - dt);
-      if (_comboTimer == 0) _combo = 0;
-    }
+    if (stun > 0) stun = math.max(0, stun - dt);
   }
 
-  /// Flash brightness in 0..1 (1 = just snatched), for the renderer.
-  double flashFill(double total) {
-    if (total <= 0) return 0;
-    return (flash / total).clamp(0.0, 1.0);
-  }
-}
+  /// Flash brightness in 0..1 (1 = just caught), for the renderer.
+  double flashFill(double total) =>
+      total <= 0 ? 0 : (flash / total).clamp(0.0, 1.0);
 
-/// A short-lived expanding snatch shockwave. Round-scoped mutable effect state.
-class _Shockwave {
-  final Offset pos; // normalized
-  final Color color;
-  double life;
-  final double maxLife;
-
-  _Shockwave({required this.pos, required this.color, required this.life})
-      : maxLife = life;
-
-  bool get dead => life <= 0;
-
-  /// 0..1 progress (0 = just born, 1 = expired).
-  double progress(double total) =>
-      total <= 0 ? 1 : (1.0 - (life / total)).clamp(0.0, 1.0);
+  /// Stun fill in 0..1 (1 = just bombed), for the renderer.
+  double stunFill(double total) =>
+      total <= 0 ? 0 : (stun / total).clamp(0.0, 1.0);
 }

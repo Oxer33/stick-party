@@ -1,14 +1,15 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
-/// Pure-Canvas rendering for [CatchTheStar] — a glowing star wandering a night
-/// sky while player-colored catchers try to snatch it. Holds NO game state and
-/// never mutates the simulation: callers pass plain value snapshots. Kept in its
-/// own file so the gameplay module stays lean and the drawing stays cohesive
-/// (mirrors the sumo_smash / tap_sprint split).
+/// Pure-Canvas rendering for [CatchTheStar] (Star Catcher) — falling stars,
+/// golden stars and BOMBS rain down each player's lane while a player-colored
+/// basket slides along a catch line to scoop the good ones and dodge the bombs.
+/// Holds NO game state and never mutates the simulation: callers pass plain value
+/// snapshots. Kept in its own file so the gameplay module stays lean and the
+/// drawing stays cohesive (mirrors the sumo_smash / tap_sprint split).
 ///
-/// Every method is side-effect free beyond the supplied [Canvas], guards its
-/// own inputs, and never throws (so it is safe to call from `render`).
+/// Every method is side-effect free beyond the supplied [Canvas], guards its own
+/// inputs, and never throws (so it is safe to call from `render`).
 class CatchRenderer {
   CatchRenderer._();
 
@@ -30,34 +31,37 @@ class CatchRenderer {
   static const Color _starGlow = Color(0xFFFFD24A); // normal star halo
   static const Color _bonusGold = Color(0xFFFFE070); // golden bonus body
   static const Color _bonusGlow = Color(0xFFFF9E1B); // golden bonus halo
+  static const Color _bombBody = Color(0xFF2A2E38); // bomb shell
+  static const Color _bombEdge = Color(0xFFE5484D); // bomb danger rim
+  static const Color _bombHi = Color(0xFF5A6172); // bomb shell highlight
+  static const Color _fuse = Color(0xFFB08050); // bomb fuse cord
+  static const Color _spark = Color(0xFFFFC85A); // bomb fuse spark
+  static const Color _laneSeam = Color(0x33FFFFFF); // lane divider tint
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _urgent = Color(0xFFFF6B6B);
 
   // ── Tuning (fractions / px; no inline magic numbers) ───────────────────────
   static const double _moonCenterXFrac = 0.74; // moon x / width
-  static const double _moonCenterYFrac = 0.18; // moon y / height
-  static const double _moonRadiusFrac = 0.085; // moon radius / width
+  static const double _moonCenterYFrac = 0.12; // moon y / height
+  static const double _moonRadiusFrac = 0.07; // moon radius / width
   static const double _moonHaloFactor = 2.6; // halo radius / moon radius
   static const double _vignInnerFrac = 0.42;
   static const double _vignOuterFrac = 0.82;
 
-  // Catcher (glowing ring / net / hands) tuning, in fractions of `reach`.
-  static const double _catcherRingFactor = 1.0; // outer snatch ring / reach
-  static const double _catcherInnerFactor = 0.62; // net inner ring / reach
-  static const double _catcherHubFactor = 0.2; // solid hub / reach
-  static const int _catcherNetSpokes = 8; // net cross-strands
-  static const double _catcherGlowFactor = 1.22; // soft glow ring / reach
-
-  // Target star tuning, in fractions of the star outer radius `r`.
+  // Item (star / bomb) tuning, in fractions of the item radius `r`.
   static const double _starInnerFactor = 0.44; // inner / outer radius
-  static const double _starHaloFactor = 2.7; // glow halo / outer radius
+  static const double _starHaloFactor = 2.4; // glow halo / outer radius
   static const double _starCoreFactor = 0.3; // bright core / outer radius
   static const int _starPoints = 5;
-  static const int _goldenRays = 8; // sparkle-crown rays on a bonus star
+  static const int _goldenRays = 8; // sparkle-crown rays on a gold star
+  static const double _bombHaloFactor = 2.2; // danger halo / bomb radius
+  static const double _fuseLen = 0.9; // fuse length / bomb radius
 
-  // Comet trail tuning.
-  static const double _trailWidthFactor = 0.9; // head width / star radius
+  // Basket tuning, in fractions of the basket half-mouth `mouth`.
+  static const double _basketDepthFactor = 0.9; // basket depth / half-mouth
+  static const double _basketGlowFactor = 1.35; // soft glow / half-mouth
+  static const int _basketWeaveLines = 4; // woven cross-strands
 
   // ── Background: night-sky gradient + soft horizon haze + a glowing moon ─────
   static void drawBackground(Canvas canvas, Size size) {
@@ -160,7 +164,7 @@ class CatchRenderer {
   }
 
   /// Crowd-dark vignette so the action pops (drawn over the sky, under the
-  /// catchers + star).
+  /// lanes + items).
   static void drawVignette(Canvas canvas, Size size) {
     final diag = math.sqrt(size.width * size.width + size.height * size.height);
     final outer = diag * _vignOuterFrac;
@@ -177,131 +181,118 @@ class CatchRenderer {
     );
   }
 
-  /// A player's catcher: a glowing ring "net" anchored at [center] in their
-  /// [color], sized to its snatch [reach]. [flash] in 0..1 (a recent snatch)
-  /// brightens + thickens the ring and blooms a halo. [armed] in 0..1 swells the
-  /// ring gently while the star is in range (telegraph). [displayNumber] is the
-  /// 1-based player label drawn on the hub. [t] is the sim clock (net spin).
-  static void drawCatcher(
+  /// A player's lane: a faint colored seam framing their column, a glowing catch
+  /// line at [catchLineY] (pixels) where catches resolve, and — in a multiplayer
+  /// split — a small player pip + live score in the corner so each band is
+  /// readable at a glance. [zone] is the lane rect in pixels.
+  static void drawLane(
     Canvas canvas,
-    Offset center,
-    double reach,
+    Rect zone,
+    double catchLineY,
     Color color,
     int displayNumber, {
-    double flash = 0,
-    double armed = 0,
-    double t = 0,
+    int score = 0,
+    bool multiPlayer = false,
   }) {
-    if (reach <= 1) return;
-    final f = flash.clamp(0.0, 1.0);
-    final a = armed.clamp(0.0, 1.0);
-    final swell = 1.0 + 0.06 * a + 0.18 * f;
-    final ringR = reach * _catcherRingFactor * swell;
+    if (zone.width <= 1 || zone.height <= 1) return;
 
-    // Soft outer bloom (much stronger on a fresh snatch).
-    canvas.drawCircle(
-      center,
-      reach * _catcherGlowFactor * swell,
-      Paint()
-        ..shader = Gradient.radial(
-          center,
-          reach * _catcherGlowFactor * swell,
-          [
-            color.withValues(
-                alpha: (0.12 + 0.4 * f + 0.08 * a).clamp(0.0, 1.0)),
-            const Color(0x00000000),
-          ],
-        ),
-    );
-
-    // Outer snatch ring.
-    canvas.drawCircle(
-      center,
-      ringR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.5, reach * (0.05 + 0.06 * f))
-        ..color = color.withValues(alpha: (0.45 + 0.5 * f).clamp(0.0, 1.0)),
-    );
-    // A brighter ring sheen.
-    canvas.drawCircle(
-      center,
-      ringR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(0.8, reach * 0.018)
-        ..color = _blend(color, _white, 0.5)
-            .withValues(alpha: (0.3 + 0.5 * f).clamp(0.0, 1.0)),
-    );
-
-    // Inner "net" ring + radial strands so it reads as a catching net, with a
-    // slow rotation driven by the sim clock.
-    final innerR = reach * _catcherInnerFactor;
-    final netPaint = Paint()
+    // Lane seam (vertical edges) so columns read as separate play spaces.
+    final seam = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(1.0, reach * 0.02)
-      ..color = color.withValues(
-          alpha: (0.28 + 0.35 * (f + a * 0.5)).clamp(0.0, 1.0));
-    canvas.drawCircle(center, innerR, netPaint);
-    final spin = t * 0.6;
-    for (var i = 0; i < _catcherNetSpokes; i++) {
-      final ang = spin + (i / _catcherNetSpokes) * math.pi * 2;
-      final dir = Offset(math.cos(ang), math.sin(ang));
-      canvas.drawLine(
-        center + dir * (reach * _catcherHubFactor),
-        center + dir * innerR,
-        netPaint,
-      );
+      ..strokeWidth = math.max(1.0, zone.width * 0.006)
+      ..color = _laneSeam;
+    if (multiPlayer) {
+      canvas.drawLine(zone.topLeft, zone.bottomLeft, seam);
+      canvas.drawLine(zone.topRight, zone.bottomRight, seam);
     }
 
-    // Solid glowing hub + numbered pip.
-    final hubR = reach * _catcherHubFactor;
-    canvas.drawCircle(
-      center,
-      hubR,
-      Paint()
-        ..shader = Gradient.radial(
-          center.translate(-hubR * 0.3, -hubR * 0.3),
-          hubR,
-          [_blend(color, _white, 0.4 + 0.4 * f), color],
-        ),
-    );
-    canvas.drawCircle(
-      center,
-      hubR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, hubR * 0.16)
-        ..color = _white.withValues(alpha: 0.85),
-    );
-    _drawText(canvas, '$displayNumber', center, hubR * 1.3, _readableText(color),
-        weight: FontWeight.w900);
+    // Glowing catch line across the lane — the telegraph of WHERE catches happen.
+    final lineGlow = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(2.0, zone.width * 0.02)
+      ..color = color.withValues(alpha: 0.16);
+    canvas.drawLine(
+        Offset(zone.left, catchLineY), Offset(zone.right, catchLineY), lineGlow);
+    final lineCore = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.0, zone.width * 0.008)
+      ..color = color.withValues(alpha: 0.5);
+    canvas.drawLine(
+        Offset(zone.left, catchLineY), Offset(zone.right, catchLineY), lineCore);
+
+    // Per-lane player pip + score (only when the screen is split).
+    if (multiPlayer) {
+      final pipR = math.max(8.0, zone.width * 0.05);
+      final at = Offset(zone.left + pipR * 1.6, zone.top + pipR * 1.6);
+      canvas.drawCircle(
+        at,
+        pipR,
+        Paint()
+          ..shader = Gradient.radial(
+            at.translate(-pipR * 0.3, -pipR * 0.3),
+            pipR,
+            [_blend(color, _white, 0.4), color],
+          ),
+      );
+      canvas.drawCircle(
+        at,
+        pipR,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, pipR * 0.16)
+          ..color = _white.withValues(alpha: 0.85),
+      );
+      _drawText(canvas, '$displayNumber', at, pipR * 1.3, _readableText(color),
+          weight: FontWeight.w900);
+      _drawText(
+        canvas,
+        '$score',
+        Offset(at.dx + pipR * 2.4, at.dy),
+        pipR * 1.5,
+        color,
+        weight: FontWeight.w900,
+        glow: true,
+        glowColor: color,
+      );
+    }
   }
 
-  /// The wandering target star. [center] is its pixel position, [r] its outer
-  /// radius. [pulse] in 0..1 breathes the glow/size; [golden] swaps to the
-  /// bonus palette; [rot] rotates the star a touch for life; [spawn] in 0..1 is
-  /// a brief pop-in scale right after a respawn/teleport (1 = just appeared).
-  static void drawStar(
+  /// A falling item: a warm STAR, a brighter GOLD star (with a sparkle crown), or
+  /// a clearly-distinct BOMB (dark shell, red danger rim + a lit fuse). [center]
+  /// is the pixel position, [r] the outer radius; [spin] rotates it for life; [t]
+  /// drives the bomb fuse twinkle. Distinct silhouettes + colors telegraph which
+  /// is which from across the lane.
+  static void drawItem(
     Canvas canvas,
     Offset center,
     double r, {
-    double pulse = 0,
-    bool golden = false,
-    double rot = 0,
-    double spawn = 0,
+    bool isBomb = false,
+    bool gold = false,
+    double spin = 0,
+    double t = 0,
   }) {
     if (r <= 0) return;
-    final p = pulse.clamp(0.0, 1.0);
-    final sp = spawn.clamp(0.0, 1.0);
-    // Pop-in: start small after a teleport then settle; gentle pulse on top.
-    final scale = (1.0 - 0.25 * sp) + 0.08 * p;
-    final rr = r * scale;
-    final body = golden ? _bonusGold : _starGold;
-    final glow = golden ? _bonusGlow : _starGlow;
+    if (isBomb) {
+      _drawBomb(canvas, center, r, t);
+    } else {
+      _drawStar(canvas, center, r, gold: gold, rot: spin, t: t);
+    }
+  }
 
-    // Soft halo (breathes with the pulse; golden blooms larger).
-    final haloR = rr * _starHaloFactor * (golden ? 1.2 : 1.0) * (0.9 + 0.2 * p);
+  static void _drawStar(
+    Canvas canvas,
+    Offset center,
+    double r, {
+    bool gold = false,
+    double rot = 0,
+    double t = 0,
+  }) {
+    final pulse = 0.5 + 0.5 * math.sin(t * 5.0);
+    final body = gold ? _bonusGold : _starGold;
+    final glow = gold ? _bonusGlow : _starGlow;
+
+    // Soft halo (breathes; gold blooms larger).
+    final haloR = r * _starHaloFactor * (gold ? 1.2 : 1.0) * (0.9 + 0.2 * pulse);
     canvas.drawCircle(
       center,
       haloR,
@@ -310,173 +301,205 @@ class CatchRenderer {
           center,
           haloR,
           [
-            glow.withValues(alpha: (golden ? 0.55 : 0.42) * (0.7 + 0.3 * p)),
+            glow.withValues(alpha: (gold ? 0.55 : 0.42) * (0.7 + 0.3 * pulse)),
             const Color(0x00000000),
           ],
         ),
     );
 
-    // Golden bonus gets a sparkle crown of long thin rays.
-    if (golden) {
+    // Gold gets a sparkle crown of long thin rays.
+    if (gold) {
       final ray = Paint()
         ..strokeCap = StrokeCap.round
-        ..strokeWidth = math.max(1.0, rr * 0.08)
-        ..color = _blend(glow, _white, 0.4).withValues(alpha: 0.5 + 0.3 * p);
+        ..strokeWidth = math.max(1.0, r * 0.08)
+        ..color = _blend(glow, _white, 0.4).withValues(alpha: 0.5 + 0.3 * pulse);
       for (var i = 0; i < _goldenRays; i++) {
         final ang = rot * 0.5 + i * (math.pi * 2 / _goldenRays);
         final dir = Offset(math.cos(ang), math.sin(ang));
-        canvas.drawLine(center + dir * rr * 1.2,
-            center + dir * rr * (2.0 + 0.4 * p), ray);
+        canvas.drawLine(
+            center + dir * r * 1.2, center + dir * r * (2.0 + 0.4 * pulse), ray);
       }
     }
 
     // The 5-point star body (filled) with a gradient, plus a crisp outline.
-    final path = _starPath(center, rr, rr * _starInnerFactor, _starPoints, rot);
+    final path = _starPath(center, r, r * _starInnerFactor, _starPoints, rot);
     canvas.drawPath(
       path,
       Paint()
-        ..shader = Gradient.radial(
-          center,
-          rr,
-          [_starGoldHot, body],
-          const [0.0, 1.0],
-        ),
+        ..shader =
+            Gradient.radial(center, r, [_starGoldHot, body], const [0.0, 1.0]),
     );
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, rr * 0.08)
+        ..strokeWidth = math.max(1.0, r * 0.08)
         ..color = _blend(glow, _white, 0.3).withValues(alpha: 0.8),
     );
     // White-hot core.
-    canvas.drawCircle(center, rr * _starCoreFactor,
+    canvas.drawCircle(center, r * _starCoreFactor,
         Paint()..color = _white.withValues(alpha: 0.9));
   }
 
-  /// A fading comet trail behind the star: [points] are recent pixel positions
-  /// newest→oldest. Drawn as a tapering, brightening ribbon toward the head with
-  /// a soft glow underlay, plus a sprinkle of deterministic sparkles.
-  static void drawCometTrail(
-    Canvas canvas,
-    List<Offset> points,
-    double headRadius,
-    Color glow, {
-    double pulse = 0,
-  }) {
-    if (points.length < 2 || headRadius <= 0) return;
-    final n = points.length;
-    final p = pulse.clamp(0.0, 1.0);
+  static void _drawBomb(Canvas canvas, Offset center, double r, double t) {
+    // Pulsing red danger halo so a bomb screams "DON'T CATCH" from a distance.
+    final pulse = 0.5 + 0.5 * math.sin(t * 7.0);
+    final haloR = r * _bombHaloFactor * (0.9 + 0.15 * pulse);
+    canvas.drawCircle(
+      center,
+      haloR,
+      Paint()
+        ..shader = Gradient.radial(
+          center,
+          haloR,
+          [
+            _bombEdge.withValues(alpha: 0.30 + 0.18 * pulse),
+            const Color(0x00000000),
+          ],
+        ),
+    );
 
-    // Glow underlay: a wide, faint solid stroke per segment widening toward the
-    // head. A translucent over-wide stroke reads like a soft halo at a fraction
-    // of the cost of a per-segment blur (no MaskFilter in this per-frame loop).
-    final glowPaint = Paint()..strokeCap = StrokeCap.round;
-    for (var i = 0; i < n - 1; i++) {
-      final frac = 1.0 - i / (n - 1); // 1 at head, 0 at tail
-      glowPaint
-        ..strokeWidth = headRadius * _trailWidthFactor * frac * 2.4 + 1.0
-        ..color = glow.withValues(alpha: (0.20 * frac * frac).clamp(0.0, 1.0));
-      canvas.drawLine(points[i], points[i + 1], glowPaint);
-    }
+    // Fuse cord rising from the top of the shell, with a flickering spark tip.
+    final fuseBase = center.translate(r * 0.18, -r * 0.78);
+    final fuseTip = center.translate(r * 0.42, -r * (0.78 + _fuseLen * 0.6));
+    canvas.drawLine(
+      fuseBase,
+      fuseTip,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.0, r * 0.1)
+        ..color = _fuse,
+    );
+    final sparkR = r * (0.16 + 0.07 * pulse);
+    canvas.drawCircle(
+        fuseTip, sparkR * 1.8, Paint()..color = _spark.withValues(alpha: 0.4));
+    canvas.drawCircle(fuseTip, sparkR, Paint()..color = _white);
 
-    // Bright core ribbon on top.
-    final corePaint = Paint()..strokeCap = StrokeCap.round;
-    for (var i = 0; i < n - 1; i++) {
-      final frac = 1.0 - i / (n - 1);
-      corePaint
-        ..strokeWidth = headRadius * _trailWidthFactor * frac + 0.4
-        ..color = _blend(glow, _white, 0.55)
-            .withValues(alpha: (0.6 * frac).clamp(0.0, 1.0));
-      canvas.drawLine(points[i], points[i + 1], corePaint);
-    }
-
-    // Deterministic sparkles peppered along the trail (phase from index).
-    final sparkPaint = Paint();
-    for (var k = 0; k < n - 1; k++) {
-      final frac = 1.0 - k / (n - 1);
-      final a = points[k];
-      final b = points[k + 1];
-      final m = Offset.lerp(a, b, ((k * 53) % 100) / 100.0) ?? a;
-      final tw = 0.5 + 0.5 * math.sin((k * 1.7) + p * 6.0);
-      sparkPaint.color =
-          _white.withValues(alpha: (0.45 * frac * tw).clamp(0.0, 1.0));
-      canvas.drawCircle(m, (headRadius * 0.16) * (0.6 + 0.6 * tw), sparkPaint);
-    }
-  }
-
-  /// An expanding snatch shockwave ring at [center] in [color]. [progress] in
-  /// 0..1 grows the radius to [maxRadius] and fades the stroke.
-  static void drawShockwave(
-    Canvas canvas,
-    Offset center,
-    double maxRadius,
-    Color color,
-    double progress,
-  ) {
-    final t = progress.clamp(0.0, 1.0);
-    if (t >= 1 || maxRadius <= 0) return;
-    final r = maxRadius * _easeOut(t);
-    final alpha = (1.0 - t) * 0.8;
+    // Dark round shell with a soft top-left highlight.
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..shader = Gradient.radial(
+          center.translate(-r * 0.35, -r * 0.35),
+          r * 1.3,
+          const [_bombHi, _bombBody],
+          const [0.0, 1.0],
+        ),
+    );
+    // Red danger rim.
     canvas.drawCircle(
       center,
       r,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, maxRadius * 0.06 * (1.0 - t))
-        ..color =
-            _blend(color, _white, 0.4).withValues(alpha: alpha.clamp(0.0, 1.0)),
+        ..strokeWidth = math.max(1.5, r * 0.12)
+        ..color = _bombEdge.withValues(alpha: 0.85),
     );
-    // A fainter trailing ring for depth.
+    // Tiny glint.
+    canvas.drawCircle(center.translate(-r * 0.3, -r * 0.3), r * 0.16,
+        Paint()..color = _white.withValues(alpha: 0.5));
+  }
+
+  /// A player's basket at the catch line. [center] is its pixel position, [mouth]
+  /// the half-width of its catching mouth (so its full opening spans 2×mouth).
+  /// [flash] in 0..1 (a recent catch) brightens it; [stun] in 0..1 (just caught a
+  /// bomb) tints it red and shakes a little so the penalty is unmistakable. [t]
+  /// drives a subtle idle wobble.
+  static void drawBasket(
+    Canvas canvas,
+    Offset center,
+    double mouth,
+    Color color, {
+    double flash = 0,
+    double stun = 0,
+    double t = 0,
+  }) {
+    if (mouth <= 1) return;
+    final f = flash.clamp(0.0, 1.0);
+    final s = stun.clamp(0.0, 1.0);
+    final tint = s > 0 ? _blend(color, _bombEdge, 0.6 * s) : color;
+    // A stunned basket trembles; a fresh catch makes it bob up a touch.
+    final shake = s > 0 ? math.sin(t * 40) * mouth * 0.12 * s : 0.0;
+    final cx = center.dx + shake;
+    final depth = mouth * _basketDepthFactor;
+    final top = center.dy;
+    final bottom = center.dy + depth;
+    final left = cx - mouth;
+    final right = cx + mouth;
+
+    // Soft glow under the basket (much stronger on a fresh catch).
     canvas.drawCircle(
-      center,
-      r * 0.7,
+      Offset(cx, center.dy + depth * 0.4),
+      mouth * _basketGlowFactor,
+      Paint()
+        ..shader = Gradient.radial(
+          Offset(cx, center.dy + depth * 0.4),
+          mouth * _basketGlowFactor,
+          [
+            tint.withValues(alpha: (0.14 + 0.4 * f).clamp(0.0, 1.0)),
+            const Color(0x00000000),
+          ],
+        ),
+    );
+
+    // Basket cup: a trapezoid (wider at the top opening), filled with a vertical
+    // gradient + a crisp rim, so it reads clearly as a container to scoop into.
+    final cup = Path()
+      ..moveTo(left, top)
+      ..lineTo(right, top)
+      ..lineTo(right - mouth * 0.22, bottom)
+      ..lineTo(left + mouth * 0.22, bottom)
+      ..close();
+    canvas.drawPath(
+      cup,
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(cx, top),
+          Offset(cx, bottom),
+          [_blend(tint, _white, 0.35 + 0.3 * f), tint],
+        ),
+    );
+    // Woven cross-strands for a basket look.
+    final weave = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.0, mouth * 0.05)
+      ..color = _blend(tint, _black, 0.25).withValues(alpha: 0.5);
+    for (var i = 1; i < _basketWeaveLines; i++) {
+      final ty = top + (bottom - top) * (i / _basketWeaveLines);
+      final inset = mouth * 0.22 * (i / _basketWeaveLines);
+      canvas.drawLine(
+          Offset(left + inset, ty), Offset(right - inset, ty), weave);
+    }
+    // Bright top rim (the opening) — thickens + brightens on a catch.
+    canvas.drawLine(
+      Offset(left, top),
+      Offset(right, top),
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.5, mouth * (0.12 + 0.1 * f))
+        ..color = _blend(tint, _white, 0.5).withValues(alpha: 0.9),
+    );
+    // Cup outline.
+    canvas.drawPath(
+      cup,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(0.8, maxRadius * 0.03 * (1.0 - t))
-        ..color = color.withValues(alpha: (alpha * 0.6).clamp(0.0, 1.0)),
+        ..strokeWidth = math.max(1.0, mouth * 0.05)
+        ..color = _blend(tint, _white, 0.2).withValues(alpha: 0.8),
     );
   }
 
-  /// A thin guiding line from the in-range catcher's hub toward the star so a
-  /// near-catch reads clearly. [strength] 0..1 fades it.
-  static void drawSnatchHint(
-    Canvas canvas,
-    Offset from,
-    Offset to,
-    Color color,
-    double strength,
-  ) {
-    final s = strength.clamp(0.0, 1.0);
-    if (s <= 0.02) return;
-    // Two stacked solid strokes (wide+faint under thin+crisp) read like a soft
-    // guide line without a per-frame blur.
-    canvas.drawLine(
-      from,
-      to,
-      Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = 4.0 + 3.0 * s
-        ..color = color.withValues(alpha: 0.16 * s),
-    );
-    canvas.drawLine(
-      from,
-      to,
-      Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = 1.5 + 1.5 * s
-        ..color = color.withValues(alpha: 0.4 * s),
-    );
-  }
-
-  /// Round clock + "BEST" leader readout at the top center. [secondsLeft] is the
-  /// remaining time; [leaderColor]/[leaderScore] highlight the current leader.
+  /// Round clock + leader readout at the top center. [secondsLeft] is the
+  /// remaining time; [leaderColor]/[leaderScore] highlight the current leader and
+  /// [targetScore] shows the objective ("FIRST TO N").
   static void drawHud(
     Canvas canvas,
     Size size,
     double secondsLeft,
     Color? leaderColor,
     int leaderScore,
+    int targetScore,
   ) {
     final t = math.max(0.0, secondsLeft);
     final urgent = t <= 5;
@@ -484,18 +507,27 @@ class CatchRenderer {
     _drawText(
       canvas,
       t.ceil().toString(),
-      Offset(size.width / 2, size.height * 0.055),
-      size.width * 0.06,
+      Offset(size.width / 2, size.height * 0.05),
+      size.width * 0.055,
       clockColor.withValues(alpha: 0.92),
       weight: FontWeight.w900,
       glow: true,
       glowColor: urgent ? _urgent : _starGlow,
     );
+    // Objective line: the goal is unmistakable to a kid.
+    _drawText(
+      canvas,
+      'CATCH STARS · FIRST TO $targetScore',
+      Offset(size.width / 2, size.height * 0.092),
+      size.width * 0.026,
+      _starGold.withValues(alpha: 0.85),
+      weight: FontWeight.w800,
+    );
     if (leaderColor != null && leaderScore > 0) {
       _drawText(
         canvas,
         'BEST $leaderScore',
-        Offset(size.width / 2, size.height * 0.105),
+        Offset(size.width / 2, size.height * 0.128),
         size.width * 0.03,
         leaderColor,
         weight: FontWeight.w800,
@@ -522,12 +554,6 @@ class CatchRenderer {
       }
     }
     return path..close();
-  }
-
-  /// Cubic ease-out (kept local so the renderer has no Flutter import).
-  static double _easeOut(double t) {
-    final u = 1.0 - t.clamp(0.0, 1.0);
-    return 1.0 - u * u * u;
   }
 
   static Color _blend(Color a, Color b, double t) =>
