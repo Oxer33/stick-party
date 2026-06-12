@@ -653,6 +653,210 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Purchases are cosmetic only and never affect gameplay. Prices shown are real and set by the app store.'**
   String get shopEthicsNote;
+
+  /// Section header for the once-per-day login bonus on the Daily screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'LOGIN BONUS'**
+  String get loginBonus;
+
+  /// Section header for the list of daily missions on the Daily screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'TODAY\'S MISSIONS'**
+  String get todaysMissions;
+
+  /// Snackbar shown after claiming the daily login bonus that pays coins, e.g. 'Claimed +50 coins!'.
+  ///
+  /// In en, this message translates to:
+  /// **'Claimed +{count} coins!'**
+  String claimedCoins(int count);
+
+  /// Snackbar shown after claiming a daily reward that does not pay coins.
+  ///
+  /// In en, this message translates to:
+  /// **'Reward claimed!'**
+  String get rewardClaimed;
+
+  /// Label for which day of the login-bonus cycle the player is on, e.g. 'DAY 3'. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'DAY {day}'**
+  String dayN(int day);
+
+  /// A coin reward amount shown with a leading plus sign, e.g. '+50 coins'.
+  ///
+  /// In en, this message translates to:
+  /// **'+{count} coins'**
+  String coinsAmount(int count);
+
+  /// Describes a daily login reward that grants a cosmetic token instead of coins, e.g. '1 cosmetic reward'.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} cosmetic reward'**
+  String cosmeticReward(int count);
+
+  /// Supporting line on the login-bonus card after the player has already claimed today's bonus.
+  ///
+  /// In en, this message translates to:
+  /// **'Come back tomorrow'**
+  String get comeBackTomorrow;
+
+  /// Supporting line on the login-bonus card prompting the player to claim today's bonus.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap claim to collect'**
+  String get tapClaimToCollect;
+
+  /// Button to claim the daily login bonus. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'CLAIM'**
+  String get claim;
+
+  /// Disabled button state after the daily login bonus has been claimed. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'CLAIMED'**
+  String get claimed;
+
+  /// Daily mission objective to play a number of rounds, e.g. 'Play 5 rounds'.
+  ///
+  /// In en, this message translates to:
+  /// **'Play {count} rounds'**
+  String missionPlayRounds(int count);
+
+  /// Daily mission objective to win a number of rounds, e.g. 'Win 3 rounds'.
+  ///
+  /// In en, this message translates to:
+  /// **'Win {count} rounds'**
+  String missionWinRounds(int count);
+
+  /// Daily mission objective to win a cup / tournament.
+  ///
+  /// In en, this message translates to:
+  /// **'Win a cup'**
+  String get missionWinCup;
+
+  /// Daily mission objective to play a mini-game the player has not played before.
+  ///
+  /// In en, this message translates to:
+  /// **'Try a new game'**
+  String get missionTryNewGame;
+
+  /// Daily mission objective to play a match with a number of players, e.g. 'Play with 4 players'.
+  ///
+  /// In en, this message translates to:
+  /// **'Play with {count} players'**
+  String missionPlayWithPlayers(int count);
+
+  /// Cup progress chip during a game showing the current game number out of the total, e.g. 'GAME 2/5'. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'GAME {current}/{total}'**
+  String cupGameProgress(int current, int total);
+
+  /// Title of the cup standings screen between games, e.g. 'STANDINGS • 2/5'. Shown in all caps; keep the • separator.
+  ///
+  /// In en, this message translates to:
+  /// **'STANDINGS • {current}/{total}'**
+  String cupStandingsTitle(int current, int total);
+
+  /// Button on the cup standings that advances to the next game, e.g. 'NEXT GAME (3/5)'. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'NEXT GAME ({current}/{total})'**
+  String cupNextGameButton(int current, int total);
+
+  /// A player's cup score shown as points, e.g. '12 pts'. Keep the abbreviation short.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} pts'**
+  String cupPoints(int count);
+
+  /// Title of the cup results / podium screen shown at the end of a tournament. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'CHAMPION'**
+  String get cupChampionTitle;
+
+  /// Eyebrow label above the winner's name on the champion podium banner. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'CUP CHAMPION'**
+  String get cupChampionBanner;
+
+  /// Button to start a new cup with the same players. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'REMATCH'**
+  String get cupRematch;
+
+  /// Button to return to the home screen from the cup results. Shown in all caps; keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'HOME'**
+  String get cupHome;
+
+  /// Eyebrow label on the upcoming-game card in the cup standings. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'NEXT GAME'**
+  String get cupNextGame;
+
+  /// Round position on the cup next-game card, e.g. 'Round 3 of 5'.
+  ///
+  /// In en, this message translates to:
+  /// **'Round {current} of {total}'**
+  String cupRoundOf(int current, int total);
+
+  /// Section header for lifetime career counters on the Stats screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'CAREER'**
+  String get statsCareer;
+
+  /// Caption for the coins counter tile on the Stats screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Coins'**
+  String get statCoins;
+
+  /// Caption for the rounds-played counter tile on the Stats screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Rounds played'**
+  String get statRoundsPlayed;
+
+  /// Caption for the cups-won counter tile on the Stats screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Cups won'**
+  String get statCupsWon;
+
+  /// Caption for the knockouts counter tile on the Stats screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Knockouts'**
+  String get statKnockouts;
+
+  /// Section header for the per-game best scores list on the Stats screen. Shown in all caps.
+  ///
+  /// In en, this message translates to:
+  /// **'BEST SCORES'**
+  String get statsBestScores;
+
+  /// Section header for the achievements list showing how many are unlocked, e.g. 'ACHIEVEMENTS  4/12'. Shown in all caps; keep the double space.
+  ///
+  /// In en, this message translates to:
+  /// **'ACHIEVEMENTS  {unlocked}/{total}'**
+  String statsAchievements(int unlocked, int total);
+
+  /// Supporting line under a per-game record tile on the Stats screen indicating the value is the player's best score.
+  ///
+  /// In en, this message translates to:
+  /// **'Best score'**
+  String get statBestScore;
 }
 
 class _AppLocalizationsDelegate

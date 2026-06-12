@@ -389,5 +389,221 @@
   "shopEthicsNote": "Purchases are cosmetic only and never affect gameplay. Prices shown are real and set by the app store.",
   "@shopEthicsNote": {
     "description": "Reassurance note at the bottom of the shop that purchases are cosmetic-only and prices are honest."
+  },
+  "loginBonus": "LOGIN BONUS",
+  "@loginBonus": {
+    "description": "Section header for the once-per-day login bonus on the Daily screen. Shown in all caps."
+  },
+  "todaysMissions": "TODAY'S MISSIONS",
+  "@todaysMissions": {
+    "description": "Section header for the list of daily missions on the Daily screen. Shown in all caps."
+  },
+  "claimedCoins": "Claimed +{count} coins!",
+  "@claimedCoins": {
+    "description": "Snackbar shown after claiming the daily login bonus that pays coins, e.g. 'Claimed +50 coins!'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "rewardClaimed": "Reward claimed!",
+  "@rewardClaimed": {
+    "description": "Snackbar shown after claiming a daily reward that does not pay coins."
+  },
+  "dayN": "DAY {day}",
+  "@dayN": {
+    "description": "Label for which day of the login-bonus cycle the player is on, e.g. 'DAY 3'. Shown in all caps.",
+    "placeholders": {
+      "day": {
+        "type": "int"
+      }
+    }
+  },
+  "coinsAmount": "+{count} coins",
+  "@coinsAmount": {
+    "description": "A coin reward amount shown with a leading plus sign, e.g. '+50 coins'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cosmeticReward": "{count} cosmetic reward",
+  "@cosmeticReward": {
+    "description": "Describes a daily login reward that grants a cosmetic token instead of coins, e.g. '1 cosmetic reward'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "comeBackTomorrow": "Come back tomorrow",
+  "@comeBackTomorrow": {
+    "description": "Supporting line on the login-bonus card after the player has already claimed today's bonus."
+  },
+  "tapClaimToCollect": "Tap claim to collect",
+  "@tapClaimToCollect": {
+    "description": "Supporting line on the login-bonus card prompting the player to claim today's bonus."
+  },
+  "claim": "CLAIM",
+  "@claim": {
+    "description": "Button to claim the daily login bonus. Shown in all caps; keep short."
+  },
+  "claimed": "CLAIMED",
+  "@claimed": {
+    "description": "Disabled button state after the daily login bonus has been claimed. Shown in all caps; keep short."
+  },
+  "missionPlayRounds": "Play {count} rounds",
+  "@missionPlayRounds": {
+    "description": "Daily mission objective to play a number of rounds, e.g. 'Play 5 rounds'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "missionWinRounds": "Win {count} rounds",
+  "@missionWinRounds": {
+    "description": "Daily mission objective to win a number of rounds, e.g. 'Win 3 rounds'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "missionWinCup": "Win a cup",
+  "@missionWinCup": {
+    "description": "Daily mission objective to win a cup / tournament."
+  },
+  "missionTryNewGame": "Try a new game",
+  "@missionTryNewGame": {
+    "description": "Daily mission objective to play a mini-game the player has not played before."
+  },
+  "missionPlayWithPlayers": "Play with {count} players",
+  "@missionPlayWithPlayers": {
+    "description": "Daily mission objective to play a match with a number of players, e.g. 'Play with 4 players'.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cupGameProgress": "GAME {current}/{total}",
+  "@cupGameProgress": {
+    "description": "Cup progress chip during a game showing the current game number out of the total, e.g. 'GAME 2/5'. Shown in all caps.",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "cupStandingsTitle": "STANDINGS • {current}/{total}",
+  "@cupStandingsTitle": {
+    "description": "Title of the cup standings screen between games, e.g. 'STANDINGS • 2/5'. Shown in all caps; keep the • separator.",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "cupNextGameButton": "NEXT GAME ({current}/{total})",
+  "@cupNextGameButton": {
+    "description": "Button on the cup standings that advances to the next game, e.g. 'NEXT GAME (3/5)'. Shown in all caps.",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "cupPoints": "{count} pts",
+  "@cupPoints": {
+    "description": "A player's cup score shown as points, e.g. '12 pts'. Keep the abbreviation short.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cupChampionTitle": "CHAMPION",
+  "@cupChampionTitle": {
+    "description": "Title of the cup results / podium screen shown at the end of a tournament. Shown in all caps."
+  },
+  "cupChampionBanner": "CUP CHAMPION",
+  "@cupChampionBanner": {
+    "description": "Eyebrow label above the winner's name on the champion podium banner. Shown in all caps."
+  },
+  "cupRematch": "REMATCH",
+  "@cupRematch": {
+    "description": "Button to start a new cup with the same players. Shown in all caps; keep short."
+  },
+  "cupHome": "HOME",
+  "@cupHome": {
+    "description": "Button to return to the home screen from the cup results. Shown in all caps; keep short."
+  },
+  "cupNextGame": "NEXT GAME",
+  "@cupNextGame": {
+    "description": "Eyebrow label on the upcoming-game card in the cup standings. Shown in all caps."
+  },
+  "cupRoundOf": "Round {current} of {total}",
+  "@cupRoundOf": {
+    "description": "Round position on the cup next-game card, e.g. 'Round 3 of 5'.",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "statsCareer": "CAREER",
+  "@statsCareer": {
+    "description": "Section header for lifetime career counters on the Stats screen. Shown in all caps."
+  },
+  "statCoins": "Coins",
+  "@statCoins": {
+    "description": "Caption for the coins counter tile on the Stats screen."
+  },
+  "statRoundsPlayed": "Rounds played",
+  "@statRoundsPlayed": {
+    "description": "Caption for the rounds-played counter tile on the Stats screen."
+  },
+  "statCupsWon": "Cups won",
+  "@statCupsWon": {
+    "description": "Caption for the cups-won counter tile on the Stats screen."
+  },
+  "statKnockouts": "Knockouts",
+  "@statKnockouts": {
+    "description": "Caption for the knockouts counter tile on the Stats screen."
+  },
+  "statsBestScores": "BEST SCORES",
+  "@statsBestScores": {
+    "description": "Section header for the per-game best scores list on the Stats screen. Shown in all caps."
+  },
+  "statsAchievements": "ACHIEVEMENTS  {unlocked}/{total}",
+  "@statsAchievements": {
+    "description": "Section header for the achievements list showing how many are unlocked, e.g. 'ACHIEVEMENTS  4/12'. Shown in all caps; keep the double space.",
+    "placeholders": {
+      "unlocked": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "statBestScore": "Best score",
+  "@statBestScore": {
+    "description": "Supporting line under a per-game record tile on the Stats screen indicating the value is the player's best score."
   }
 }

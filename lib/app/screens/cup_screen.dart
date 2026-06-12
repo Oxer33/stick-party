@@ -18,6 +18,7 @@ import '../../engine/cup_controller.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
+import '../../l10n/app_localizations.dart';
 import '../../services/analytics_service.dart';
 import '../../services/cross_promo_service.dart';
 import '../providers.dart';
@@ -81,6 +82,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
   // --- Playing --------------------------------------------------------------
 
   Widget _buildPlaying() {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final String? gameId = _cup.currentGameId;
     if (gameId == null) {
       // Defensive: nothing to play → jump to results.
@@ -108,7 +110,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
             child: SafeArea(
               child: GlassChip(
                 icon: Icons.emoji_events,
-                label: 'GAME ${_cup.index + 1}/${_cup.total}',
+                label: l10n.cupGameProgress(_cup.index + 1, _cup.total),
                 accent: GlassColors.amber,
               ),
             ),
@@ -147,10 +149,11 @@ class _CupScreenState extends ConsumerState<CupScreen> {
   // --- Standings ------------------------------------------------------------
 
   Widget _buildStandings() {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final List<int> standings = _cup.board.standings();
     final String? nextGameId = _cup.currentGameId;
     return GlassScaffold(
-      title: 'STANDINGS • ${_cup.index}/${_cup.total}',
+      title: l10n.cupStandingsTitle(_cup.index, _cup.total),
       showBack: false,
       scroll: false,
       body: Column(
@@ -180,7 +183,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
           ),
           const SizedBox(height: GlassTokens.gap),
           GlassButton(
-            label: 'NEXT GAME (${_cup.index + 1}/${_cup.total})',
+            label: l10n.cupNextGameButton(_cup.index + 1, _cup.total),
             icon: Icons.play_arrow_rounded,
             primary: true,
             onTap: _nextGame,
@@ -193,10 +196,11 @@ class _CupScreenState extends ConsumerState<CupScreen> {
   Widget _standingRow(int index, int playerId) {
     final PlayerSlot? slot = _slotById(playerId);
     if (slot == null) return const SizedBox.shrink();
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return PodiumRow(
       place: index + 1,
       slot: slot,
-      trailing: '${_cup.board.pointsOf(playerId)} pts',
+      trailing: l10n.cupPoints(_cup.board.pointsOf(playerId)),
       highlight: index == 0,
     );
   }
@@ -225,13 +229,14 @@ class _CupScreenState extends ConsumerState<CupScreen> {
   }
 
   Widget _buildChampion() {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final List<int> standings = _cup.board.standings();
     final int? championId = _cup.champion;
     final bool humanChampion = championId != null &&
         _players.slots.any((PlayerSlot s) => s.id == championId && !s.isBot);
 
     return GlassScaffold(
-      title: 'CHAMPION',
+      title: l10n.cupChampionTitle,
       showBack: false,
       scroll: false,
       body: Column(
@@ -244,7 +249,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
               child: Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  '+${Economy.coinsPerCupWin} coins',
+                  l10n.coinsAmount(Economy.coinsPerCupWin),
                   style: const TextStyle(
                     color: GlassColors.amber,
                     fontWeight: FontWeight.w900,
@@ -266,7 +271,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
             children: <Widget>[
               Expanded(
                 child: GlassButton(
-                  label: 'REMATCH',
+                  label: l10n.cupRematch,
                   icon: Icons.refresh,
                   onTap: _rematch,
                 ),
@@ -274,7 +279,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
               const SizedBox(width: GlassTokens.gapSmall),
               Expanded(
                 child: GlassButton(
-                  label: 'HOME',
+                  label: l10n.cupHome,
                   icon: Icons.home_rounded,
                   primary: true,
                   onTap: () => context.go(AppRoutes.home),
@@ -290,6 +295,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
   Widget _championBanner(int championId) {
     final PlayerSlot? slot = _slotById(championId);
     if (slot == null) return const SizedBox.shrink();
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Color color = Color(slot.colorArgb);
     return PremiumPanel(
       accent: color,
@@ -300,7 +306,7 @@ class _CupScreenState extends ConsumerState<CupScreen> {
           _ChampionTrophy(color: color),
           const SizedBox(height: 10),
           Text(
-            'CUP CHAMPION',
+            l10n.cupChampionBanner,
             style: GlassText.overline.copyWith(letterSpacing: 4),
           ),
           const SizedBox(height: 4),
@@ -363,11 +369,12 @@ class _CupHouseAdCardState extends ConsumerState<_CupHouseAdCard> {
   Widget build(BuildContext context) {
     final HouseAd? ad = _ad;
     if (ad == null) return const SizedBox.shrink();
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Color color = Color(ad.iconArgb);
     return PremiumMediaTile(
       accent: color,
       leading: ProceduralIcon(label: ad.title, colorArgb: ad.iconArgb),
-      eyebrow: 'MORE GAMES',
+      eyebrow: l10n.moreGames,
       title: ad.title,
       supporting: ad.blurb.isNotEmpty ? ad.blurb : null,
       trailing: const Icon(Icons.chevron_right, color: GlassColors.textMuted),
@@ -395,6 +402,7 @@ class _NextGameCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return PremiumPanel(
       accent: GlassColors.amber,
       padding: const EdgeInsets.all(14),
@@ -412,9 +420,12 @@ class _NextGameCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                Text('NEXT GAME', style: GlassText.overline),
+                Text(l10n.cupNextGame, style: GlassText.overline),
                 const SizedBox(height: 3),
-                Text('Round $gameNumber of $total', style: GlassText.heading),
+                Text(
+                  l10n.cupRoundOf(gameNumber, total),
+                  style: GlassText.heading,
+                ),
               ],
             ),
           ),

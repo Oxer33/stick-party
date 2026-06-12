@@ -294,4 +294,132 @@ class AppLocalizationsDe extends AppLocalizations {
   @override
   String get shopEthicsNote =>
       'Käufe sind rein kosmetisch und beeinflussen niemals das Gameplay. Die angezeigten Preise sind echt und werden vom App-Store festgelegt.';
+
+  @override
+  String get loginBonus => 'TAGESBONUS';
+
+  @override
+  String get todaysMissions => 'HEUTIGE MISSIONEN';
+
+  @override
+  String claimedCoins(int count) {
+    return '+$count Münzen erhalten!';
+  }
+
+  @override
+  String get rewardClaimed => 'Belohnung erhalten!';
+
+  @override
+  String dayN(int day) {
+    return 'TAG $day';
+  }
+
+  @override
+  String coinsAmount(int count) {
+    return '+$count Münzen';
+  }
+
+  @override
+  String cosmeticReward(int count) {
+    return '$count kosmetische Belohnung';
+  }
+
+  @override
+  String get comeBackTomorrow => 'Komm morgen wieder';
+
+  @override
+  String get tapClaimToCollect => 'Zum Abholen auf Einlösen tippen';
+
+  @override
+  String get claim => 'EINLÖSEN';
+
+  @override
+  String get claimed => 'EINGELÖST';
+
+  @override
+  String missionPlayRounds(int count) {
+    return 'Spiele $count Runden';
+  }
+
+  @override
+  String missionWinRounds(int count) {
+    return 'Gewinne $count Runden';
+  }
+
+  @override
+  String get missionWinCup => 'Gewinne einen Pokal';
+
+  @override
+  String get missionTryNewGame => 'Probiere ein neues Spiel';
+
+  @override
+  String missionPlayWithPlayers(int count) {
+    return 'Spiele mit $count Spielern';
+  }
+
+  @override
+  String cupGameProgress(int current, int total) {
+    return 'SPIEL $current/$total';
+  }
+
+  @override
+  String cupStandingsTitle(int current, int total) {
+    return 'RANGLISTE • $current/$total';
+  }
+
+  @override
+  String cupNextGameButton(int current, int total) {
+    return 'NÄCHSTES SPIEL ($current/$total)';
+  }
+
+  @override
+  String cupPoints(int count) {
+    return '$count Pkt.';
+  }
+
+  @override
+  String get cupChampionTitle => 'CHAMPION';
+
+  @override
+  String get cupChampionBanner => 'POKALSIEGER';
+
+  @override
+  String get cupRematch => 'REVANCHE';
+
+  @override
+  String get cupHome => 'START';
+
+  @override
+  String get cupNextGame => 'NÄCHSTES SPIEL';
+
+  @override
+  String cupRoundOf(int current, int total) {
+    return 'Runde $current von $total';
+  }
+
+  @override
+  String get statsCareer => 'KARRIERE';
+
+  @override
+  String get statCoins => 'Münzen';
+
+  @override
+  String get statRoundsPlayed => 'Gespielte Runden';
+
+  @override
+  String get statCupsWon => 'Gewonnene Pokale';
+
+  @override
+  String get statKnockouts => 'K.-o.-Treffer';
+
+  @override
+  String get statsBestScores => 'BESTWERTE';
+
+  @override
+  String statsAchievements(int unlocked, int total) {
+    return 'ERFOLGE  $unlocked/$total';
+  }
+
+  @override
+  String get statBestScore => 'Bestwert';
 }

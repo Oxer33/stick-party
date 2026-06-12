@@ -291,4 +291,132 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get shopEthicsNote =>
       '購入はすべて見た目だけのもので、ゲームプレイには一切影響しません。表示価格は実際の金額で、アプリストアが設定しています。';
+
+  @override
+  String get loginBonus => 'ログインボーナス';
+
+  @override
+  String get todaysMissions => '今日のミッション';
+
+  @override
+  String claimedCoins(int count) {
+    return '+$countコインを受け取りました！';
+  }
+
+  @override
+  String get rewardClaimed => '報酬を受け取りました！';
+
+  @override
+  String dayN(int day) {
+    return '$day日目';
+  }
+
+  @override
+  String coinsAmount(int count) {
+    return '+$countコイン';
+  }
+
+  @override
+  String cosmeticReward(int count) {
+    return '見た目報酬 $count個';
+  }
+
+  @override
+  String get comeBackTomorrow => 'また明日来てね';
+
+  @override
+  String get tapClaimToCollect => '受け取るをタップして獲得';
+
+  @override
+  String get claim => '受け取る';
+
+  @override
+  String get claimed => '受取済み';
+
+  @override
+  String missionPlayRounds(int count) {
+    return '$countラウンドプレイ';
+  }
+
+  @override
+  String missionWinRounds(int count) {
+    return '$countラウンド勝利';
+  }
+
+  @override
+  String get missionWinCup => 'カップ戦に優勝';
+
+  @override
+  String get missionTryNewGame => '新しいゲームを試す';
+
+  @override
+  String missionPlayWithPlayers(int count) {
+    return '$count人でプレイ';
+  }
+
+  @override
+  String cupGameProgress(int current, int total) {
+    return 'ゲーム $current/$total';
+  }
+
+  @override
+  String cupStandingsTitle(int current, int total) {
+    return '順位 • $current/$total';
+  }
+
+  @override
+  String cupNextGameButton(int current, int total) {
+    return '次のゲーム（$current/$total）';
+  }
+
+  @override
+  String cupPoints(int count) {
+    return '$count点';
+  }
+
+  @override
+  String get cupChampionTitle => 'チャンピオン';
+
+  @override
+  String get cupChampionBanner => 'カップ王者';
+
+  @override
+  String get cupRematch => '再戦';
+
+  @override
+  String get cupHome => 'ホーム';
+
+  @override
+  String get cupNextGame => '次のゲーム';
+
+  @override
+  String cupRoundOf(int current, int total) {
+    return 'ラウンド $current/$total';
+  }
+
+  @override
+  String get statsCareer => '通算成績';
+
+  @override
+  String get statCoins => 'コイン';
+
+  @override
+  String get statRoundsPlayed => 'プレイ回数';
+
+  @override
+  String get statCupsWon => '優勝回数';
+
+  @override
+  String get statKnockouts => 'ノックアウト';
+
+  @override
+  String get statsBestScores => 'ベストスコア';
+
+  @override
+  String statsAchievements(int unlocked, int total) {
+    return '実績  $unlocked/$total';
+  }
+
+  @override
+  String get statBestScore => 'ベストスコア';
 }

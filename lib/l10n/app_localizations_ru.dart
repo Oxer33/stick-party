@@ -293,4 +293,132 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get shopEthicsNote =>
       'Покупки носят только косметический характер и никогда не влияют на игровой процесс. Показанные цены реальны и устанавливаются магазином приложений.';
+
+  @override
+  String get loginBonus => 'ЕЖЕДНЕВНЫЙ БОНУС';
+
+  @override
+  String get todaysMissions => 'ЗАДАНИЯ НА СЕГОДНЯ';
+
+  @override
+  String claimedCoins(int count) {
+    return 'Получено +$count монет!';
+  }
+
+  @override
+  String get rewardClaimed => 'Награда получена!';
+
+  @override
+  String dayN(int day) {
+    return 'ДЕНЬ $day';
+  }
+
+  @override
+  String coinsAmount(int count) {
+    return '+$count монет';
+  }
+
+  @override
+  String cosmeticReward(int count) {
+    return '$count косметическая награда';
+  }
+
+  @override
+  String get comeBackTomorrow => 'Возвращайтесь завтра';
+
+  @override
+  String get tapClaimToCollect => 'Нажмите «Получить», чтобы забрать';
+
+  @override
+  String get claim => 'ПОЛУЧИТЬ';
+
+  @override
+  String get claimed => 'ПОЛУЧЕНО';
+
+  @override
+  String missionPlayRounds(int count) {
+    return 'Сыграйте $count раундов';
+  }
+
+  @override
+  String missionWinRounds(int count) {
+    return 'Выиграйте $count раундов';
+  }
+
+  @override
+  String get missionWinCup => 'Выиграйте кубок';
+
+  @override
+  String get missionTryNewGame => 'Попробуйте новую игру';
+
+  @override
+  String missionPlayWithPlayers(int count) {
+    return 'Сыграйте с $count игроками';
+  }
+
+  @override
+  String cupGameProgress(int current, int total) {
+    return 'ИГРА $current/$total';
+  }
+
+  @override
+  String cupStandingsTitle(int current, int total) {
+    return 'ТАБЛИЦА • $current/$total';
+  }
+
+  @override
+  String cupNextGameButton(int current, int total) {
+    return 'СЛЕДУЮЩАЯ ИГРА ($current/$total)';
+  }
+
+  @override
+  String cupPoints(int count) {
+    return '$count оч.';
+  }
+
+  @override
+  String get cupChampionTitle => 'ЧЕМПИОН';
+
+  @override
+  String get cupChampionBanner => 'ЧЕМПИОН КУБКА';
+
+  @override
+  String get cupRematch => 'РЕВАНШ';
+
+  @override
+  String get cupHome => 'ГЛАВНАЯ';
+
+  @override
+  String get cupNextGame => 'СЛЕДУЮЩАЯ ИГРА';
+
+  @override
+  String cupRoundOf(int current, int total) {
+    return 'Раунд $current из $total';
+  }
+
+  @override
+  String get statsCareer => 'КАРЬЕРА';
+
+  @override
+  String get statCoins => 'Монеты';
+
+  @override
+  String get statRoundsPlayed => 'Сыграно раундов';
+
+  @override
+  String get statCupsWon => 'Выиграно кубков';
+
+  @override
+  String get statKnockouts => 'Нокауты';
+
+  @override
+  String get statsBestScores => 'ЛУЧШИЕ РЕЗУЛЬТАТЫ';
+
+  @override
+  String statsAchievements(int unlocked, int total) {
+    return 'ДОСТИЖЕНИЯ  $unlocked/$total';
+  }
+
+  @override
+  String get statBestScore => 'Лучший результат';
 }

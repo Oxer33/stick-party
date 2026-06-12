@@ -292,4 +292,132 @@ class AppLocalizationsKo extends AppLocalizations {
   @override
   String get shopEthicsNote =>
       '구매 항목은 외형 전용이며 게임플레이에 전혀 영향을 주지 않습니다. 표시된 가격은 실제 금액이며 앱 스토어가 정합니다.';
+
+  @override
+  String get loginBonus => '로그인 보너스';
+
+  @override
+  String get todaysMissions => '오늘의 미션';
+
+  @override
+  String claimedCoins(int count) {
+    return '+$count 코인을 받았습니다!';
+  }
+
+  @override
+  String get rewardClaimed => '보상을 받았습니다!';
+
+  @override
+  String dayN(int day) {
+    return '$day일째';
+  }
+
+  @override
+  String coinsAmount(int count) {
+    return '+$count 코인';
+  }
+
+  @override
+  String cosmeticReward(int count) {
+    return '외형 보상 $count개';
+  }
+
+  @override
+  String get comeBackTomorrow => '내일 다시 오세요';
+
+  @override
+  String get tapClaimToCollect => '받기를 눌러 획득하세요';
+
+  @override
+  String get claim => '받기';
+
+  @override
+  String get claimed => '받음';
+
+  @override
+  String missionPlayRounds(int count) {
+    return '$count 라운드 플레이';
+  }
+
+  @override
+  String missionWinRounds(int count) {
+    return '$count 라운드 승리';
+  }
+
+  @override
+  String get missionWinCup => '컵 대회 우승';
+
+  @override
+  String get missionTryNewGame => '새 게임 해보기';
+
+  @override
+  String missionPlayWithPlayers(int count) {
+    return '$count명과 플레이';
+  }
+
+  @override
+  String cupGameProgress(int current, int total) {
+    return '게임 $current/$total';
+  }
+
+  @override
+  String cupStandingsTitle(int current, int total) {
+    return '순위 • $current/$total';
+  }
+
+  @override
+  String cupNextGameButton(int current, int total) {
+    return '다음 게임 ($current/$total)';
+  }
+
+  @override
+  String cupPoints(int count) {
+    return '$count점';
+  }
+
+  @override
+  String get cupChampionTitle => '챔피언';
+
+  @override
+  String get cupChampionBanner => '컵 챔피언';
+
+  @override
+  String get cupRematch => '재대결';
+
+  @override
+  String get cupHome => '홈';
+
+  @override
+  String get cupNextGame => '다음 게임';
+
+  @override
+  String cupRoundOf(int current, int total) {
+    return '$total 라운드 중 $current';
+  }
+
+  @override
+  String get statsCareer => '커리어';
+
+  @override
+  String get statCoins => '코인';
+
+  @override
+  String get statRoundsPlayed => '플레이한 라운드';
+
+  @override
+  String get statCupsWon => '획득한 컵';
+
+  @override
+  String get statKnockouts => '녹아웃';
+
+  @override
+  String get statsBestScores => '최고 점수';
+
+  @override
+  String statsAchievements(int unlocked, int total) {
+    return '업적  $unlocked/$total';
+  }
+
+  @override
+  String get statBestScore => '최고 점수';
 }

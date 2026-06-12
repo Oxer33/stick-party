@@ -290,4 +290,132 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get shopEthicsNote => '所有购买仅为外观，绝不影响游戏玩法。所示价格真实有效，由应用商店设定。';
+
+  @override
+  String get loginBonus => '登录奖励';
+
+  @override
+  String get todaysMissions => '今日任务';
+
+  @override
+  String claimedCoins(int count) {
+    return '已领取 +$count 金币！';
+  }
+
+  @override
+  String get rewardClaimed => '已领取奖励！';
+
+  @override
+  String dayN(int day) {
+    return '第 $day 天';
+  }
+
+  @override
+  String coinsAmount(int count) {
+    return '+$count 金币';
+  }
+
+  @override
+  String cosmeticReward(int count) {
+    return '$count 个外观奖励';
+  }
+
+  @override
+  String get comeBackTomorrow => '明天再来';
+
+  @override
+  String get tapClaimToCollect => '点击领取以获得';
+
+  @override
+  String get claim => '领取';
+
+  @override
+  String get claimed => '已领取';
+
+  @override
+  String missionPlayRounds(int count) {
+    return '进行 $count 局';
+  }
+
+  @override
+  String missionWinRounds(int count) {
+    return '赢得 $count 局';
+  }
+
+  @override
+  String get missionWinCup => '赢得一座杯赛';
+
+  @override
+  String get missionTryNewGame => '尝试新游戏';
+
+  @override
+  String missionPlayWithPlayers(int count) {
+    return '与 $count 名玩家同玩';
+  }
+
+  @override
+  String cupGameProgress(int current, int total) {
+    return '第 $current/$total 局';
+  }
+
+  @override
+  String cupStandingsTitle(int current, int total) {
+    return '排名 • $current/$total';
+  }
+
+  @override
+  String cupNextGameButton(int current, int total) {
+    return '下一局（$current/$total）';
+  }
+
+  @override
+  String cupPoints(int count) {
+    return '$count 分';
+  }
+
+  @override
+  String get cupChampionTitle => '冠军';
+
+  @override
+  String get cupChampionBanner => '杯赛冠军';
+
+  @override
+  String get cupRematch => '再战';
+
+  @override
+  String get cupHome => '主页';
+
+  @override
+  String get cupNextGame => '下一局';
+
+  @override
+  String cupRoundOf(int current, int total) {
+    return '第 $current/$total 轮';
+  }
+
+  @override
+  String get statsCareer => '生涯';
+
+  @override
+  String get statCoins => '金币';
+
+  @override
+  String get statRoundsPlayed => '已玩局数';
+
+  @override
+  String get statCupsWon => '夺杯数';
+
+  @override
+  String get statKnockouts => '击倒数';
+
+  @override
+  String get statsBestScores => '最高分';
+
+  @override
+  String statsAchievements(int unlocked, int total) {
+    return '成就  $unlocked/$total';
+  }
+
+  @override
+  String get statBestScore => '最高分';
 }

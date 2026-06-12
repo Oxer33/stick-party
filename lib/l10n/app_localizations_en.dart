@@ -292,4 +292,132 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get shopEthicsNote =>
       'Purchases are cosmetic only and never affect gameplay. Prices shown are real and set by the app store.';
+
+  @override
+  String get loginBonus => 'LOGIN BONUS';
+
+  @override
+  String get todaysMissions => 'TODAY\'S MISSIONS';
+
+  @override
+  String claimedCoins(int count) {
+    return 'Claimed +$count coins!';
+  }
+
+  @override
+  String get rewardClaimed => 'Reward claimed!';
+
+  @override
+  String dayN(int day) {
+    return 'DAY $day';
+  }
+
+  @override
+  String coinsAmount(int count) {
+    return '+$count coins';
+  }
+
+  @override
+  String cosmeticReward(int count) {
+    return '$count cosmetic reward';
+  }
+
+  @override
+  String get comeBackTomorrow => 'Come back tomorrow';
+
+  @override
+  String get tapClaimToCollect => 'Tap claim to collect';
+
+  @override
+  String get claim => 'CLAIM';
+
+  @override
+  String get claimed => 'CLAIMED';
+
+  @override
+  String missionPlayRounds(int count) {
+    return 'Play $count rounds';
+  }
+
+  @override
+  String missionWinRounds(int count) {
+    return 'Win $count rounds';
+  }
+
+  @override
+  String get missionWinCup => 'Win a cup';
+
+  @override
+  String get missionTryNewGame => 'Try a new game';
+
+  @override
+  String missionPlayWithPlayers(int count) {
+    return 'Play with $count players';
+  }
+
+  @override
+  String cupGameProgress(int current, int total) {
+    return 'GAME $current/$total';
+  }
+
+  @override
+  String cupStandingsTitle(int current, int total) {
+    return 'STANDINGS • $current/$total';
+  }
+
+  @override
+  String cupNextGameButton(int current, int total) {
+    return 'NEXT GAME ($current/$total)';
+  }
+
+  @override
+  String cupPoints(int count) {
+    return '$count pts';
+  }
+
+  @override
+  String get cupChampionTitle => 'CHAMPION';
+
+  @override
+  String get cupChampionBanner => 'CUP CHAMPION';
+
+  @override
+  String get cupRematch => 'REMATCH';
+
+  @override
+  String get cupHome => 'HOME';
+
+  @override
+  String get cupNextGame => 'NEXT GAME';
+
+  @override
+  String cupRoundOf(int current, int total) {
+    return 'Round $current of $total';
+  }
+
+  @override
+  String get statsCareer => 'CAREER';
+
+  @override
+  String get statCoins => 'Coins';
+
+  @override
+  String get statRoundsPlayed => 'Rounds played';
+
+  @override
+  String get statCupsWon => 'Cups won';
+
+  @override
+  String get statKnockouts => 'Knockouts';
+
+  @override
+  String get statsBestScores => 'BEST SCORES';
+
+  @override
+  String statsAchievements(int unlocked, int total) {
+    return 'ACHIEVEMENTS  $unlocked/$total';
+  }
+
+  @override
+  String get statBestScore => 'Best score';
 }

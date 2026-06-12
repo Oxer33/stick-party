@@ -6,6 +6,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../l10n/app_localizations.dart';
 import '../../meta/daily.dart';
 import '../providers.dart';
 import '../widgets/glass_scaffold.dart';
@@ -36,6 +37,7 @@ class _DailyScreenState extends ConsumerState<DailyScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final DailyClaimStore store = ref.watch(dailyClaimStoreProvider);
     final LoginBonusResult bonus = DailyService.computeLoginBonus(
       store.lastClaimDayIso,
@@ -44,19 +46,18 @@ class _DailyScreenState extends ConsumerState<DailyScreen> {
     );
 
     return GlassScaffold(
-      title: 'DAILY',
+      title: l10n.actionDaily,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const SectionHeader(title: 'LOGIN BONUS'),
+          SectionHeader(title: l10n.loginBonus),
           _LoginBonusCard(
             bonus: bonus,
             claimed: bonus.alreadyClaimedToday,
             onClaim: () => _claim(bonus),
           ),
           const SizedBox(height: 24),
-          const SectionHeader(
-              title: "TODAY'S MISSIONS", color: GlassColors.cyan),
+          SectionHeader(title: l10n.todaysMissions, color: GlassColors.cyan),
           ..._missions.map((DailyMission m) => _MissionTile(mission: m)),
         ],
       ),
@@ -75,10 +76,13 @@ class _DailyScreenState extends ConsumerState<DailyScreen> {
     await store.markClaimed(_todayIso, store.loginIndex + 1);
 
     if (!mounted) return;
+    final AppLocalizations l10n = AppLocalizations.of(context);
     setState(() {}); // refresh claim state
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(coins > 0 ? 'Claimed +$coins coins!' : 'Reward claimed!'),
+        content: Text(
+          coins > 0 ? l10n.claimedCoins(coins) : l10n.rewardClaimed,
+        ),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -109,6 +113,7 @@ class _LoginBonusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final bool isCoins = bonus.reward.kind == LoginRewardKind.coins;
     return PremiumPanel(
       accent: GlassColors.amber,
@@ -124,17 +129,17 @@ class _LoginBonusCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text('DAY ${bonus.dayIndex + 1}', style: GlassText.overline),
+                Text(l10n.dayN(bonus.dayIndex + 1), style: GlassText.overline),
                 const SizedBox(height: 3),
                 Text(
                   isCoins
-                      ? '+${bonus.reward.amount} coins'
-                      : '${bonus.reward.amount} cosmetic reward',
+                      ? l10n.coinsAmount(bonus.reward.amount)
+                      : l10n.cosmeticReward(bonus.reward.amount),
                   style: GlassText.heading,
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  claimed ? 'Come back tomorrow' : 'Tap claim to collect',
+                  claimed ? l10n.comeBackTomorrow : l10n.tapClaimToCollect,
                   style: GlassText.body.copyWith(fontSize: 12),
                 ),
               ],
@@ -147,7 +152,7 @@ class _LoginBonusCard extends StatelessWidget {
               foregroundColor: GlassColors.base,
               minimumSize: const Size(96, 44),
             ),
-            child: Text(claimed ? 'CLAIMED' : 'CLAIM'),
+            child: Text(claimed ? l10n.claimed : l10n.claim),
           ),
         ],
       ),
@@ -198,6 +203,7 @@ class _MissionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: GlassTokens.gap),
       child: PremiumPanel(
@@ -208,7 +214,9 @@ class _MissionTile extends StatelessWidget {
           children: <Widget>[
             Row(
               children: <Widget>[
-                Expanded(child: Text(_label(mission), style: GlassText.heading)),
+                Expanded(
+                  child: Text(_label(l10n, mission), style: GlassText.heading),
+                ),
                 AccentTag(
                   label: '+${mission.rewardCoins}',
                   accent: GlassColors.amber,
@@ -227,18 +235,18 @@ class _MissionTile extends StatelessWidget {
     );
   }
 
-  String _label(DailyMission m) {
+  String _label(AppLocalizations l10n, DailyMission m) {
     switch (m.type) {
       case DailyMissionType.playRounds:
-        return 'Play ${m.target} rounds';
+        return l10n.missionPlayRounds(m.target);
       case DailyMissionType.winRounds:
-        return 'Win ${m.target} rounds';
+        return l10n.missionWinRounds(m.target);
       case DailyMissionType.winCup:
-        return 'Win a cup';
+        return l10n.missionWinCup;
       case DailyMissionType.tryNewGame:
-        return 'Try a new game';
+        return l10n.missionTryNewGame;
       case DailyMissionType.playWithFriends:
-        return 'Play with ${m.target} players';
+        return l10n.missionPlayWithPlayers(m.target);
     }
   }
 }

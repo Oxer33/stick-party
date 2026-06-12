@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../engine/registry.dart';
+import '../../l10n/app_localizations.dart';
 import '../../meta/achievements.dart';
 import '../../meta/progress_store.dart';
 import '../providers.dart';
@@ -21,16 +22,17 @@ class StatsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
     final Progress progress = ref.watch(progressProvider);
     final ProgressSnapshot snapshot = progress.toSnapshot();
     final int unlocked = unlockedCount(snapshot);
 
     return GlassScaffold(
-      title: 'STATS',
+      title: l10n.actionStats,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const SectionHeader(title: 'CAREER'),
+          SectionHeader(title: l10n.statsCareer),
           GridView.count(
             crossAxisCount: 2,
             mainAxisSpacing: GlassTokens.gapSmall,
@@ -41,33 +43,33 @@ class StatsScreen extends ConsumerWidget {
             children: <Widget>[
               StatTile(
                 value: '${progress.coins}',
-                caption: 'Coins',
+                caption: l10n.statCoins,
                 color: GlassColors.amber,
               ),
               StatTile(
                 value: '${progress.roundsPlayed}',
-                caption: 'Rounds played',
+                caption: l10n.statRoundsPlayed,
               ),
               StatTile(
                 value: '${progress.cupsWon}',
-                caption: 'Cups won',
+                caption: l10n.statCupsWon,
                 color: GlassColors.cyan,
               ),
               StatTile(
                 value: '${progress.knockouts}',
-                caption: 'Knockouts',
+                caption: l10n.statKnockouts,
                 color: GlassColors.flame,
               ),
             ],
           ),
           const SizedBox(height: 24),
           if (progress.recordsByGame.isNotEmpty) ...<Widget>[
-            const SectionHeader(title: 'BEST SCORES', color: GlassColors.cyan),
-            ..._recordRows(progress),
+            SectionHeader(title: l10n.statsBestScores, color: GlassColors.cyan),
+            ..._recordRows(l10n, progress),
             const SizedBox(height: 24),
           ],
           SectionHeader(
-            title: 'ACHIEVEMENTS  $unlocked/$achievementCount',
+            title: l10n.statsAchievements(unlocked, achievementCount),
             color: GlassColors.amber,
           ),
           ...kAchievements.map(
@@ -81,7 +83,7 @@ class StatsScreen extends ConsumerWidget {
     );
   }
 
-  List<Widget> _recordRows(Progress progress) {
+  List<Widget> _recordRows(AppLocalizations l10n, Progress progress) {
     final List<Widget> rows = <Widget>[];
     progress.recordsByGame.forEach((String gameId, int value) {
       rows.add(
@@ -96,7 +98,7 @@ class StatsScreen extends ConsumerWidget {
               size: 44,
             ),
             title: _gameName(gameId),
-            supporting: 'Best score',
+            supporting: l10n.statBestScore,
             trailing: Text(
               '$value',
               style: const TextStyle(
