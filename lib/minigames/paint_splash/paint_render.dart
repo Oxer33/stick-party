@@ -31,6 +31,7 @@ class PaintRenderer {
   static const Color _black = Color(0xFF000000);
   static const Color _steel = Color(0xFFB8C0CC);
   static const Color _steelDark = Color(0xFF6C7480);
+  static const Color _inkWarn = Color(0xFFFFC23D); // low-ink gauge warning amber
 
   // ── Tuning (visual only) ───────────────────────────────────────────────────
   static const double _frameWidthFactor = 0.018; // frame stroke / min side
@@ -373,9 +374,11 @@ class PaintRenderer {
 
   // ── Reticle marker: spray-can / roller in the player's color ───────────────
 
-  /// Draw a player's steering brush marker. [charge] in 0..1 (the dwell bonus —
-  /// how big the next splat will be) grows a target ring so a "loaded" lingering
-  /// brush reads clearly. [isRoller] swaps the spray-can silhouette for a
+  /// Draw a player's steering brush marker. The ring doubles as an INK GAUGE:
+  /// [charge] in 0..1 is the remaining ink, drawn as a depleting arc so a player
+  /// can read how much paint is left before the can sputters. [lowInk] true
+  /// tints the gauge to an amber low-ink warning so the cue to release and
+  /// refill is unmistakable. [isRoller] swaps the spray-can silhouette for a
   /// roller, so up to four players are instantly distinguishable by tool +
   /// color. [pulse] in 0..1 animates a recent-splat flash. [spraying] true draws
   /// an active paint burst at the nozzle so a held brush visibly lays paint.
@@ -388,13 +391,15 @@ class PaintRenderer {
     required bool isRoller,
     double pulse = 0,
     bool spraying = false,
+    bool lowInk = false,
   }) {
     if (!center.dx.isFinite || !center.dy.isFinite) return;
     final unit = math.min(size.width, size.height) * _reticleRingFactor;
     if (unit <= 0) return;
     final c = charge.clamp(0.0, 1.0);
 
-    _drawTargetRing(canvas, center, unit, color, c, pulse.clamp(0.0, 1.0));
+    _drawInkGauge(
+        canvas, center, unit, color, c, pulse.clamp(0.0, 1.0), lowInk);
     if (spraying) _drawSprayBurst(canvas, center, unit, color, c);
     if (isRoller) {
       _drawRoller(canvas, center, unit, color);
@@ -454,36 +459,70 @@ class PaintRenderer {
     );
   }
 
-  /// Pulsing target ring sized to the pending splat radius.
-  static void _drawTargetRing(Canvas canvas, Offset center, double unit,
-      Color color, double charge, double pulse) {
-    final ringR = unit * (1.6 + 1.4 * charge) + unit * 0.5 * pulse;
-    // Soft halo: a wide, faint stroke (no blur) under the crisp dashed ring.
+  /// The brush ring drawn as a depleting INK GAUGE. A faint full track shows the
+  /// can's capacity; a bright arc sweeping from the top fills [charge] (0..1) of
+  /// the circle, so the player reads remaining ink at a glance and watches it
+  /// drain as they hold. When [lowInk] is set the gauge tints to an amber
+  /// warning and breathes, telegraphing "release to refill". [pulse] adds a
+  /// recent-splat flare on top.
+  static void _drawInkGauge(Canvas canvas, Offset center, double unit,
+      Color color, double charge, double pulse, bool lowInk) {
+    final ringR = unit * 1.7 + unit * 0.5 * pulse;
+    final gaugeColor = lowInk ? _inkWarn : color;
+
+    // Soft halo: a wide, faint stroke (no blur) under the crisp gauge.
     canvas.drawCircle(
       center,
       ringR,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = unit * 0.8
-        ..color = color.withValues(alpha: 0.12 + 0.14 * pulse),
+        ..color = gaugeColor.withValues(alpha: 0.12 + 0.14 * pulse),
     );
-    // Dashed-look ring via short arcs.
-    final ringPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(1.5, unit * 0.18)
-      ..strokeCap = StrokeCap.round
-      ..color = color.withValues(alpha: 0.85);
+
     final rect = Rect.fromCircle(center: center, radius: ringR);
-    const segs = 8;
-    for (var i = 0; i < segs; i++) {
-      final a0 = (i / segs) * math.pi * 2;
-      canvas.drawArc(rect, a0, math.pi * 2 / segs * 0.55, false, ringPaint);
+    // Faint full track = total ink capacity.
+    canvas.drawCircle(
+      center,
+      ringR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, unit * 0.1)
+        ..color = _black.withValues(alpha: 0.28),
+    );
+    // Bright depleting arc = remaining ink, sweeping clockwise from the top.
+    final sweep = (math.pi * 2) * charge.clamp(0.0, 1.0);
+    if (sweep > 0.001) {
+      canvas.drawArc(
+        rect,
+        -math.pi / 2,
+        sweep,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.8, unit * 0.2)
+          ..strokeCap = StrokeCap.round
+          ..color = gaugeColor.withValues(alpha: 0.92),
+      );
     }
-    // Crosshair ticks.
+    // Low-ink breathing warning ring so an empty-running brush is obvious.
+    if (lowInk) {
+      final breath = 0.45 + 0.4 * (0.5 + 0.5 * math.sin(pulse * math.pi));
+      canvas.drawCircle(
+        center,
+        ringR * 1.14,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, unit * 0.12)
+          ..color = _inkWarn.withValues(alpha: 0.5 * breath),
+      );
+    }
+
+    // Crosshair ticks (aim read).
     final tick = Paint()
       ..strokeWidth = math.max(1.0, unit * 0.12)
       ..strokeCap = StrokeCap.round
-      ..color = color.withValues(alpha: 0.7);
+      ..color = gaugeColor.withValues(alpha: 0.7);
     for (final d in const [
       Offset(1, 0),
       Offset(-1, 0),
@@ -491,8 +530,8 @@ class PaintRenderer {
       Offset(0, -1)
     ]) {
       canvas.drawLine(
-        center + Offset(d.dx, d.dy) * ringR * 0.78,
-        center + Offset(d.dx, d.dy) * ringR * 1.05,
+        center + Offset(d.dx, d.dy) * ringR * 0.82,
+        center + Offset(d.dx, d.dy) * ringR * 1.08,
         tick,
       );
     }

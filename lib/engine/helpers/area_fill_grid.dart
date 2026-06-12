@@ -3,6 +3,32 @@ import 'dart:ui';
 /// Player id stored in a cell that nobody has painted yet.
 const int kEmptyCell = -1;
 
+/// What a single [AreaFillGrid.paintCircleDelta] stroke accomplished, for games
+/// that run a paint economy. Immutable value type.
+///
+///  * [gained]: cells that flipped to the painter (empty or rival → mine).
+///  * [stolen]: the subset of [gained] taken from a rival (contested turf won).
+///  * [wasted]: cells under the stroke the painter already owned (re-coating
+///    your own paint, which buys no new ground).
+class PaintResult {
+  final int gained;
+  final int stolen;
+  final int wasted;
+
+  const PaintResult({
+    required this.gained,
+    required this.stolen,
+    required this.wasted,
+  });
+
+  /// Total cells touched by the stroke (gained + re-coated).
+  int get touched => gained + wasted;
+
+  @override
+  String toString() =>
+      'PaintResult(gained: $gained, stolen: $stolen, wasted: $wasted)';
+}
+
 /// A coarse grid of cells, each owned by a single player id, used for
 /// territory-control / coverage scoring.
 ///
@@ -67,6 +93,27 @@ class AreaFillGrid {
   /// entirely off-grid simply does nothing. Throws [ArgumentError] for a
   /// negative or non-finite radius, or a non-finite center.
   void paintCircle(int playerId, Offset normCenter, double normRadius) {
+    paintCircleDelta(playerId, normCenter, normRadius);
+  }
+
+  /// Like [paintCircle] but reports what the stroke actually accomplished, so a
+  /// caller can run a paint *economy*: charge a cost by how much fresh/rival
+  /// turf the stroke won versus how much of it merely re-coated cells the
+  /// player already owned.
+  ///
+  /// Returns a [PaintResult] with:
+  ///  * [PaintResult.gained] — cells that flipped TO [playerId] (were empty or a
+  ///    rival's). This is the "useful" paint that grows your score.
+  ///  * [PaintResult.stolen] — the subset of [gained] that was taken from a
+  ///    rival (a non-empty, non-self owner). Rewards raiding contested turf.
+  ///  * [PaintResult.wasted] — cells inside the circle the player ALREADY owned
+  ///    (re-coating your own paint buys you nothing). Punishes sitting on one
+  ///    spot or repainting home.
+  ///
+  /// Last-writer-wins ownership is applied exactly as [paintCircle] does; this
+  /// only adds accounting. Same validation/throwing contract as [paintCircle].
+  PaintResult paintCircleDelta(
+      int playerId, Offset normCenter, double normRadius) {
     if (!normRadius.isFinite || normRadius < 0) {
       throw ArgumentError.value(
           normRadius, 'normRadius', 'must be >= 0 and finite');
@@ -74,8 +121,13 @@ class AreaFillGrid {
     if (!normCenter.dx.isFinite || !normCenter.dy.isFinite) {
       throw ArgumentError.value(normCenter, 'normCenter', 'must be finite');
     }
-    if (normRadius == 0) return;
+    if (normRadius == 0) {
+      return const PaintResult(gained: 0, stolen: 0, wasted: 0);
+    }
 
+    var gained = 0;
+    var stolen = 0;
+    var wasted = 0;
     final r2 = normRadius * normRadius;
     for (var row = 0; row < rows; row++) {
       // Cell centers sit at (i + 0.5) / count so they tile [0,1] evenly.
@@ -87,10 +139,19 @@ class AreaFillGrid {
         final cx = (col + 0.5) / cols;
         final dx = cx - normCenter.dx;
         if (dx * dx + dy2 <= r2) {
-          _cells[row * cols + col] = playerId;
+          final idx = row * cols + col;
+          final prev = _cells[idx];
+          if (prev == playerId) {
+            wasted++;
+          } else {
+            gained++;
+            if (prev != kEmptyCell) stolen++;
+            _cells[idx] = playerId;
+          }
         }
       }
     }
+    return PaintResult(gained: gained, stolen: stolen, wasted: wasted);
   }
 
   /// Number of cells currently owned by [playerId].

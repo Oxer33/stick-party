@@ -27,29 +27,59 @@ class _Tuning {
 
   // ── Continuous spray ──────────────────────────────────────────────────────
   // Holding sprays a fresh splat every [spraySec]; a quick tap always lays at
-  // least one. Painting the SAME spot repeatedly wastes paint, so steering the
-  // brush over fresh canvas is what actually grows coverage.
+  // least one. Spraying COSTS ink (see the reserve below), so you cannot just
+  // hold forever — the skill is pacing bursts and aiming them at fresh turf.
   static const double spraySec = 0.085; // seconds between continuous splats
   static const double touchIdleTimeout = 0.18; // stop spraying after touch lull
 
+  // ── INK RESERVE (the decision that interposes) ─────────────────────────────
+  // Every brush carries a limited reserve of ink in 0..1. Each splat spends
+  // [inkPerSplat]; ink ONLY refills while the brush is NOT spraying
+  // ([inkRechargePerSec]), so a held finger drains the can and then SPUTTERS
+  // (dud splats that paint nothing). The winning rhythm is short aimed bursts
+  // with little release gaps — NOT one endless hold.
+  //
+  // The wasted-paint surcharge is the targeting lever: a splat that lands mostly
+  // on cells you ALREADY own (sitting on one spot, repainting home) costs up to
+  // [inkWasteSurcharge]× extra, so it empties the can for almost no new ground.
+  // Sweeping the brush onto FRESH or RIVAL cells keeps every splat ink-cheap,
+  // so a player who manages ink + targets contested turf paints far more area
+  // than one who blindly holds and wiggles in place.
+  static const double inkPerSplat = 0.055; // base ink a splat spends
+  static const double inkRechargePerSec = 0.42; // refill rate while not spraying
+  static const double inkWasteSurcharge = 1.6; // extra ink mult for a fully-wasted splat
+  static const double inkSputterFloor = 0.06; // below this the can only sputters
+  static const double inkLowWarn = 0.22; // ring shows a low-ink warning here
+
+  // A sputtering (near-empty) splat is a feeble dud: a tiny radius that paints
+  // almost nothing, so over-holding visibly stops growing your coverage.
+  static const double sputterRadius = 0.012;
+
   // ── Splat sizing ──────────────────────────────────────────────────────────
-  // A held, moving brush lays a steady mid-size splat; lingering on one spot
-  // briefly fattens it (a "loaded" dwell bonus) before it caps out, rewarding a
-  // deliberate sweep-then-dwell rhythm without any second button.
-  static const double splatRadiusBase = 0.060;
-  static const double dwellBonus = 0.045; // +radius at full dwell
-  static const double dwellRampSec = 0.45; // hold-in-place time to full dwell
+  // A held, moving brush lays a steady mid-size splat. There is deliberately NO
+  // "sit still to grow it" bonus — lingering wastes ink instead — so coverage is
+  // won by sweeping the brush across fresh canvas, not by parking it.
+  static const double splatRadiusBase = 0.066;
   static const double splatRadiusMax = 0.12; // hard cap so it stays readable
 
   // ── Climax: the DOUBLE INK final burst (the unmistakable peak) ──────────────
-  // For the last [doubleInkSec] every splat is fattened by [doubleInkRadiusMult]
-  // (capped above the normal max so the change is obvious) and throws extra
-  // droplets — coverage swings wildly, so a trailing kid can still flip the
-  // board in a shouting finish. A one-shot banner + shake announces it.
+  // For the last [doubleInkSec] the ink economy is supercharged: splats cost
+  // nothing, the can stays full and every splat is fattened by
+  // [doubleInkRadiusMult] (capped above the normal max) and throws extra
+  // droplets — so the board churns wildly and a trailing kid can flip it in a
+  // shouting finish. A one-shot banner + flash + shake announces it.
   static const double doubleInkSec = 6.0; // length of the double-ink finale
   static const double doubleInkRadiusMult = 1.7; // splat radius multiplier
   static const double doubleInkRadiusMax = 0.20; // raised cap during the burst
   static const int doubleInkExtraDroplets = 8; // bonus droplets per splat
+
+  // Decisive-flip cue: when the lead changes hands during the finale we punch a
+  // slow-mo + flash + popup so the moment the board flips reads as huge. Re-arms
+  // after a short cooldown so a frantic back-and-forth keeps popping.
+  static const double leadFlipSlowMoSec = 0.5;
+  static const double leadFlipSlowScale = 0.45;
+  static const double leadFlipCooldownSec = 0.7;
+  static const double leadFlipMinFrac = 0.02; // ignore dead-heat jitter
 
   // Bot accuracy: an off-target splat is jittered by up to this (norm units),
   // scaled down by accuracy so better bots place paint where they aim.
@@ -67,13 +97,20 @@ class _Tuning {
   static const double botRaidRefGap = 0.18; // coverage gap (frac) for full odds
   static const double botLeaderCellWeight = 1.4; // pull toward a leader's cell
 
+  // Bot ink discipline: a skilled bot RELEASES the trigger to refill once its
+  // can runs low and only re-engages once it has recovered, just like a good
+  // human. A sloppy bot keeps the trigger mashed and sputters on empty. The
+  // accuracy term decides how disciplined the bot is.
+  static const double botInkReleaseAcc = 0.7; // accuracy at/above which a bot paces ink
+  static const double botInkLowFrac = 0.18; // disciplined bot releases below this
+  static const double botInkResumeFrac = 0.6; // …and resumes once refilled past this
+
   // Visual stamp budget: only the most recent stamps are drawn crisply on top
   // of the baked coverage tint, which protects render cost in long games.
   static const int maxStamps = 80;
 
   // Particle feel.
   static const int dropletCountBase = 6;
-  static const int dropletPerDwell = 6; // extra droplets at full dwell
   static const double dropletSpeed = 300; // px/s
   static const double dropletGravity = 520;
   static const double dropletLife = 0.5;
@@ -83,8 +120,8 @@ class _Tuning {
   // Stamp sheen dry-out time.
   static const double sheenDrySec = 1.2;
 
-  // Bot target search: sample stride over the zone's cells when hunting the
-  // largest unpainted pocket (every cell is overkill for a coarse target).
+  // Bot target search: sample stride over the grid's cells when hunting the
+  // best target (every cell is overkill for a coarse target).
   static const int botSampleStride = 1;
 
   // Mascot: per-frame brush travel (norm units) above which the rider runs.
@@ -92,14 +129,15 @@ class _Tuning {
 }
 
 /// A player's paint cursor. Unlike the old auto-bouncing reticle, this is driven
-/// entirely by the player: it eases toward wherever they touch **inside their
-/// own zone**, and sprays continuously while a touch is held. Position is in
-/// normalized 0..1 arena space. Mutable, round-scoped value.
+/// entirely by the player: it eases toward wherever they touch on the SHARED
+/// canvas, and sprays continuously while a touch is held — but only while there
+/// is ink in the can. Position is in normalized 0..1 arena space. Mutable,
+/// round-scoped value.
 class _Cursor {
   final int playerId;
   final Color color;
   final bool isRoller; // visual tool variety (odd ids use a roller)
-  final Rect zone; // this player's paintable region (normalized arena space)
+  final Rect zone; // this player's home region (normalized arena space)
   final ReactionClock? clock; // bots re-pick a target on this cadence
 
   /// The painter mascot riding this brush (purely visual; reacts to motion +
@@ -107,11 +145,13 @@ class _Cursor {
   final StickFigure figure;
 
   Offset pos; // where the brush currently is
-  Offset target; // where it is steering toward (clamped into [zone])
+  Offset target; // where it is steering toward (clamped into arena)
   bool spraying = false; // a touch (or bot intent) is currently held
   double sprayAccum = 0; // time banked toward the next continuous splat
   double sinceTouch = 1e9; // seconds since the last steering input (human)
-  double dwell = 0; // 0..1 how long the brush has lingered near one spot
+  double ink = 1.0; // 0..1 remaining paint reserve
+  bool sputter = false; // last splat fired on empty (a feeble dud)
+  bool botPaused = false; // a disciplined bot is releasing to refill
   double flash = 0; // recent-splat flash timer (visual)
   Offset _botGoal; // bot's current coverage goal (normalized)
   Offset _prevPos; // last frame's position, to read motion for the mascot loco
@@ -154,11 +194,11 @@ class _Cursor {
 
   /// Clamp a normalized point into the SHARED arena `[inset, 1-inset]^2`.
   ///
-  /// This is the structural heart of the redesign: brushes are NO LONGER walled
-  /// into their own [zone] — every cursor roams the whole canvas, so painting
-  /// over a rival's cells (last-writer-wins in [AreaFillGrid.paintCircle]) STEALS
+  /// This is the structural heart of the redesign: brushes are NOT walled into
+  /// their own [zone] — every cursor roams the whole canvas, so painting over a
+  /// rival's cells (last-writer-wins in [AreaFillGrid.paintCircleDelta]) STEALS
   /// them, turning coverage into a live tug-of-war. Each player still STARTS in
-  /// their own corner (see [_spawnCursors]); [zone] is now only a starting/ home
+  /// their own corner (see [_spawnCursors]); [zone] is now only a starting/home
   /// hint for bots and a faint render label, not a barrier.
   Offset clampToZone(Offset p) {
     const inset = 0.005;
@@ -168,23 +208,14 @@ class _Cursor {
     );
   }
 
-  /// Steer the brush toward [target] with a frame-rate-independent ease, and
-  /// track the dwell bonus: lingering near one spot ramps it up; a sweep resets
-  /// it. [dt] is sim seconds.
+  /// Steer the brush toward [target] with a frame-rate-independent ease. [dt] is
+  /// sim seconds.
   void steer(double dt) {
     final follow = (1.0 - math.exp(-_Tuning.followPerSec * dt)).clamp(0.0, 1.0);
-    final prev = pos;
     pos = Offset(
       pos.dx + (target.dx - pos.dx) * follow,
       pos.dy + (target.dy - pos.dy) * follow,
     );
-    final moved = (pos - prev).distance;
-    // A near-stationary brush ramps dwell up; any real travel knocks it back.
-    if (moved < 0.004) {
-      dwell = math.min(1.0, dwell + dt / _Tuning.dwellRampSec);
-    } else {
-      dwell = math.max(0.0, dwell - moved * 6.0);
-    }
   }
 
   /// Advance timers (flash). [dt] is real seconds.
@@ -192,12 +223,38 @@ class _Cursor {
     if (flash > 0) flash = math.max(0, flash - dt);
   }
 
+  /// Refill the can while the trigger is up; spend nothing while held (splats
+  /// debit it directly). During the finale the can stays full so the climax can
+  /// churn freely. [dt] is sim seconds.
+  void rechargeInk(double dt, {required bool freeFlow}) {
+    if (freeFlow) {
+      ink = 1.0;
+      return;
+    }
+    if (!spraying) {
+      ink = math.min(1.0, ink + _Tuning.inkRechargePerSec * dt);
+    }
+  }
+
+  /// Spend ink for one splat, charging a waste surcharge proportional to how
+  /// much of the stroke merely re-coated cells the player already owned. During
+  /// the finale ink is free. Ink is clamped at 0.
+  void spendInk(double wasteFraction, {required bool freeFlow}) {
+    if (freeFlow) return;
+    final surcharge =
+        1.0 + _Tuning.inkWasteSurcharge * wasteFraction.clamp(0.0, 1.0);
+    ink = math.max(0.0, ink - _Tuning.inkPerSplat * surcharge);
+  }
+
+  /// True when the can is too low to lay a real splat (it only sputters).
+  bool get isEmpty => ink < _Tuning.inkSputterFloor;
+
   Offset get botGoal => _botGoal;
   set botGoal(Offset g) => _botGoal = clampToZone(g);
 
-  /// 0..1 "charge" readout for the cursor ring — here it is the dwell bonus, so
-  /// a loaded brush shows a fatter target ring just before it lays a big splat.
-  double get charge => dwell.clamp(0.0, 1.0);
+  /// 0..1 "charge" readout for the cursor ring — the remaining ink, so the brush
+  /// visibly shows how much paint is left before it sputters.
+  double get charge => ink.clamp(0.0, 1.0);
 }
 
 /// A drawn paint stamp recorded when a splat lands, so the renderer can paint a
@@ -220,26 +277,32 @@ class _Stamp {
 
 /// Paint Splash — a splatter-paint turf war on ONE SHARED [AreaFillGrid].
 ///
-/// CONTROL (the heart of it — full player agency, one touch, ONE canvas):
-///  * Every player drives a paint cursor over the WHOLE arena (not a walled-off
-///    slice). The cursor STEERS to wherever the player touches: drag to move the
-///    brush anywhere on the shared canvas. Players START in their own corner so
-///    setup still reads, then the board is open.
+/// OBJECTIVE (obvious, kid-readable): own the most canvas when the timer ends.
+/// Score is the live owned-cell count, resolved via [finishByScore].
+///
+/// CONTROL (one touch, full agency, ONE canvas):
+///  * Every player drives a paint cursor over the WHOLE arena. The cursor STEERS
+///    to wherever the player touches: drag to move the brush anywhere. Players
+///    START in their own corner so setup reads, then the board is open.
 ///  * HOLDING sprays paint continuously at the cursor. Because paint is
 ///    last-writer-wins, sweeping your brush OVER a rival's color FLIPS those
-///    cells to you — you steal their turf, and they can steal it right back. A
-///    quick tap lays a single splat.
-///  * Lingering briefly fattens the splat (a dwell bonus), so a sweep-then-dwell
-///    rhythm covers ground fastest. The player owning the most cells when
-///    [_Tuning.timeLimit] elapses wins; score is the live owned-cell count
-///    (a real tug-of-war), resolved via [finishByScore].
+///    cells to you — you steal their turf, and they can steal it right back.
+///
+/// THE DECISION THAT INTERPOSES (why blind holding LOSES): every brush has a
+/// limited INK reserve. Spraying drains it; it only refills while the trigger is
+/// UP. Hold forever and the can empties and SPUTTERS (dud splats that paint
+/// nothing). Worse, a splat that lands on cells you ALREADY own costs extra ink
+/// for no new ground — so sitting on one spot drains the can for nothing. The
+/// player who paces short bursts and aims them at FRESH or RIVAL turf paints far
+/// more than the one who holds and wiggles blindly.
 ///
 /// Bots roam the shared canvas: they head for the largest pocket they don't own
-/// and, when behind, are biased to RAID the current leader's territory (painting
-/// over it to steal cells), re-picking a goal on a [ReactionClock]. Their
-/// [BotProfile] accuracy decides how tightly they hit the target and [errorRate]
-/// makes them occasionally drift, so easy bots leave gaps a human can out-cover.
-/// A short warmup keeps them passive at the gun.
+/// and, when behind, RAID the current leader's territory (painting over it to
+/// steal cells), re-picking a goal on a [ReactionClock]. A SKILLED bot also
+/// paces its ink (releases to refill when low); a sloppy bot mashes the trigger
+/// and sputters. [BotProfile] accuracy decides discipline + aim, so easy bots
+/// leave coverage a human can out-paint. A short warmup keeps them passive at
+/// the gun.
 class PaintSplash extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -258,6 +321,8 @@ class PaintSplash extends MiniGameBase {
   double _elapsed = 0;
   int _splatSeq = 0; // monotonically increasing seed source for stamps
   bool _doubleInkAnnounced = false; // the DOUBLE INK cue fired once
+  int? _lastLeaderId; // leader tracked frame-to-frame for the flip cue
+  double _flipCooldown = 0; // re-arm timer for the decisive-flip punch
   Size _lastSize = const Size(1, 1);
 
   @override
@@ -350,18 +415,49 @@ class PaintSplash extends MiniGameBase {
     c.sinceTouch = 0;
   }
 
-  /// Lay paint for [c] centered at its current position. Paints the grid (last
-  /// writer wins), records a visual stamp and fires juice scaled by the dwell
-  /// bonus.
+  /// Lay paint for [c] centered at its current position.
+  ///
+  /// This is where the ink economy bites:
+  ///  * If the can is empty the splat SPUTTERS — a feeble dud that paints almost
+  ///    nothing and spends no further ink, so over-holding visibly stalls.
+  ///  * Otherwise it paints the grid (last writer wins) and is charged ink with
+  ///    a surcharge for how much of the stroke merely re-coated cells [c]
+  ///    already owned (the wasted fraction), so parking on one spot drains fast.
+  /// Records a visual stamp and fires juice scaled by what the stroke won.
   void _spray(_Cursor c) {
     final at = c.pos;
     if (!at.dx.isFinite || !at.dy.isFinite) return;
-    c.flash = _Tuning.spraySec * 2;
+    final freeFlow = _inDoubleInk;
 
+    // Empty can → sputter: a tiny dud blob, no grid paint, no further drain.
+    if (!freeFlow && c.isEmpty) {
+      c.sputter = true;
+      c.flash = _Tuning.spraySec * 2;
+      _recordStamp(at, _Tuning.sputterRadius, c.color);
+      // A couple of dribble droplets sell the empty-can splutter.
+      _juice.particles.burst(
+        at: _toPixels(at),
+        count: 3,
+        color: c.color,
+        speed: _Tuning.dropletSpeed * 0.4,
+        size: _Tuning.dropletSizeBase * 0.6,
+        gravity: _Tuning.dropletGravity,
+        life: _Tuning.dropletLife * 0.6,
+        shape: ParticleShape.circle,
+      );
+      return;
+    }
+
+    c.sputter = false;
+    c.flash = _Tuning.spraySec * 2;
     final radius = _splatRadius(c);
-    _grid.paintCircle(c.playerId, at, radius);
+    final result = _grid.paintCircleDelta(c.playerId, at, radius);
+    // Waste fraction = how much of the stroke fell on cells we already owned.
+    final wasteFraction =
+        result.touched == 0 ? 1.0 : result.wasted / result.touched;
+    c.spendInk(wasteFraction, freeFlow: freeFlow);
     _recordStamp(at, radius, c.color);
-    _burstDroplets(at, radius, c.color, c.dwell);
+    _burstDroplets(at, radius, c.color, result.stolen);
     // The mascot swings its arm on each splat so it visibly paints.
     c.figure.attack(0);
   }
@@ -369,16 +465,15 @@ class PaintSplash extends MiniGameBase {
   /// True once the round enters its final DOUBLE INK burst window.
   bool get _inDoubleInk => _elapsed >= _Tuning.timeLimit - _Tuning.doubleInkSec;
 
-  /// Splat radius from the base size plus the dwell bonus, capped. During the
-  /// DOUBLE INK finale the radius is multiplied and allowed past the normal cap
-  /// (up to the raised burst cap) so the bigger paint is unmistakable.
+  /// Splat radius from the base size. During the DOUBLE INK finale the radius is
+  /// multiplied and allowed past the normal cap (up to the raised burst cap) so
+  /// the bigger paint is unmistakable.
   double _splatRadius(_Cursor c) {
-    final radius = _Tuning.splatRadiusBase + _Tuning.dwellBonus * c.dwell;
     if (_inDoubleInk) {
-      return (radius * _Tuning.doubleInkRadiusMult)
+      return (_Tuning.splatRadiusBase * _Tuning.doubleInkRadiusMult)
           .clamp(_Tuning.splatRadiusBase, _Tuning.doubleInkRadiusMax);
     }
-    return radius.clamp(_Tuning.splatRadiusBase, _Tuning.splatRadiusMax);
+    return _Tuning.splatRadiusBase.clamp(0.0, _Tuning.splatRadiusMax);
   }
 
   void _recordStamp(Offset at, double radius, Color color) {
@@ -395,12 +490,13 @@ class PaintSplash extends MiniGameBase {
     }
   }
 
-  /// A burst of paint droplets + impact feel. A loaded (dwelled) brush throws
-  /// more droplets and a touch more shake.
-  void _burstDroplets(Offset at, double radius, Color color, double dwell) {
+  /// A burst of paint droplets + impact feel. A splat that STEALS rival cells
+  /// throws more droplets and a touch more shake — the satisfying raid feedback.
+  void _burstDroplets(Offset at, double radius, Color color, int stolen) {
     final px = _toPixels(at);
+    final stealKick = math.min(stolen, 10);
     final count = _Tuning.dropletCountBase +
-        (dwell * _Tuning.dropletPerDwell).round() +
+        stealKick +
         (_inDoubleInk ? _Tuning.doubleInkExtraDroplets : 0);
     _juice.particles.burst(
       at: px,
@@ -413,23 +509,24 @@ class PaintSplash extends MiniGameBase {
       life: _Tuning.dropletLife,
       shape: ParticleShape.circle,
     );
-    if (dwell > 0.6) _juice.shake.light();
+    if (stolen > 4) _juice.shake.light();
   }
 
   /// Fire the one-shot DOUBLE INK cue the instant the finale window opens: a big
-  /// banner popup, a shake and a bright burst so every kid knows the paint just
-  /// got huge and it's time to scribble for the win.
+  /// banner, a screen flash, a shake and a bright burst so every kid knows the
+  /// paint just went huge and unlimited — time to scribble for the win.
   void _maybeAnnounceDoubleInk() {
     if (_doubleInkAnnounced || !_inDoubleInk) return;
     _doubleInkAnnounced = true;
     final center = Offset(_lastSize.width / 2, _lastSize.height * 0.5);
-    _juice.popup(center, 'DOUBLE INK!', const Color(0xFFFFFFFF), size: 46);
+    _juice.bigBanner('DOUBLE INK!', color: const Color(0xFFFFFFFF));
+    _juice.flashScreen(const Color(0xFFFFFFFF), strength: 0.45);
     _juice.shake.medium();
     _juice.particles.burst(
       at: center,
-      count: 20,
+      count: 24,
       color: const Color(0xFFFFFFFF),
-      speed: 340,
+      speed: 360,
       size: 7,
       life: 0.7,
     );
@@ -444,10 +541,12 @@ class PaintSplash extends MiniGameBase {
     _elapsed += dt;
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
+    if (_flipCooldown > 0) _flipCooldown = math.max(0, _flipCooldown - dt);
 
     _maybeAnnounceDoubleInk();
     _driveBots(sdt);
 
+    final freeFlow = _inDoubleInk;
     for (final c in _cursors) {
       c.sinceTouch += dt;
       // A human cursor whose touch went quiet stops spraying (finger lifted or
@@ -457,6 +556,7 @@ class PaintSplash extends MiniGameBase {
       }
       c.steer(sdt);
       c.tickTimers(dt);
+      c.rechargeInk(sdt, freeFlow: freeFlow);
       _tickSpray(c, sdt);
       // Advance the painter mascot: run while the brush travels, idle when still.
       c.updateMascot(sdt, _Tuning.mascotMoveThreshold);
@@ -464,6 +564,8 @@ class PaintSplash extends MiniGameBase {
     for (final s in _stamps) {
       s.age += dt;
     }
+
+    _maybeAnnounceLeadFlip();
 
     if (_elapsed >= _Tuning.timeLimit) _finish();
   }
@@ -484,13 +586,41 @@ class PaintSplash extends MiniGameBase {
     }
   }
 
-  /// Bots steer toward the largest unpainted pocket inside their own zone and
-  /// spray as they sweep across it. They re-pick a goal on their reaction clock;
-  /// [BotProfile] accuracy tightens the goal toward the true best cell while
-  /// [errorRate] makes them occasionally drift to a random spot (leaving gaps).
-  /// A warmup keeps them passive at the gun so an idle human is never buried.
+  /// Watch for the lead changing hands during the DOUBLE INK finale and punch a
+  /// slow-mo + flash + popup on the decisive flip so the moment the board turns
+  /// over reads as the climax it is. Only fires in the finale (when swings are
+  /// big), needs a real coverage lead (not dead-heat jitter), and re-arms after
+  /// a short cooldown so a frantic back-and-forth keeps popping.
+  void _maybeAnnounceLeadFlip() {
+    final leader = _leaderId();
+    final prev = _lastLeaderId;
+    _lastLeaderId = leader;
+    if (!_inDoubleInk || leader == null || prev == null || leader == prev) {
+      return;
+    }
+    if (_flipCooldown > 0) return;
+    // Require a clear margin so micro-jitter at a tie doesn't spam the cue.
+    final margin = _grid.fractionOf(leader) - _grid.fractionOf(prev);
+    if (margin < _Tuning.leadFlipMinFrac) return;
+
+    _flipCooldown = _Tuning.leadFlipCooldownSec;
+    final color = _cursorOf(leader)?.color ?? const Color(0xFFFFFFFF);
+    _juice.slowMo(
+        dur: _Tuning.leadFlipSlowMoSec, scale: _Tuning.leadFlipSlowScale);
+    _juice.flashScreen(color, strength: 0.4);
+    _juice.shake.medium();
+    final center = Offset(_lastSize.width / 2, _lastSize.height * 0.42);
+    _juice.popup(center, 'LEAD FLIP!', color, size: 40);
+  }
+
+  /// Bots roam the SHARED canvas, heading for the largest pocket they don't own
+  /// and (when behind) raiding the leader's turf. They re-pick a goal on their
+  /// reaction clock; [BotProfile] accuracy tightens the goal and decides ink
+  /// discipline. A warmup keeps them passive at the gun so an idle human is
+  /// never buried.
   void _driveBots(double dt) {
     final engaged = _elapsed >= _Tuning.botWarmupSec;
+    final freeFlow = _inDoubleInk;
     for (final c in _cursors) {
       final clock = c.clock;
       if (clock == null) continue;
@@ -498,13 +628,43 @@ class PaintSplash extends MiniGameBase {
         c.spraying = false;
         continue;
       }
-      c.spraying = true; // a bot always has the brush down while engaged
+      _updateBotTrigger(c, freeFlow: freeFlow);
       if (clock.tick(dt)) {
         clock.arm(ctx.botProfile, ctx.rng);
         _repickBotGoal(c);
       }
       _stepBotCursor(c, dt);
     }
+  }
+
+  /// Decide whether a bot holds the trigger this frame, modeling ink discipline.
+  ///
+  /// A DISCIPLINED bot (accuracy ≥ [_Tuning.botInkReleaseAcc]) behaves like a
+  /// good human: it releases the trigger to refill once its can runs low
+  /// ([_Tuning.botInkLowFrac]) and only re-engages once recovered past
+  /// [_Tuning.botInkResumeFrac], so its ink stays efficient. A SLOPPY bot just
+  /// holds the trigger down and sputters on empty, wasting paint exactly like a
+  /// blind human — which is what makes easy bots beatable. During the free-flow
+  /// finale everyone simply holds.
+  void _updateBotTrigger(_Cursor c, {required bool freeFlow}) {
+    if (freeFlow) {
+      c.botPaused = false;
+      c.spraying = true;
+      return;
+    }
+    final disciplined = ctx.botProfile.accuracy >= _Tuning.botInkReleaseAcc;
+    if (!disciplined) {
+      c.botPaused = false;
+      c.spraying = true; // mashes the trigger, sputters when empty
+      return;
+    }
+    if (c.botPaused) {
+      // Refilling — resume once the can has recovered enough for a clean burst.
+      if (c.ink >= _Tuning.botInkResumeFrac) c.botPaused = false;
+    } else if (c.ink <= _Tuning.botInkLowFrac) {
+      c.botPaused = true; // release to refill before it sputters
+    }
+    c.spraying = !c.botPaused;
   }
 
   /// Choose a fresh coverage goal for a bot on the SHARED canvas. Usually the
@@ -529,13 +689,15 @@ class PaintSplash extends MiniGameBase {
 
   /// Pick the best cell on the WHOLE shared grid for bot [c] to head toward.
   ///
-  /// Cells the bot already owns are skipped. Empty cells are the staple target;
-  /// rival cells are worth taking too (stealing). When the bot is BEHIND the
-  /// leader it rolls (odds scaling with the gap, up to [_Tuning.botRaidChanceMax])
-  /// to go on a raid: in raid mode the LEADER's cells get an extra pull
-  /// ([_Tuning.botLeaderCellWeight]) so the bot drives into the leader's turf and
-  /// paints over it. A mild distance term keeps it sweeping outward rather than
-  /// dithering. Returns null only if the bot already owns every cell.
+  /// Cells the bot already owns are skipped (re-coating wastes ink), so bots
+  /// naturally chase FRESH ground — the same discipline a human needs. Empty
+  /// cells are the staple target; rival cells are worth taking too (stealing).
+  /// When the bot is BEHIND the leader it rolls (odds scaling with the gap, up
+  /// to [_Tuning.botRaidChanceMax]) to go on a raid: in raid mode the LEADER's
+  /// cells get an extra pull ([_Tuning.botLeaderCellWeight]) so the bot drives
+  /// into the leader's turf and paints over it. A mild distance term keeps it
+  /// sweeping outward rather than dithering. Returns null only if the bot
+  /// already owns every cell.
   Offset? _bestTargetSpot(_Cursor c) {
     final leaderId = _leaderId();
     final behind = _coverageGapBehindLeader(c.playerId, leaderId);
@@ -550,7 +712,7 @@ class PaintSplash extends MiniGameBase {
       final cy = (row + 0.5) / _Tuning.rows;
       for (var col = 0; col < _Tuning.cols; col += _Tuning.botSampleStride) {
         final owner = _grid.ownerAt(col, row);
-        if (owner == c.playerId) continue; // already mine — skip
+        if (owner == c.playerId) continue; // already mine — skip (no waste)
         // Empty cells are the baseline target; rival cells are worth stealing.
         var weight = owner == kEmptyCell ? 1.0 : 0.6;
         // On a raid, the leader's cells are the juiciest steal.
@@ -568,7 +730,7 @@ class PaintSplash extends MiniGameBase {
   }
 
   /// Id of the player currently owning the most cells, or null if nobody has
-  /// painted yet (used to pick a raid target).
+  /// painted yet (used to pick a raid target + drive the lead-flip cue).
   int? _leaderId() {
     int? leader;
     var bestCount = 0;
@@ -586,8 +748,7 @@ class PaintSplash extends MiniGameBase {
   /// leader or there is no leader yet.
   double _coverageGapBehindLeader(int playerId, int? leaderId) {
     if (leaderId == null || leaderId == playerId) return 0;
-    final gap =
-        _grid.fractionOf(leaderId) - _grid.fractionOf(playerId);
+    final gap = _grid.fractionOf(leaderId) - _grid.fractionOf(playerId);
     return gap < 0 ? 0 : gap;
   }
 
@@ -610,13 +771,18 @@ class PaintSplash extends MiniGameBase {
     for (final p in ctx.players) {
       setScore(p.id, _grid.coverageOf(p.id));
     }
-    // Signature coverage-reveal beat: a big WINNER! banner in the leader's color
-    // plus winner-tinted confetti. The leader owns the most cells at the buzzer.
+    // Signature coverage-reveal beat: the biggest moment fires on the winner's
+    // brush — burst + heavy shake + slow-mo + zoom-punch + flash + a WINNER!
+    // banner in the leader's color, then winner-tinted confetti rains over the
+    // finished board. The leader owns the most cells at the buzzer.
+    final winnerId = _leaderId();
     final winnerColor = _leaderColor();
-    _juice.bigBanner('WINNER!', color: winnerColor);
+    final winnerPos = winnerId == null
+        ? _lastSize.center(Offset.zero)
+        : _toPixels(_cursorOf(winnerId)!.pos);
+    _juice.bigMoment(winnerPos, winnerColor, banner: 'WINNER!');
     _juice.confetti(_lastSize, colors: [winnerColor]);
     // The winning painter cheers on the final board.
-    final winnerId = _leaderId();
     if (winnerId != null) _cursorOf(winnerId)?.figure.victory();
     finishByScore();
   }
@@ -707,6 +873,8 @@ class PaintSplash extends MiniGameBase {
           ? 0.0
           : (c.flash / (_Tuning.spraySec * 2)).clamp(0.0, 1.0);
       final center = _toPixelsIn(c.pos, size);
+      // The ring reads as an INK GAUGE: charge is remaining ink, lowInk warns
+      // when the can is nearly dry so a player knows to release and refill.
       PaintRenderer.drawReticle(
         canvas,
         size,
@@ -715,7 +883,8 @@ class PaintSplash extends MiniGameBase {
         charge: c.charge,
         isRoller: c.isRoller,
         pulse: pulse,
-        spraying: c.spraying,
+        spraying: c.spraying && !c.sputter,
+        lowInk: c.ink < _Tuning.inkLowWarn,
       );
       // The painter mascot rides on top of the reticle, showing WHO is painting.
       PaintRenderer.drawMascot(
