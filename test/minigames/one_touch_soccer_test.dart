@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -315,6 +318,113 @@ void main() {
       expect(dir, isNotNull);
       expect(dir!.dx, 0); // straight up or down a goal line
       expect(dir.dy.abs(), 1);
+    });
+  });
+
+  group('spam-proofing (objective + interposing skill)', () {
+    test('the EARNED shot economy: power and aim climb only with possession', () {
+      // The core lever. A poke with no banked possession (what a masher always
+      // gets) sits at the powerless, aimless floor; a controlled, settled shot
+      // (skill) reaches full power AND a goalward assist. So skill out-shoots
+      // spam by construction — proven deterministically, no noisy match needed.
+      final g = OneTouchSoccer()
+        ..init(MiniGameContext(
+          players: const [PlayerSlot(id: 0, name: 'P1', colorArgb: 0xFFFFFFFF)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(1),
+          zones: ZoneLayout.forPlayers(1),
+        ));
+
+      final floorPower = g.shotPowerFracForTest(0);
+      final fullPower = g.shotPowerFracForTest(10); // long-controlled
+      expect(floorPower, lessThan(0.2), reason: 'a no-possession poke is feeble');
+      expect(fullPower, greaterThan(0.9), reason: 'a controlled shot blasts');
+      expect(fullPower, greaterThan(floorPower * 3),
+          reason: 'control multiplies shot power several-fold');
+
+      expect(g.goalAssistForTest(0), 0.0,
+          reason: 'a poke gets ZERO goalward assist — the player must aim it');
+      expect(g.goalAssistForTest(10), greaterThan(0.0),
+          reason: 'only a controlled shot earns a goalward curl');
+    });
+
+    test('a lone player CAN score (goal credited to the side that attacks it)',
+        () {
+      // Guards the scoring-attribution fix: previously a goal in a net was
+      // credited to the WRONG side, so a solo player (or any side shooting at the
+      // net it actually attacks) could never put a goal on its own board. A lone
+      // all-bot striker trap-dribble-shoots into the net it attacks and must end
+      // with a positive score.
+      final g = OneTouchSoccer()
+        ..init(MiniGameContext(
+          players: [PlayerSlot.defaults(0, isBot: true)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(7),
+          zones: ZoneLayout.forPlayers(1),
+          difficulty: BotDifficulty.hard,
+        ));
+      _runToFinish(g);
+      expect(g.scores.of(0), greaterThan(0),
+          reason: 'a solo striker must be able to score in the net it attacks');
+    });
+
+    test('a chase-and-mash spammer can never score and loses to a hard bot', () {
+      // The decisive proof of the law. Seat 0 is a realistic button-masher:
+      // it chases the live ball (with human-like lag + wobble) and re-taps every
+      // ~0.08 s, so it NEVER traps/controls the ball — only floor pokes. Seat 1
+      // is a hard bot that traps, dribbles and shoots. Across many seeds the
+      // masher must score ZERO (its pokes never reach goal speed) and must lose
+      // the vast majority (a 0–0 is broken by possession, which the masher has
+      // none of), confirming: skill beats spam, and spam cannot win by mashing.
+      const step = 1 / 60;
+      var masherGoals = 0;
+      var botWins = 0;
+      const seeds = 24;
+      for (var s = 1; s <= seeds; s++) {
+        final seed = s * 7 + 1;
+        final g = OneTouchSoccer()
+          ..init(MiniGameContext(
+            players: [
+              const PlayerSlot(id: 0, name: 'SPAM', colorArgb: 0xFFFFFFFF),
+              PlayerSlot.defaults(1, isBot: true),
+            ],
+            arena: const Size(800, 1200),
+            rng: SeededRng(seed),
+            zones: ZoneLayout.forPlayers(2),
+            difficulty: BotDifficulty.hard,
+          ));
+        final rng = SeededRng(seed * 31 + 5);
+        var dir = const Offset(0, -1);
+        var f = 0;
+        while (g.status != MiniGameStatus.finished && f < 60 * 80) {
+          if (f % 9 == 0) {
+            final to = g.ballPosNormForTest() - g.strikerPosNormForTest(0);
+            final d = to.distance;
+            var nd = d < 1e-6 ? const Offset(0, -1) : to / d;
+            final a = rng.jitter(0.5); // human-like aim wobble
+            nd = Offset(nd.dx * math.cos(a) - nd.dy * math.sin(a),
+                nd.dx * math.sin(a) + nd.dy * math.cos(a));
+            dir = nd;
+          }
+          const anchor = Offset(0.5, 0.5);
+          if (f % 5 == 0) {
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.up, normPos: anchor));
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.down, normPos: anchor));
+          }
+          g.onInput(PlayerInput(
+              playerId: 0, phase: InputPhase.holdTick, normPos: anchor + dir * 0.16));
+          g.update(step);
+          f++;
+        }
+        masherGoals += g.scores.of(0).round();
+        if (g.winResult!.winner != 0) botWins++;
+      }
+      expect(masherGoals, 0,
+          reason: 'mashing produces only floor pokes — it can never score');
+      expect(botWins, greaterThanOrEqualTo(15),
+          reason: 'skilled trap-and-shoot must beat the masher across seeds');
     });
   });
 }
