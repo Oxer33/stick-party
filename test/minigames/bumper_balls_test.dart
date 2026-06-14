@@ -41,6 +41,60 @@ int _runToFinish(BumperBalls g) {
   return n;
 }
 
+/// Run one 4-player round where slots 0 and 1 are HUMAN-driven and slots 2..3
+/// are bots, scripting two contrasting play styles for the two humans:
+///
+///  * [blindId] (the SPAMMER): fires an instant down→up every frame with NO
+///    hold and NO drag — the worst-case button-masher. With the commit gate this
+///    means charge≈0: no nearest-aim assist (it is EARNED by holding), a stale
+///    aim that whiffs, the charge-root that traps it, and commit-gated knockback
+///    that cannot eject — so it self-rings on the closing edge instead.
+///  * [skilledId] (the COMMITTER): presses, HOLDS to full charge, then releases —
+///    every cycle. The hold unlocks the kid-safe nearest-rival aim AND a fully
+///    committed dash (and the momentum-keep rocket), so it lands real ring-outs.
+///
+/// Returns the finished game so the caller can compare KO scores / ranks.
+BumperBalls _runSpamVsSkill(
+  int seed, {
+  required int blindId,
+  required int skilledId,
+}) {
+  final players = [
+    for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: i >= 2),
+  ];
+  final ctx = MiniGameContext(
+    players: players,
+    arena: const Size(800, 1200),
+    rng: SeededRng(seed),
+    zones: ZoneLayout.forPlayers(4),
+  );
+  final g = BumperBalls()..init(ctx);
+  // The committer's cycle: press (down), let the charge fill over ~0.75s of
+  // [update] ticks (charge accrues while held — no positional holdTick is sent,
+  // so NO drag registers and the kid-safe nearest-rival aim is the EARNED
+  // fallback), then release (up). A brief gap, then repeat. Sending no drag is
+  // deliberate: a holdTick would carry a normPos that reads as a thumb-drag to a
+  // fixed screen point, which is NOT the auto-aim path we want to exercise.
+  const holdFrames = 45; // ~0.75s of charge accrual (full charge is ~0.6s)
+  const gapFrames = 16; // clear the ~0.24s dash cooldown before the next press
+  const cycle = holdFrames + gapFrames;
+  var n = 0;
+  while (g.status != MiniGameStatus.finished && n++ < _maxFrames) {
+    // SPAMMER: instant down then up, same frame, every frame, no aim, no hold.
+    g.onInput(PlayerInput.down(blindId));
+    g.onInput(PlayerInput(playerId: blindId, phase: InputPhase.up));
+    // COMMITTER: down → (charge fills during update) → up. No drag.
+    final phase = n % cycle;
+    if (phase == 0) {
+      g.onInput(PlayerInput.down(skilledId));
+    } else if (phase == holdFrames) {
+      g.onInput(PlayerInput(playerId: skilledId, phase: InputPhase.up));
+    }
+    g.update(1 / _fps);
+  }
+  return g;
+}
+
 void main() {
   test('bumper balls finishes with all bots and ranks everyone', () {
     final g = _build(4, 7);
@@ -212,6 +266,95 @@ void main() {
     expect(() => g.render(canvas, size), returnsNormally);
     _runToFinish(g);
     expect(() => g.render(canvas, size), returnsNormally);
+  });
+
+  // ── DESIGN LAW: button-spam must LOSE to skilled, committed, aimed play ──────
+
+  test('SPAM LOSES: a blind every-frame dasher (no aim, no hold) finishes BELOW '
+      'a committer who holds to charge an aimed dash — fewer KOs and never wins, '
+      'across seeds and regardless of spawn slot', () {
+    // The headline guarantee of the rework. Both styles are HUMAN-driven in the
+    // same deterministic round against identical bots (slots 2..3), so the only
+    // difference is HOW each plays:
+    //   * blind  = down→up every frame: charge≈0 → no earned nearest-aim, a
+    //              stale whiffing aim, the charge-root that traps it, and
+    //              commit-gated knockback that can't eject. It cannot bank
+    //              ring-outs; it self-rings on the closing edge instead (a
+    //              NEGATIVE score is allowed and expected).
+    //   * skilled = down, hold to full charge, release: unlocks the kid-safe
+    //              nearest-rival aim AND a fully committed dash → real KOs.
+    // For EVERY trial the spammer can NEVER take first; ACROSS seeds the
+    // committer must STRICTLY bank more total ring-outs AND out-score the spammer
+    // in the clear majority of trials. We run both slot orderings so the win is
+    // the BEHAVIOR (commit + aim), not a favourable spawn position.
+    var skilledScoreTotal = 0.0;
+    var blindScoreTotal = 0.0;
+    var skilledStrictWins = 0;
+    var trials = 0;
+    for (final seed in const [1, 7, 13, 21, 99]) {
+      for (final swap in const [false, true]) {
+        final blindId = swap ? 1 : 0;
+        final skilledId = swap ? 0 : 1;
+        final g = _runSpamVsSkill(seed, blindId: blindId, skilledId: skilledId);
+        expect(g.status, MiniGameStatus.finished);
+
+        final scores = g.winResult!.finalScores;
+        final blindScore = (scores[blindId] ?? 0).toDouble();
+        final skilledScore = (scores[skilledId] ?? 0).toDouble();
+
+        // Per trial the LAW: a blind every-frame dasher can NEVER take first.
+        // (In a chaotic respawn brawl a bot can occasionally edge the committer
+        // at a single seed — both behind bots — so we do NOT force a strict
+        // per-seed committer>=spammer rank; we prove the spammer never wins here
+        // and that the committer STRICTLY DOMINATES in aggregate below.)
+        expect(
+          g.winResult!.ranking.indexOf(blindId),
+          greaterThan(0),
+          reason: 'seed $seed swap=$swap: a blind every-frame dasher WON',
+        );
+
+        skilledScoreTotal += skilledScore;
+        blindScoreTotal += blindScore;
+        if (skilledScore > blindScore) skilledStrictWins++;
+        trials++;
+      }
+    }
+    // ACROSS seeds the committer must STRICTLY dominate: more total ring-outs…
+    expect(
+      skilledScoreTotal,
+      greaterThan(blindScoreTotal),
+      reason: 'committer total ($skilledScoreTotal) did not beat the spammer '
+          'total ($blindScoreTotal) — button-spam is competitive!',
+    );
+    // …and out-score the spammer outright in the clear majority of trials.
+    expect(
+      skilledStrictWins * 2,
+      greaterThan(trials),
+      reason: 'committer out-scored the spammer in only $skilledStrictWins of '
+          '$trials trials',
+    );
+  });
+
+  test('SPAM NEVER WINS: a blind dasher never finishes 1st in a mixed round '
+      '(against a committer + bots), across seeds and spawn slots', () {
+    // The robust corollary of the design law: whatever the seed, button-mashing
+    // cannot take the round. A blind dasher (charge≈0, no aim, commit-gated
+    // knockback) must never end up [ranking.first]. This is deliberately a
+    // weaker, flake-proof claim than an exact score bound (a stray floored bump
+    // could nudge a rim-teetering bot once) — but it is the guarantee that
+    // matters for the table: skill, not flailing, wins.
+    for (final seed in const [1, 7, 13, 21, 99, 123, 256]) {
+      for (final swap in const [false, true]) {
+        final blindId = swap ? 1 : 0;
+        final skilledId = swap ? 0 : 1;
+        final g = _runSpamVsSkill(seed, blindId: blindId, skilledId: skilledId);
+        expect(
+          g.winResult!.ranking.first,
+          isNot(blindId),
+          reason: 'seed $seed swap=$swap: a blind dasher WON the round',
+        );
+      }
+    }
   });
 
   group('StarController (chaos pickup)', () {

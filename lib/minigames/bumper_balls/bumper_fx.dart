@@ -29,12 +29,41 @@ class BallState {
   double invuln = 0; // post-respawn grace, seconds (no KO either way)
   int lastAttacker = -1; // id of the ball that last bumped this one (-1 none)
   double attackerAge = 0; // seconds since [lastAttacker] was recorded
+  // ── Commit gate (anti-luck-launch) ──
+  // Charge (0..1) of this ball's most recent dash, decaying over a short window.
+  // Read at contact time so only a COMMITTED (charged) dash transfers full eject
+  // knockback — a blind uncharged nudge (or a stale carom) cannot luck-launch a
+  // rival out. (Mirrors Sumo's shoveCharge.)
+  double bumpCharge = 0;
+  double _bumpChargeAge = 0;
 
   BallState({required this.aim});
 
   bool get ready => _cooldown <= 0;
   bool get buffed => buff > 0;
   bool get invulnerable => invuln > 0;
+
+  /// Window (seconds) over which [bumpCharge] stays meaningful after a dash —
+  /// long enough that a committed rocket still counts when it CONNECTS (the body
+  /// usually crosses the gap within this window, especially while it keeps
+  /// momentum), but short enough that a body kept fast only by later collision
+  /// carries is treated as incidental, not an aimed launch.
+  static const double _bumpChargeWindow = 0.7;
+
+  /// The freshness-weighted charge of the last dash (0..1). Fades to 0 over
+  /// [_bumpChargeWindow] so only a ball actively mid-commit counts as committed.
+  double get committedCharge {
+    if (_bumpChargeAge >= _bumpChargeWindow) return 0;
+    final f = 1.0 - (_bumpChargeAge / _bumpChargeWindow);
+    return (bumpCharge * f).clamp(0.0, 1.0);
+  }
+
+  /// Record the charge of a just-fired dash so contact knockback can tell a
+  /// committed launch from an incidental bump.
+  void markBump(double charge) {
+    bumpCharge = charge.clamp(0.0, 1.0);
+    _bumpChargeAge = 0;
+  }
 
   /// True while the ball is in its rocket-dash window (keeps momentum, caroms
   /// off rivals) — drives a hotter trail/aura so the table sees the launch.
@@ -54,6 +83,7 @@ class BallState {
     if (launch > 0) launch = math.max(0, launch - dt);
     if (invuln > 0) invuln = math.max(0, invuln - dt);
     attackerAge += dt;
+    _bumpChargeAge += dt;
     if (squash != 0) {
       final relax = squashDecayPerSec * dt;
       squash = squash > 0

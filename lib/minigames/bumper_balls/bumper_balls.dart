@@ -31,7 +31,18 @@ import 'bumper_render.dart';
 ///    momentum and stays bouncy for ~1s, so you carom off rivals (elastic
 ///    caroms) to knock them into the edge while you ricochet on — a real
 ///    "trick shot" decision instead of one dead-stop nudge.
-///  * A quick TAP with no drag fires at the nearest rival (a kid-safe default).
+///  * A committed HOLD-and-release with no drag fires at the nearest rival (a
+///    kid-safe default that is EARNED by holding past [_autoAimMinCharge]). A
+///    blind instant tap-mash does NOT get this assist: it fires in the ball's
+///    stale aim with no retarget, so flailing whiffs and self-rings.
+///
+/// WHY SPAM LOSES (the design law): a KO ejection requires an AIMED + CHARGED
+/// dash. Charging briefly ROOTS the ball ([_chargeRootRetain]) so a whiffed
+/// charge is punishable; contact knockback that ejects a rival scales with the
+/// attacker's COMMITTED charge ([_committedCharge]) so a weak/uncharged bump or a
+/// stale carom can shove but never luck-launch; and only a committed charge arms
+/// the momentum-keep rocket. A blind dasher out-scores nobody and self-rings on
+/// the shrinking edge; an aimer who banks rivals into the rim wins.
 ///
 /// Feel: a slick-but-grippy floor so bumps carry without instantly ejecting an
 /// idle ball; elastic caroms (PushArena) plus a speed- and head-on-scaled
@@ -83,6 +94,18 @@ class BumperBalls extends MiniGameBase {
   // side) from the ball before it counts as a deliberate aim; a smaller wiggle
   // is treated as a no-drag tap (→ aim at nearest, a kid-safe default).
   static const double _aimDragDeadzone = 0.018;
+  // ── COMMIT GATE (the design law: aim + charge, or whiff/self-ring) ───────────
+  // The kid-safe "tap aims at the nearest rival" auto-assist is EARNED by
+  // committing to a hold: only a release whose charge reached this threshold
+  // gets the nearest-target fallback. An instant down→up MASH (no hold, no drag)
+  // fires in the ball's *last committed* aim with NO retarget, so blind tap-spam
+  // sprays stale-direction dashes that whiff — and self-ring on the closing edge
+  // when the stale aim faces the rim. (Mirrors Sumo's earned auto-aim.)
+  static const double _autoAimMinCharge = 0.18;
+  // While charging, retain only this share of speed per 1/60s — a near-root so a
+  // whiffed charge is punishable (the ball is briefly a sitting duck and cannot
+  // mash its way across the platform). A real hold-to-commit COSTS position.
+  static const double _chargeRootRetain = 0.62;
 
   // ── Rocket dash (the bumper differentiator) ─────────────────────────────────
   // A charged release tags the ball "launched": for [_launchSec] the game
@@ -91,7 +114,11 @@ class BumperBalls extends MiniGameBase {
   // ricochets on — instead of one dead-stop nudge. Only a real charge arms it.
   static const double _launchSec =
       1.0; // momentum-keep window after a charged bump
-  static const double _launchChargeMin = 0.35; // charge needed to arm a rocket
+  // Arm the momentum-keep ROCKET only on a COMMITTED charge (== the contact
+  // commit gate), so an under-committed dash both whiffs its eject bonus AND
+  // dead-stops on contact (no fast carom) — a blind/weak dash cannot keep speed
+  // to luck-launch a rival. Skill (a real hold) is what buys the trick-shot.
+  static const double _launchChargeMin = 0.5; // == _committedCharge
   static const double _launchFrictionRetain =
       0.992; // per-1/60s speed kept while launched
   static const double _launchMaxSpeed =
@@ -108,6 +135,14 @@ class BumperBalls extends MiniGameBase {
   static const double _squashDecayPerSec = 3.2; // how fast squash relaxes
   static const double _impactRingLifeSec = 0.32;
   static const double _impactRingMaxFactor = 2.4; // ring max radius / body R
+  // ── COMMIT GATE on contact knockback (the anti-luck-launch rule) ─────────────
+  // An UNCHARGED bump (below [_committedCharge]) transfers only
+  // [_weakHitKnockbackFloor] of its eject impulse, so a weak/incidental nudge —
+  // or a fast carom that wasn't an aimed commit — can shove a rival but cannot
+  // luck-launch them off the ring. Only a committed (charged) dash ejects.
+  // Scales linearly to full at [_committedCharge]. (Mirrors Sumo's commit gate.)
+  static const double _weakHitKnockbackFloor = 0.35;
+  static const double _committedCharge = 0.5;
 
   // ── Shrinking platform (sudden death) tuning ────────────────────────────────
   // The shrink does the late-game work: it starts after a grace period (so an
@@ -126,6 +161,10 @@ class BumperBalls extends MiniGameBase {
   static const double _suddenDeathShrinkMul = 2.4; // shrink speed multiplier
   static const double _suddenDeathFloorMul =
       0.82; // tighter floor in sudden death
+  // FINAL-2 SHOWDOWN: in the climax, if EXACTLY two players are tied for the
+  // lead within this KO margin (a genuine race for the win), throw a one-shot
+  // "FINAL TWO!" banner + slow-mo so the table feels the stakes.
+  static const double _showdownMargin = 1.0; // within this many KOs of the lead
 
   // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
   static const double _starRadiusFactor = 0.6; // star R / body R
@@ -174,10 +213,12 @@ class BumperBalls extends MiniGameBase {
   static const double _botSaveCharge = 0.5; // charge used to save off the edge
   static const double _botApproachCharge =
       0.06; // light nudge to close distance
-  static const double _botShoveChargeMin =
-      0.25; // close-range charged shove min
-  static const double _botShoveChargeMax =
-      0.55; // close-range charged shove max
+  // Charge band for a close-range bot dash, scaled by accuracy in [_botDecide]
+  // so the COMMIT GATE makes a real skill gradient: a HARD bot reliably clears
+  // [_committedCharge] (lands ejects), an EASY bot stays under it (weak shoves
+  // that rarely KO — beatable by a human who aims charged dashes).
+  static const double _botShoveChargeMin = 0.25; // floor of the band
+  static const double _botShoveChargeMax = 0.7; // hard-bot reach (> commit gate)
 
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _accent = Color(0xFF5FE0FF); // neon platform rim accent
@@ -213,6 +254,8 @@ class BumperBalls extends MiniGameBase {
 
   late StarController _stars;
   bool _suddenDeathAnnounced = false;
+  bool _showdownAnnounced = false; // one-shot: the FINAL-2 KO-race callout
+  bool _winnerCheered = false; // one-shot: the leader cheers when time expires
 
   /// Ambient energy mote positions (deterministic; drift handled at render).
   final List<Offset> _motes = <Offset>[];
@@ -312,10 +355,17 @@ class BumperBalls extends MiniGameBase {
         if (s.charging) {
           s.charging = false;
           _applyDragAim(input, body, s); // final flick can still steer
-          // Player-chosen aim wins; with no drag, fall back to nearest (kids).
+          // Aim resolution (the heart of the skill gate):
+          //  * a thumb-chosen drag aim ALWAYS wins (full agency); else
+          //  * the kid-safe nearest-rival auto-assist is unlocked ONLY by a
+          //    committed hold (charge >= [_autoAimMinCharge]); else
+          //  * a pure instant down→up MASH keeps the ball's *last* aim with NO
+          //    retarget — so blind tap-spam sprays stale-direction dashes that
+          //    whiff (and self-ring when the stale aim faces the closing edge).
+          final earnedAssist = s.charge >= _autoAimMinCharge;
           final aim = s.hasDragAim
               ? s.aim
-              : (_aimAtNearest(input.playerId) ?? s.aim);
+              : (earnedAssist ? (_aimAtNearest(input.playerId) ?? s.aim) : s.aim);
           _commitDash(input.playerId, body, aim, s.charge);
           s.charge = 0;
           s.hasDragAim = false;
@@ -412,17 +462,30 @@ class BumperBalls extends MiniGameBase {
 
   /// Fill charge while held, relax squash, age the trail + launch window and
   /// recover cooldown — all frame-rate independent. The aim is NOT touched here:
-  /// it is owned by the player's drag (see [_applyDragAim]). While charging with
-  /// no drag yet, preview the nearest-opponent fallback so the telegraph the
-  /// player sees matches where a release would actually fire.
+  /// it is owned by the player's drag (see [_applyDragAim]).
+  ///
+  /// Two skill gates run here every charging frame:
+  ///  * CHARGE-ROOT: a charging ball is slowed to a near-stop ([_chargeRootRetain])
+  ///    so committing to a hold COSTS position — a whiffed/mashed charge leaves
+  ///    the ball a sitting duck instead of skating across the platform.
+  ///  * EARNED nearest-preview: the telegraph only snaps to the nearest rival
+  ///    once the hold has earned the auto-assist ([_autoAimMinCharge]); below
+  ///    that it holds the stale aim, so an instant tap that releases before
+  ///    committing fires unaimed (the skill gate is honest, not a free retarget
+  ///    on the very first flick frame).
   void _tickBallStates(double dt) {
     for (final entry in _ball.entries) {
       final s = entry.value;
       if (_isAlive(entry.key) && s.charging) {
         s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
-        if (!s.hasDragAim) {
+        if (!s.hasDragAim && s.charge >= _autoAimMinCharge) {
           final a = _aimAtNearest(entry.key);
           if (a != null) s.aim = a;
+        }
+        final body = _bodyOf(entry.key);
+        if (body != null && body.vel != Offset.zero) {
+          final retain = math.pow(_chargeRootRetain, dt * 60.0).toDouble();
+          body.vel = body.vel * retain;
         }
       }
       s.tick(dt, _squashDecayPerSec);
@@ -471,17 +534,20 @@ class BumperBalls extends MiniGameBase {
     if (s.invulnerable) return; // just respawned — settle before engaging
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return; // hesitate / mistake
 
-    final err =
-        (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
+    final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    final err = (1.0 - acc) * _botAimErrorRad;
 
-    // Near the edge: save self with a moderate bump back toward the centre.
+    // Near the edge: a competent bot saves itself with a dash back toward the
+    // centre — but a LOW-ACCURACY (easy) bot mis-judges the save by [err], so it
+    // can over-commit at an angle and fling ITSELF off the rim. Skill (accuracy)
+    // buys a clean recovery; a weak bot self-rings, exactly the beatable
+    // behaviour the human exploits. The save is charged enough to carry inward.
     if (_isNearEdge(self)) {
-      final aim = math.atan2(
-        _center.dy - self.pos.dy,
-        _center.dx - self.pos.dx,
-      );
+      final aim =
+          math.atan2(_center.dy - self.pos.dy, _center.dx - self.pos.dx) +
+          ctx.rng.jitter(err);
       s.aim = aim;
-      _commitDash(playerId, self, aim, _botSaveCharge);
+      _commitDash(playerId, self, aim, _botSaveCharge + 0.25 * acc);
       return;
     }
 
@@ -493,11 +559,18 @@ class BumperBalls extends MiniGameBase {
 
     final to = targetPos - self.pos;
     final aim = math.atan2(to.dy, to.dx) + ctx.rng.jitter(err);
-    // Far → a light nudge to close in; close → a charged shove into the rival.
+    // Far → a light nudge to close in; close → a charged dash into the rival.
+    // The attack charge scales with accuracy so the COMMIT GATE creates a real
+    // skill gradient: a HARD bot (high accuracy) charges past [_committedCharge]
+    // and lands true ring-out launches, while an EASY bot mostly stays under it
+    // — its weak, mis-aimed dashes shove but rarely eject, so a human who aims
+    // charged dashes out-KOs it. (Mirrors the human's own hold-to-commit cost.)
     final charge = to.distance > _bodyRadius * _botCloseRangeFactor
         ? _botApproachCharge
-        : (ctx.botProfile.accuracy *
-                  ctx.rng.range(_botShoveChargeMin, _botShoveChargeMax))
+        : (_botShoveChargeMin +
+                  (_botShoveChargeMax - _botShoveChargeMin) *
+                      acc *
+                      ctx.rng.range(0.7, 1.0))
               .clamp(0.0, 1.0);
     s.aim = aim;
     _commitDash(playerId, self, aim, charge);
@@ -520,6 +593,9 @@ class BumperBalls extends MiniGameBase {
     _arena.impulse(playerId, dir * magnitude);
     _arena.impulse(playerId, -dir * magnitude * _selfPushback);
 
+    // Contact knockback reads this: only a COMMITTED (charged) dash ejects a
+    // rival; a blind uncharged tap marks ~0 and so cannot luck-launch anyone.
+    s.markBump(charge);
     s.fire(_cooldownSec);
     s.trail = DashTrail(dir: dir, life: _trailLifeSec);
     s.stretchDir = dir;
@@ -623,10 +699,25 @@ class BumperBalls extends MiniGameBase {
     final headOn = (attackerDir.dx * toVictim.dx + attackerDir.dy * toVictim.dy)
         .clamp(0.0, 1.0);
     final speedFactor = (speed / _contactSpeedRef).clamp(0.0, 1.4);
+    // COMMIT GATE: a blind, uncharged bump transfers only [_weakHitKnockbackFloor]
+    // of its eject impulse; a fully committed (charged) dash transfers the full
+    // hit. So a rival is launched off the ring only by an *aimed, charged* dash —
+    // an incidental bump or a stale carom can shove someone but not eject them,
+    // which is what makes button-spam unable to luck-KO. A star-buffed attacker
+    // always counts as committed (the buff IS the commitment).
+    final atkS = _ball[attacker.id];
+    final commit = (atkS?.buffed ?? false)
+        ? 1.0
+        : (atkS == null
+              ? 1.0
+              : (atkS.committedCharge / _committedCharge).clamp(0.0, 1.0));
+    final commitFactor =
+        _weakHitKnockbackFloor + (1.0 - _weakHitKnockbackFloor) * commit;
     final bonus =
         _ringRadius *
         _contactBonusScale *
         speedFactor *
+        commitFactor *
         (1.0 + _headOnExtra * headOn);
     _arena.impulse(victim.id, toVictim * bonus);
 
@@ -901,11 +992,82 @@ class BumperBalls extends MiniGameBase {
         size: 38,
       );
     }
+    // FINAL-2 SHOWDOWN: once in the climax, the FIRST time the lead narrows to a
+    // genuine two-player KO race, slam a cinematic "FINAL TWO!" banner + slow-mo
+    // so the decisive stretch reads as a duel for the win. One-shot per round.
+    if (!_showdownAnnounced &&
+        _isSuddenDeath &&
+        ctx.players.length > 2 &&
+        _isTwoWayShowdown()) {
+      _showdownAnnounced = true;
+      _juice.slowMo(dur: 0.45, scale: 0.4);
+      _juice.flashScreen(_accent, strength: 0.35);
+      _juice.bigBanner('FINAL TWO!', color: _accent);
+      _juice.shake.medium();
+    }
     // SCORED BRAWL: the round runs the FULL limit (KO'd balls respawn), so it
     // NEVER ends early just because only one is on the platform. Most ring-outs
     // wins (ties broken by the engine's stable order).
-    if (_elapsed >= _timeLimit) finishByScore();
+    if (_elapsed >= _timeLimit) _finishScored();
   }
+
+  /// Bell time: the leader (most KOs, ties → lowest id) gets a one-shot
+  /// celebration — confetti rain + a WINNER banner + a big-moment punch on them
+  /// — so the round ends on a cheer instead of a freeze. (A lone-practice round
+  /// skips the multiplayer banner fanfare.)
+  void _finishScored() {
+    if (!_winnerCheered) {
+      _winnerCheered = true;
+      final leader = _leaderId();
+      _juice.confetti(
+        _size,
+        colors: [_accent, _starColor, _colorOfLeader(leader)],
+      );
+      if (ctx.players.length > 1) {
+        final at = (leader != null ? _bodyOf(leader)?.pos : null) ?? _center;
+        _juice.bigMoment(at, _colorOfLeader(leader), banner: 'WINNER!');
+      }
+    }
+    finishByScore();
+  }
+
+  /// True when EXACTLY two players are within [_showdownMargin] KOs of the top
+  /// score and that top score is a real lead (> 0) — a genuine two-way race for
+  /// the win, the cue for the FINAL-2 showdown beat. (3+ contenders is a melee,
+  /// not a showdown; 0-0 is not yet a race.)
+  bool _isTwoWayShowdown() {
+    var top = double.negativeInfinity;
+    for (final p in ctx.players) {
+      final s = _ball[p.id]?.koScore ?? 0;
+      if (s > top) top = s;
+    }
+    if (top <= 0) return false;
+    var contenders = 0;
+    for (final p in ctx.players) {
+      final s = _ball[p.id]?.koScore ?? 0;
+      if (top - s <= _showdownMargin) contenders++;
+    }
+    return contenders == 2;
+  }
+
+  /// The id with the highest [BallState.koScore] (ties → lowest id), or null if
+  /// there are no players. Used for the bell fanfare so confetti/banner match
+  /// the winner.
+  int? _leaderId() {
+    int? best;
+    var bestScore = double.negativeInfinity;
+    for (final p in ctx.players) {
+      final s = _ball[p.id]?.koScore ?? 0;
+      if (s > bestScore) {
+        bestScore = s;
+        best = p.id;
+      }
+    }
+    return best;
+  }
+
+  Color _colorOfLeader(int? id) =>
+      id == null ? _accent : _colorOf(id);
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
