@@ -100,12 +100,21 @@ class SnakeArena extends MiniGameBase {
   static const double _shrinkRingSec = 1.4; // seconds per closed border ring
   static const int _shrinkRingsMax = 6; // hard cap on closed rings per side
 
+  // ── Drama cue: FINAL TWO (down to the last pair) ─────────────────────────────
+  // The instant a 3+-snake round narrows to EXACTLY two survivors, fire a
+  // one-shot cinematic beat — a lingering slow-mo + gold flash + "FINAL TWO!"
+  // banner — so the head-to-head climax is felt before one of them is cut off.
+  // Skipped in a 1- or 2-snake start (no "down to the last two" there).
+  static const double _showdownSlowMoSec = 0.7; // lingering dip on the FINAL-2 cue
+  static const Color _showdownTint = Color(0xFFFFD23C); // gold drama accent
+
   // ── Chaos: the GOLDEN pellet (a swingy bonus any snake can grab) ─────────────
   static const double _goldenChance = 0.16; // odds a fresh pellet is golden
   static const int _goldenGrow = 4; // extra segments a golden pellet grants
   static const int _goldenScore = 3; // score a golden pellet is worth
   static const int _goldenEatSparks = 18; // bigger burst on a golden eat
   static const Color _goldFx = Color(0xFFFFD24A); // golden pellet / cue accent
+  static const Color _sdFlash = Color(0xFFFF5A3C); // SUDDEN DEATH flash (hot red)
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   // With only two pellets, a stronger food pull makes bots converge on the same
@@ -141,6 +150,7 @@ class SnakeArena extends MiniGameBase {
   final List<Cell> _food = [];
   final Set<Cell> _golden = <Cell>{}; // which active pellets are golden
   bool _suddenDeathAnnounced = false; // the closing-arena cue fired once
+  bool _showdownAnnounced = false; // the one-shot FINAL-2 head-to-head cue fired
   bool _winnerCelebrated = false; // the one-shot winner bigMoment fired
 
   /// The player id of the round's winner once resolved (drives a bright pulse on
@@ -332,6 +342,7 @@ class SnakeArena extends MiniGameBase {
     _tickPendingBursts(dt); // drain staggered death sparks (visual break-apart)
 
     _maybeAnnounceSuddenDeath();
+    _maybeAnnounceShowdown(); // FINAL-2 head-to-head drama cue (one-shot)
     _cullClosedRing();
     if (status == MiniGameStatus.finished) return;
     _driveBots(sdt);
@@ -620,7 +631,10 @@ class SnakeArena extends MiniGameBase {
         golden ? '+$_goldenScore' : '+1', burstColor,
         size: golden ? 30 : 22);
     if (golden) {
+      // A golden grab is a swingy event: medium shake + a quick camera-punch so
+      // the chomp reads as a satisfying POP, not just a bigger spark.
       _juice.shake.medium();
+      _juice.cameraPunch(p);
     } else {
       _juice.shake.light();
     }
@@ -634,7 +648,30 @@ class SnakeArena extends MiniGameBase {
     _suddenDeathAnnounced = true;
     final center = Offset(_lastSize.width / 2, _lastSize.height * 0.42);
     _juice.popup(center, 'SUDDEN DEATH!', _goldFx, size: 44);
+    // TENSION CUE: a one-shot slow-mo dip + a hot wall-colored flash the instant
+    // the arena starts closing, so the squeeze hits with cinematic weight (the
+    // throbbing red SUDDEN-DEATH border + wide alert eyes then carry it).
+    _juice.slowMo(dur: _showdownSlowMoSec);
+    _juice.flashScreen(_sdFlash, strength: 0.45);
     _juice.shake.heavy();
+    _wallFlare = 1.0;
+  }
+
+  /// FINAL TWO: the instant a 3+-snake round narrows to EXACTLY two survivors,
+  /// fire a one-shot cinematic beat — a lingering slow-mo + gold flash + a
+  /// "FINAL TWO!" banner + a medium shake — so the head-to-head climax lands
+  /// before one snake cuts the other off. Guarded so a still-crowded field (3+
+  /// alive) never triggers, and skipped entirely for a 1- or 2-snake start
+  /// (there is no "down to the last two" to announce).
+  void _maybeAnnounceShowdown() {
+    if (_showdownAnnounced) return;
+    if (_snakes.length < 3) return; // need 3+ starters for "down to the last two"
+    if (_aliveCount() != 2) return;
+    _showdownAnnounced = true;
+    _juice.slowMo(dur: _showdownSlowMoSec);
+    _juice.flashScreen(_showdownTint, strength: 0.4);
+    _juice.bigBanner('FINAL TWO!', color: _showdownTint);
+    _juice.shake.medium();
     _wallFlare = 1.0;
   }
 
@@ -749,6 +786,11 @@ class SnakeArena extends MiniGameBase {
     if (winner == null) return;
     final at = _cellCenter(winner.head, _lastSize);
     _juice.bigMoment(at, winner.color, banner: 'WINNER!');
+    // CHEER: a full confetti shower tinted to the champion's neon + a celebratory
+    // center banner so the victory reads as a party, not just a flash. (The
+    // bigMoment already fired the burst/slow-mo/flash; this layers the festivity.)
+    _juice.confetti(_lastSize, colors: [winner.color]);
+    _juice.bigBanner('SNAKE CHAMP!', color: winner.color);
     _wallFlare = 1.0;
   }
 

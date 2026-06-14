@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -206,4 +207,121 @@ void main() {
     expect(near, greaterThan(trials ~/ 3),
         reason: 'biased spawns ($near/$trials) cluster near the leader');
   });
+
+  // ── DESIGN LAW: blind spam (random turn every frame) must LOSE ────────────────
+
+  test('ANTI-SPAM: a blind random-turner never beats a routing hard bot', () {
+    // The design law: button-spam / no-skill play MUST LOSE to skilled play. We
+    // pit two snakes head-to-head and differ ONLY in input strategy:
+    //   * Player 0 SPAMS: a random side tap EVERY frame (~11 per logical step), so
+    //     its heading is re-randomized into thrash — it jitters into a wall or its
+    //     own body within a second or two.
+    //   * Player 1 is a HARD bot: it flood-fills for open space, routes to food and
+    //     dodges head-ons — i.e. it routes + survives (the "planner" reference).
+    // The spammer must NOT win a single seed, and the round must always resolve.
+    // Deterministic: the game is seeded by ctx.rng and the blind input by a fixed
+    // per-seed math.Random, so the whole match replays identically.
+    const seeds = [1, 3, 7, 11, 13, 17, 21, 34, 42, 99];
+    var spamWins = 0;
+    var botWins = 0;
+    for (final seed in seeds) {
+      final g = SnakeArena()
+        ..init(MiniGameContext(
+          players: [
+            PlayerSlot.defaults(0), // human spammer (random turn every frame)
+            PlayerSlot.defaults(1, isBot: true), // routing hard bot
+          ],
+          arena: const Size(800, 1200),
+          rng: SeededRng(seed),
+          zones: ZoneLayout.forPlayers(2),
+          difficulty: BotDifficulty.hard,
+        ));
+      final spamRng = math.Random(seed * 131 + 1);
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+        g.update(1 / 60);
+        _spamTurnBlindly(g, 0, spamRng); // blind random side tap every frame
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      final winner = g.winResult!.ranking.first;
+      if (winner == 0) {
+        spamWins++;
+      } else if (winner == 1) {
+        botWins++;
+      }
+    }
+    // Blind thrashing must never win against a snake that routes + survives.
+    expect(spamWins, 0,
+        reason: 'a blind random-turner won $spamWins/${seeds.length} rounds — '
+            'spam must never beat skilled routing');
+    // And the routing bot must in fact dominate (sanity: it actually wins them).
+    expect(botWins, seeds.length,
+        reason: 'the routing hard bot should win every seed ($botWins/'
+            '${seeds.length})');
+  });
+
+  test('ANTI-SPAM: a blind random-turner crashes early (solo, dies fast)', () {
+    // Proof the difficulty INTERPOSES: with no deliberate steering, a snake that
+    // turns randomly every frame thrashes itself into a wall / its own body almost
+    // immediately. Solo (so nothing else can end the round) the average survival
+    // must be a tiny slice of the 35s round — i.e. blind play self-destructs.
+    const seeds = [11, 22, 33, 44, 55, 66, 77, 88];
+    var totalSec = 0.0;
+    var longestLen = 0;
+    for (final seed in seeds) {
+      final g = SnakeArena()..init(ctxHumanSolo(seed));
+      final spamRng = math.Random(seed * 17 + 3);
+      var frames = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+        g.update(1 / 60);
+        _spamTurnBlindly(g, 0, spamRng);
+      }
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      totalSec += frames / 60.0;
+      final len = g.scores.of(0).toInt();
+      if (len > longestLen) longestLen = len;
+    }
+    final avgSec = totalSec / seeds.length;
+    // A deliberate player survives the whole ~35s and grows long; blind thrash
+    // dies in a fraction of that. Generous ceiling (well under the round) so the
+    // claim is robust, not brittle.
+    expect(avgSec, lessThan(8.0),
+        reason: 'blind random-turner survived ${avgSec.toStringAsFixed(1)}s on '
+            'average — it must crash early');
+    // It also barely grows (it dies before it can eat much).
+    expect(longestLen, lessThan(20),
+        reason: 'a blind turner should never grow long (max len $longestLen)');
+  });
+
+  test('FINAL TWO showdown + winner cheer render without throwing', () {
+    // SPECTACLE: a 4-snake round drops to two survivors (firing the one-shot
+    // FINAL-2 slow-mo/flash/banner) and ends on a winner (confetti + champion
+    // banner). Render must stay no-throw through the whole climax, every frame.
+    final g = SnakeArena()..init(ctxFor(4, 7));
+    final canvas = Canvas(PictureRecorder());
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+      g.update(1 / 60);
+      expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
+    }
+    // One more render after finish (winner cheer / confetti still settling).
+    expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
+  });
+}
+
+/// A 1-player human (non-bot) context — used to measure how a blind random-turner
+/// fares with no help (no bots to end the round for it).
+MiniGameContext ctxHumanSolo(int seed) => MiniGameContext(
+      players: [PlayerSlot.defaults(0)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(seed),
+      zones: ZoneLayout.forPlayers(1),
+    );
+
+/// Blind "spam" play for [id]: a RANDOM side tap every single frame (no reading
+/// of the board), so between two logical steps the heading is flipped ~11 times
+/// and ends up effectively random — the snake thrashes into a wall or itself.
+/// [rng] is a fixed per-seed [math.Random] so the spam stream is deterministic.
+void _spamTurnBlindly(SnakeArena g, int id, math.Random rng) {
+  g.onInput(PlayerInput.down(id, Offset(rng.nextDouble(), 0.5)));
 }
