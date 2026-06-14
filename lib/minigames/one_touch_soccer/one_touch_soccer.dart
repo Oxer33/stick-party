@@ -145,7 +145,7 @@ class OneTouchSoccer extends MiniGameBase {
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botWarmupSec = 1.5; // grace before bots engage
   static const double _botGuardDepthFactor = 0.20; // keeper y offset from wall
-  static const double _botGuardLaneGain = 0.7; // how hard keeper tracks ball x
+  static const double _botGuardLaneGain = 0.5; // how hard keeper tracks ball x
   static const double _botSteerErrorRad = 0.4; // heading jitter at accuracy 0
   static const double _botGoalPushRangeFactor = 5.0; // push toward goal within
   // Outfield DEFENDER (any non-keeper dropping back to protect its net): it
@@ -808,13 +808,16 @@ class OneTouchSoccer extends MiniGameBase {
       return;
     }
 
-    // DEFEND: only drop back when the ball is DEEP in our own zone (near our
-    // goal) and we can't reach it yet — step to a guard slot to pressure and
-    // intercept, recovering at a FULL sprint. Everywhere else the bot PRESSES /
-    // chases the ball to win it and counter, instead of sitting back and ceding
-    // a harmless scrum (the masher can't score through the goal-speed gate, so
-    // there is no reason to camp the net).
-    if (_ballDeepInOwnZone(attacksTop) && !inAttackRange) {
+    // DEFEND: only a side WITHOUT a keeper (a lone striker) drops back to guard
+    // its own net, and only when the ball is DEEP in its zone and out of reach.
+    // On a 2-player side the rear-most is already the keeper (handled above), so
+    // the outfielder must PRESS/attack — otherwise BOTH camp the net and a 2v2
+    // grinds to a goalless stalemate. Everywhere else the bot chases to win the
+    // ball and counter (the masher can't score through the goal-speed gate, so
+    // there is no reason to over-defend).
+    if (_ownCountOf(attacksTop) <= 1 &&
+        _ballDeepInOwnZone(attacksTop) &&
+        !inAttackRange) {
       final guard = SoccerFx.guardHeading(
         attacksTop: attacksTop,
         selfPos: self.pos,

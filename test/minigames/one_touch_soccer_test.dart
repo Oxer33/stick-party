@@ -212,9 +212,9 @@ void main() {
           reason: 'the larger side gets no shot boost');
 
       // The bigger (top) side's keeper is weaker; the short side's keeper is not.
-      expect(g.keeperLaneGainForTest(true), lessThan(0.7),
+      expect(g.keeperLaneGainForTest(true), lessThan(0.5),
           reason: 'the bigger side defends a softer net');
-      expect(g.keeperLaneGainForTest(false), 0.7,
+      expect(g.keeperLaneGainForTest(false), 0.5,
           reason: 'the short side keeper is unchanged');
     });
 
@@ -227,8 +227,8 @@ void main() {
       ]);
       expect(duel.speedFactorForTest(0), 1.0);
       expect(duel.shotFactorForTest(1), 1.0);
-      expect(duel.keeperLaneGainForTest(true), 0.7);
-      expect(duel.keeperLaneGainForTest(false), 0.7);
+      expect(duel.keeperLaneGainForTest(true), 0.5);
+      expect(duel.keeperLaneGainForTest(false), 0.5);
 
       final team = buildRoster([
         for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)
@@ -236,8 +236,8 @@ void main() {
       expect(team.speedFactorForTest(0), 1.0);
       expect(team.speedFactorForTest(1), 1.0);
       expect(team.shotFactorForTest(2), 1.0);
-      expect(team.keeperLaneGainForTest(true), 0.7);
-      expect(team.keeperLaneGainForTest(false), 0.7);
+      expect(team.keeperLaneGainForTest(true), 0.5);
+      expect(team.keeperLaneGainForTest(false), 0.5);
     });
   });
 

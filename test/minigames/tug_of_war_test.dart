@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
@@ -365,5 +366,61 @@ void main() {
     ]);
     expect(even, closeTo(solo, 1e-9),
         reason: 'an even split must not change the pull multiplier');
+  });
+
+  // ── Difficulty balance: skill beats the easy/medium CPU, hard is a challenge ─
+  //
+  // A SKILLED human (one tap per beat, at dead-CENTER for max pull — the optimal
+  // play) on top (id 0) vs ONE bot on the bottom (id 1), across all three tiers.
+  // This is the test the all-bot harness CAN'T do: equal-skill bots tug to a
+  // draw, hiding the difficulty curve. Head-to-head it must show: skill sweeps
+  // easy + medium, and hard is a genuine but beatable challenge.
+  int skilledHumanWins(BotDifficulty diff, {int seeds = 12}) {
+    var wins = 0;
+    for (var s = 1; s <= seeds; s++) {
+      final g = TugOfWar()
+        ..init(MiniGameContext(
+          players: [
+            PlayerSlot.defaults(0), // skilled human, top
+            PlayerSlot.defaults(1, isBot: true), // bot, bottom
+          ],
+          arena: const Size(800, 1200),
+          rng: SeededRng(s * 7 + 1),
+          zones: ZoneLayout.forPlayers(2, mode: GameMode.duel1v1),
+          mode: GameMode.duel1v1,
+          difficulty: diff,
+        ));
+      var tappedThisWindow = false;
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 40) {
+        final open = g.beatWindowOpenForTest;
+        if (!open) tappedThisWindow = false;
+        if (open && !tappedThisWindow && g.beatPrecisionForTest >= 0.9) {
+          g.onInput(PlayerInput.down(0)); // one centered tap per window
+          tappedThisWindow = true;
+        }
+        g.update(1 / 60);
+      }
+      if (g.winResult!.winner == 0) wins++;
+    }
+    return wins;
+  }
+
+  test('difficulty: skilled play sweeps easy/medium and is challenged by hard',
+      () {
+    final easy = skilledHumanWins(BotDifficulty.easy);
+    final medium = skilledHumanWins(BotDifficulty.medium);
+    final hard = skilledHumanWins(BotDifficulty.hard);
+    // Skill must dominate the lower tiers (timing beats a sloppy CPU outright)…
+    expect(easy, greaterThanOrEqualTo(11),
+        reason: 'a clean on-beat human should beat the easy CPU nearly always');
+    expect(medium, greaterThanOrEqualTo(9),
+        reason: 'skill should still win most against the medium CPU');
+    // …and hard must be a real wall: still winnable, but clearly tougher than
+    // medium, so the difficulty setting actually means something.
+    expect(hard, lessThan(medium),
+        reason: 'the hard CPU must be measurably harder than the medium CPU');
+    expect(hard, greaterThan(0),
+        reason: 'hard must remain beatable by perfect timing, not impossible');
   });
 }

@@ -350,6 +350,12 @@ class TugOfWar extends MiniGameBase {
   @visibleForTesting
   bool get beatWindowOpenForTest => _beatInWindow;
 
+  /// Test-only view of how centered the beat is right now (0 = window edge,
+  /// 1 = dead center) so a test can model a SKILLED human that taps at the
+  /// strongest moment, not just anywhere in the window. Not used by gameplay.
+  @visibleForTesting
+  double get beatPrecisionForTest => _beatInWindow ? _beatPrecision : 0.0;
+
   /// 0..1 precision of the current beat position: 1 = dead-center, 0 = window
   /// edge. Drives how strong an on-beat HEAVE is, so aiming for the center beats
   /// slapping the moment you enter the window.

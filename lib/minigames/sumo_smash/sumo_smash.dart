@@ -825,7 +825,10 @@ class SumoSmash extends MiniGameBase {
       }
       return;
     }
-    // Self-ring-out (or stale attacker): no credit, small penalty.
+    // Self-ring-out (or stale attacker): no credit, small penalty. The score may
+    // go NEGATIVE on purpose — that is the anti-spam signal that a blind shover
+    // who rockets itself off the edge has actively LOST ground (the SPAM-LOSES
+    // tests rely on it). The winner is still whoever banked the most KOs.
     if (victim != null) {
       victim.koScore -= _selfRingPenalty;
       setScore(victimId, victim.koScore);
