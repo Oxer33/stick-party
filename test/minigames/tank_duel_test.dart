@@ -327,4 +327,124 @@ void main() {
       expect(c.contains(crate.pos), isFalse);
     });
   });
+
+  // ── THE DESIGN LAW: a blind trigger-masher must LOSE to timed, aimed fire ────
+
+  /// Build a 2p human-vs-human duel (P0 bottom, P1 top) on a shared seed so both
+  /// shooters face the SAME sweep phases, crate board and airdrops — any score
+  /// gap is the SKILL gap, not luck. No bots: both tanks are human-driven by the
+  /// test so [ctx.rng] alone drives the world deterministically.
+  ///
+  /// A SQUARE arena is used on purpose: it makes the two facing tanks symmetric
+  /// (neither gravity-favored the way a top tank firing DOWN would be on a tall
+  /// board), so the round isolates the one variable under test — timed aim vs
+  /// blind mashing — instead of confounding it with edge geometry. A snap shot
+  /// comfortably reaches across this span, so the proof is purely about WHEN you
+  /// loose the scarce shell, not whether it can reach.
+  MiniGameContext duelCtx(int seed) => MiniGameContext(
+        players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1)],
+        arena: const Size(800, 800),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+      );
+
+  /// Drive one shared duel: P0 SKILLED (fires only when the breech is loaded AND
+  /// the sweep is lined up on the solved lead onto the foe), P1 BLIND SPAMMER
+  /// (down+up every single frame, never aiming/charging). The spammer's own rng
+  /// is separate from [ctx.rng] so the sim stays deterministic. Returns the game
+  /// at finish.
+  TankDuel runDuel(int seed) {
+    final g = TankDuel()..init(duelCtx(seed));
+    // Aim tolerance for the skilled release: a tight cone, so P0 only looses a
+    // scarce shell when the sweep actually crosses the firing line (timing it on
+    // the sweep — exactly what the design rewards).
+    const aimTol = 0.06;
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      // P0 SKILLED: wait for a loaded breech, then fire the instant the sweep is
+      // within the cone of the lead angle onto the enemy (a snap, well-aimed).
+      if (g.debugIsLoaded(0)) {
+        final want = g.debugBestAimAngle(0);
+        if (want != null && (g.debugAimAngle(0) - want).abs() <= aimTol) {
+          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down));
+          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+        }
+      }
+      // P1 BLIND SPAMMER: mash the trigger every frame, no aim, no charge. The
+      // reload economy holds it to the same scarce shell budget, and every shell
+      // it does loose flies at whatever angle the sweep happens to sit on.
+      g.onInput(const PlayerInput(playerId: 1, phase: InputPhase.down));
+      g.onInput(const PlayerInput(playerId: 1, phase: InputPhase.up));
+      g.update(1 / 60);
+    }
+    return g;
+  }
+
+  test('DESIGN LAW (per-seed): a blind trigger-masher NEVER wins the duel', () {
+    // On EVERY seed the blind spammer must not finish 1st against a shooter who
+    // times the scarce shot on the sweep. Requiring it across several shared
+    // boards makes the proof robust (not one lucky sweep) and would surface any
+    // real hole in the reload-gated "each shot must count" law.
+    for (final seed in [1, 7, 19, 23, 42, 88]) {
+      final g = runDuel(seed);
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      final rank = g.winResult!.ranking;
+      expect(rank.first, isNot(1),
+          reason: 'seed $seed: blind masher must NOT win ($rank, scores '
+              '${g.winResult!.finalScores})');
+    }
+  });
+
+  test('DESIGN LAW (aggregate): timed aim strictly OUT-HITS blind mashing', () {
+    // Across the shared seeds, the skilled shooter's TOTAL landed hits must
+    // strictly dominate the spammer's. (A single chaotic duel can swing on a
+    // lucky spray, so the strict dominance is asserted in aggregate — the same
+    // shape the sibling chaotic games use.) Also proves the spammer banks SOME
+    // hits (the board isn't degenerate) yet still loses the volume war on
+    // accuracy, not on a lower fire-rate.
+    var skilledHits = 0.0, spamHits = 0.0;
+    var skilledShots = 0, spamShots = 0;
+    for (final seed in [1, 7, 19, 23, 42, 88]) {
+      final g = runDuel(seed);
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      skilledHits += (g.winResult!.finalScores[0] ?? 0).toDouble();
+      spamHits += (g.winResult!.finalScores[1] ?? 0).toDouble();
+      skilledShots += g.debugShotsFired(0);
+      spamShots += g.debugShotsFired(1);
+    }
+    expect(skilledHits, greaterThan(spamHits),
+        reason: 'timed aim must out-hit blind mashing in aggregate '
+            '(skilled=$skilledHits spam=$spamHits)');
+    // Dominance, not a coin-flip edge: aim should clearly beat spray.
+    expect(skilledHits, greaterThan(spamHits * 1.5),
+        reason: 'aimed fire should DOMINATE, not edge out, blind mashing '
+            '(skilled=$skilledHits spam=$spamHits)');
+    // The win is accuracy, NOT volume: the masher gets at least as many shells
+    // off as the skilled shooter (it pulls the trigger far more often), yet
+    // lands fewer — proving the reload economy denies a fire-rate win.
+    expect(spamShots, greaterThanOrEqualTo(skilledShots),
+        reason: 'the masher should loose at least as many shells '
+            '(spam=$spamShots skilled=$skilledShots) — it loses on AIM');
+    expect(spamHits, greaterThan(0),
+        reason: 'sanity: a blind spray still lands the odd lucky shell');
+  });
+
+  test('reload caps fire-rate: a frame-perfect masher fires only a few shells '
+      'per second (no spray)', () {
+    // The lever itself: even pressing down+up EVERY frame for one second, the
+    // breech reload lets only a handful of shells out — not 60. This is what
+    // converts "mash faster" into "each shot must count".
+    final g = TankDuel()..init(duelCtx(5));
+    for (var i = 0; i < 60; i++) {
+      g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down));
+      g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+      g.update(1 / 60);
+    }
+    final shots = g.debugShotsFired(0);
+    expect(shots, greaterThan(0), reason: 'a masher still fires SOME');
+    // ~1 shell per reload (≈0.62s) → about 2 in a second, never a 60-shot spray.
+    expect(shots, lessThanOrEqualTo(4),
+        reason: 'reload must cap a frame-perfect mash to a few shells/s, got '
+            '$shots');
+  });
 }

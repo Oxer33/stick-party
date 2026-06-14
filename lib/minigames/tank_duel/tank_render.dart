@@ -40,6 +40,7 @@ class TankView {
   final double scale; // body scale factor (fits the arena)
   final bool precision; // true while the player holds to charge (fine-tune aim)
   final double charge; // 0..1 charge level while holding (0 = snap/tap)
+  final double reload; // 0..1 breech reload fill (1 = loaded; < 1 = re-arming)
   final double victory; // 0..1 winner-celebration pulse on the hull (0 = none)
 
   const TankView({
@@ -56,6 +57,7 @@ class TankView {
     required this.scale,
     this.precision = false,
     this.charge = 0,
+    this.reload = 1,
     this.victory = 0,
   });
 }
@@ -484,7 +486,51 @@ class TankRenderer {
     _drawTracks(canvas, t, r, side, up);
     _drawHull(canvas, t, r, side, up, fill, flashK);
     _drawTurretAndBarrel(canvas, t, r, fill);
+    // Reload ring (drawn over the turret, under the pips) — only while re-arming,
+    // so the scarce-shot economy is visible: kids see the barrel "filling up"
+    // before it can fire again. A charging shot owns the aim-guide gauge instead.
+    if (t.reload < 0.999 && !t.precision) _drawReloadRing(canvas, t, r);
     _drawHealthPips(canvas, t, r, side, up);
+  }
+
+  /// A re-arm arc sweeping around the turret as the breech reloads: a dim backing
+  /// ring + a hot arc that fills 0→full, flashing bright as it tops off. Reads as
+  /// "the gun is loading" so a player learns to wait for the shot, not mash.
+  static void _drawReloadRing(Canvas canvas, TankView t, double r) {
+    final pivot = _turretPivot(t);
+    final ringR = r * (_turretR + 0.34);
+    final frac = t.reload.clamp(0.0, 1.0);
+    final rect = Rect.fromCircle(center: pivot, radius: ringR);
+    // Dim backing ring.
+    canvas.drawCircle(
+      pivot,
+      ringR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, r * 0.1)
+        ..color = _black.withValues(alpha: 0.35),
+    );
+    // Hot fill arc from straight up; warms cool→hot and brightens as it tops off.
+    final hot = _blend(_muzzleCore, _white, frac * 0.5);
+    canvas.drawArc(
+      rect,
+      -math.pi / 2,
+      math.pi * 2 * frac,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, r * 0.1)
+        ..strokeCap = StrokeCap.round
+        ..color = hot.withValues(alpha: (0.55 + 0.4 * frac).clamp(0.0, 1.0)),
+    );
+    // A bright "loaded!" tick blooms at the top as the ring closes.
+    if (frac > 0.92) {
+      canvas.drawCircle(
+        pivot.translate(0, -ringR),
+        r * 0.12,
+        Paint()..color = _white.withValues(alpha: (frac - 0.92) / 0.08),
+      );
+    }
   }
 
   /// A bright celebration halo + ring under/around the winning tank's turret so

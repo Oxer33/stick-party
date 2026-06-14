@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/fx/particles.dart';
 import '../../art/stick/stick_figure.dart';
@@ -29,6 +31,16 @@ import 'tank_render.dart';
 ///    arc-vs-direct choice — and charging keeps your finger down while enemies
 ///    keep firing, so a big lob EXPOSES you. (A one-frame down→up still fires a
 ///    snap shot, so tap-to-fire is intact.)
+///
+/// WHY FIRE-RATE CAN'T WIN (the design law): every shot drops the breech into a
+/// RELOAD — the barrel is dead for [_reloadSec] and no new shot (or charge) can
+/// begin until the shell is rammed home. So you get only a handful of shells a
+/// round and EACH ONE MUST COUNT. A blind tapper who mashes every frame just
+/// bounces off the reload and looses each scarce shell at whatever random angle
+/// the sweep happens to sit on — it sprays and mostly misses. A player who waits
+/// out the reload, then RELEASES on the sweep's line-up (and charges to arc over
+/// a crate) lands far more of the same few shells. Timing the scarce shot beats
+/// mashing it: spamming the trigger can never out-damage aimed fire.
 ///
 /// Feel / depth:
 ///  * Each tank has 3 HP with on-tank health pips, a white hit-flash and a
@@ -116,6 +128,21 @@ class TankDuel extends MiniGameBase {
   static const double _tapMaxSec = 0.12; // down→up faster than this = a pure tap
   static const double _chargeFullSec = 0.9; // hold this long to reach full power
 
+  // ── Reload economy (THE lever that makes timing beat mashing) ────────────────
+  // Every shot drops the breech into a reload: the barrel is dead for
+  // [_reloadSec] and a [InputPhase.down] during it neither fires NOR begins a
+  // charge. So a blind every-frame tapper looses one shell, then bounces off the
+  // reload for the whole cooldown — it can only fire at the reload cadence, and
+  // each scarce shell goes wherever the sweep happens to sit (a spray). A player
+  // who waits out the reload and RELEASES on the sweep's line-up (charging to
+  // arc over cover) lands far more of the same few shells. Roughly 2.4 shells/s
+  // max — fire-rate can never out-volume aim. A FULL charge also costs more time
+  // before the breech is even ready, a deliberate range/arc trade.
+  static const double _reloadSec = 0.62; // dead-barrel time after each shot
+  // A charged shot rams a heavier round: its reload is a touch longer, scaling
+  // with the charge, so winding up is a real tempo trade (you fire less often).
+  static const double _reloadChargePenalty = 0.5; // ×charge added to reload sec
+
   // ── Feel timers ─────────────────────────────────────────────────────────────
   static const double _flashSec = 0.2;
   static const double _recoilSec = 0.28;
@@ -151,6 +178,14 @@ class TankDuel extends MiniGameBase {
   // banner throbs, so the round visibly ramps to a finish.
   static const double _frenzyFrac = 0.7; // enters at this share of the limit
   static const double _frenzyBotReloadMul = 0.55; // bot re-arm × this in frenzy
+
+  // ── Drama cues (match-point + final-2 showdown) ──────────────────────────────
+  // One-shot cinematic beats that fire as a round nears its finish, so the climb
+  // to victory is felt: the instant a tank is one hit from the win, and the
+  // instant only two tanks are left standing (an FFA last-stand / a 2v2 down to
+  // the final pair). Each is announced ONCE via a [Juice] beat.
+  static const double _matchPointBannerSec = 1.4; // match-point banner hold
+  static const double _showdownSlowMoSec = 0.7; // lingering dip on final-2 cue
 
   // ── Airdrop pickup (chaos) tuning ───────────────────────────────────────────
   // A supply crate any tank can shoot; popping it grants the shooter a brief
@@ -203,6 +238,8 @@ class TankDuel extends MiniGameBase {
   // count (or ffa/duel) stays FFA so a 3p never splits into an unfair 1-vs-2.
   bool _teamMode = false;
   bool _frenzyAnnounced = false;
+  bool _matchPointAnnounced = false; // one-shot "MATCH POINT!" cue fired
+  bool _showdownAnnounced = false; // one-shot final-2 "SHOWDOWN!" cue fired
   bool _winnerCelebrated = false; // one-shot winner victory pulse fired
   int? _winnerId; // resolved winner (drives the hull victory pulse), or null
   Team? _winnerTeam; // resolved winning team in team mode (drives squad pulse)
@@ -375,6 +412,11 @@ class TankDuel extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
+        // The breech must be LOADED to even begin a shot. A press while
+        // reloading is dead — it neither fires nor starts a charge — so a blind
+        // every-frame mash can't "pre-charge" through the cooldown; it simply
+        // bounces off until the barrel is ready, then looses one scarce shell.
+        if (!tank.loaded) break;
         // Begin a hold: power starts charging and the sweep eases so the player
         // can fine-tune. A quick release snap-fires flat; a longer hold looses a
         // charged shell whose speed (and thus arc) scales with the charge.
@@ -388,6 +430,8 @@ class TankDuel extends MiniGameBase {
           tank.holdSec = 0;
           tank.holdPower = 0;
           // Release always looses — a tap (power 0) still fires a flat snap.
+          // (_fire re-checks the reload, so a hold that outlasts an incoming hit
+          // can't sneak a shot out mid-reload either.)
           _fire(input.playerId, power);
         }
       case InputPhase.holdTick:
@@ -406,6 +450,10 @@ class TankDuel extends MiniGameBase {
   void _fire(int id, [double power = 0]) {
     final tank = _tankOf(id);
     if (tank == null) return;
+    // THE chokepoint for the reload economy: humans and bots both fire through
+    // here, so a single loaded-check enforces "each shot must count" for every
+    // shooter. A dead breech eats the trigger pull entirely.
+    if (!tank.loaded) return;
     final dir = tank.barrel.direction;
     final muzzle = _muzzleOf(tank);
     final speed = _launchSpeedFor(power);
@@ -417,6 +465,13 @@ class TankDuel extends MiniGameBase {
       // the player's own color in FFA — so 4 tanks' shells read at a glance.
       color: tank.tracer,
     ));
+    // Drop the breech into reload: a heavier (charged) round rams slower, so the
+    // cooldown scales with the charge — winding up is a real tempo trade.
+    final reloadDur =
+        _reloadSec + _reloadChargePenalty * power.clamp(0.0, 1.0) * _reloadSec;
+    tank.reload = reloadDur;
+    tank.reloadFull = reloadDur;
+    tank.shotsFired++;
     tank.recoil = _recoilSec;
     tank.muzzle = _muzzleSec;
     // Muzzle blast: a hot forward cone of sparks + a backward smoke kick, so a
@@ -482,6 +537,8 @@ class TankDuel extends MiniGameBase {
     _driveBots(dt);
     _stepShells(sdt);
     _announceFrenzy();
+    _announceShowdown();
+    _announceMatchPoint();
     _checkEnd();
   }
 
@@ -493,6 +550,56 @@ class TankDuel extends MiniGameBase {
     _juice.popup(Offset(_size.width / 2, _size.height * 0.22), 'FRENZY!',
         const Color(0xFFFF7A2E),
         size: 38);
+  }
+
+  /// FINAL-2 SHOWDOWN: the instant only two tanks are left standing (an FFA
+  /// last-stand, or a 2v2 down to its final pair), fire a one-shot cinematic cue
+  /// — a lingering slow-mo + flash + "SHOWDOWN!" banner — so the duel-to-the-end
+  /// is felt. Guarded so a not-yet-engaged round (still 3+ alive) never triggers,
+  /// and skipped entirely in a 1-tank solo where there is no duel.
+  void _announceShowdown() {
+    if (_showdownAnnounced) return;
+    if (_tanks.length < 3) return; // need 3+ starters for "down to the last two"
+    if (_aliveCount() != 2) return;
+    _showdownAnnounced = true;
+    _juice.slowMo(dur: _showdownSlowMoSec);
+    _juice.flashScreen(const Color(0xFFFFD23C), strength: 0.4);
+    _juice.bigBanner('SHOWDOWN!', color: const Color(0xFFFFD23C));
+    _juice.shake.medium();
+  }
+
+  /// MATCH POINT: the instant any tank (FFA) or squad (team) sits one hit from
+  /// the win, fire a one-shot "MATCH POINT!" banner + flash so the table feels
+  /// the knife-edge. Tinted to the leader's side. Reads only scores; one-shot.
+  void _announceMatchPoint() {
+    if (_matchPointAnnounced) return;
+    if (_elapsed < _botWarmupSec) return; // not in the opening grace
+    final tint = _matchPointTint();
+    if (tint == null) return;
+    _matchPointAnnounced = true;
+    _juice.flashScreen(tint, strength: 0.35);
+    _juice.banner.show('MATCH POINT!', color: tint, dur: _matchPointBannerSec);
+    _juice.shake.light();
+  }
+
+  /// The drama tint of the side one hit from victory, or null when none is at
+  /// match point. FFA: a live tank whose own hits == [_hitsToWin]-1. TEAM: a
+  /// squad whose aggregate hits == [_hitsToWin]-1 AND that still has a live tank
+  /// (so a wiped squad can't be "at match point").
+  Color? _matchPointTint() {
+    const target = _hitsToWin - 1;
+    if (target <= 0) return null;
+    if (_teamMode) {
+      for (final team in const [Team.a, Team.b]) {
+        final live = _tanks.any((t) => t.team == team && t.hp > 0);
+        if (live && _teamScore(team).toInt() == target) return _teamTint(team);
+      }
+      return null;
+    }
+    for (final t in _tanks) {
+      if (t.hp > 0 && scoreOf(t.playerId).toInt() == target) return t.color;
+    }
+    return null;
   }
 
   void _ageScorches(double dt) {
@@ -525,6 +632,12 @@ class TankDuel extends MiniGameBase {
     for (final t in _tanks) {
       final clock = t.clock;
       if (clock == null) continue;
+      if (t.hp <= 0) continue; // a downed tank stops shooting
+      // A bot lives under the SAME reload economy as the player: while the breech
+      // is hot its reaction clock simply waits (no wasted tick), so a bot also
+      // gets only the scarce, reload-paced shells — its edge is timing/aim, not
+      // a higher fire-rate than a human could ever reach.
+      if (!t.loaded) continue;
       if (!clock.tick(clockDt)) continue;
       // Pick this shot's charge: mostly a flat snap, but a more accurate bot
       // sometimes winds up a charged lob/snipe. The arc is then SOLVED at this
@@ -927,6 +1040,35 @@ class TankDuel extends MiniGameBase {
     return null;
   }
 
+  // ── Debug hooks (tests only) ─────────────────────────────────────────────────
+  // Let a deterministic test drive a SKILLED shooter: it can read the breech
+  // state + the current sweep angle + the solved lead angle onto the nearest
+  // enemy, so it fires only when the barrel is both loaded AND lined up — the
+  // earned, timed shot the design rewards. Read-only; mutate nothing.
+
+  /// True when [id]'s breech is loaded (a press would actually loose a shell).
+  @visibleForTesting
+  bool debugIsLoaded(int id) => _tankOf(id)?.loaded ?? false;
+
+  /// [id]'s live turret sweep angle (radians).
+  @visibleForTesting
+  double debugAimAngle(int id) => _tankOf(id)?.barrel.angle ?? 0;
+
+  /// Total shells [id] has actually loosed (reload-gated) — lets a test prove a
+  /// blind mash is held to the same scarce, reload-paced shell budget as aim.
+  @visibleForTesting
+  int debugShotsFired(int id) => _tankOf(id)?.shotsFired ?? 0;
+
+  /// The lead angle that would land a snap shot from [id] on the nearest
+  /// reachable enemy (null when none is lined up yet) — the target the sweep
+  /// must reach. A test fires when [debugAimAngle] is within [tol] of this.
+  @visibleForTesting
+  double? debugBestAimAngle(int id, {double speedScale = 1.0}) {
+    final t = _tankOf(id);
+    if (t == null) return null;
+    return _bestLaunchAngle(t, _shellSpeed * speedScale);
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   @override
@@ -1079,6 +1221,10 @@ class TankDuel extends MiniGameBase {
       scale: _scale,
       precision: charging,
       charge: charging ? t.holdPower : 0.0,
+      // The reload ring shows the barrel re-arming (1 while loaded, < 1 mid
+      // reload) so the scarce-shot economy is visible: kids see they must wait
+      // for the breech before the next shell. Hidden once loaded.
+      reload: t.reloadFrac,
       victory: _isWinner(t) ? 1.0 : 0.0,
     );
   }
@@ -1123,11 +1269,14 @@ class _Tank {
   double recoil = 0; // recoil timer
   double muzzle = 0; // muzzle-flash timer
   double invuln = 0; // invulnerability timer
+  double reload = 0; // dead-barrel time remaining; >0 = can't fire or charge
+  double reloadFull = 0; // the reload's full duration (drives the gauge fill)
   bool holding = false; // finger down → charging power + sweep eased
   double holdSec = 0; // how long the current hold has lasted
   double holdPower = 0; // 0..1 charge accrued while holding (scales launch speed)
   double overcharge = 0; // seconds of airdrop double-damage buff remaining
   double downedAt = -1; // _animClock when destroyed (-1 = still alive); wreck age
+  int shotsFired = 0; // shells actually loosed (reload-gated) — proves scarcity
 
   _Tank({
     required this.playerId,
@@ -1142,12 +1291,21 @@ class _Tank {
 
   bool get overcharged => overcharge > 0;
 
+  /// True when the breech is loaded — only then can a shell fire or a charge
+  /// begin. While reloading, every trigger pull is dead.
+  bool get loaded => reload <= 0;
+
+  /// Reload fill 0..1 (0 = just fired, 1 = ready) for the on-tank gauge.
+  double get reloadFrac =>
+      reloadFull <= 0 ? 1.0 : (1.0 - (reload / reloadFull)).clamp(0.0, 1.0);
+
   void tickTimers(double dt, double flashSec, double recoilSec,
       double muzzleSec, double invulnSec) {
     if (flash > 0) flash = (flash - dt).clamp(0, flashSec);
     if (recoil > 0) recoil = (recoil - dt).clamp(0, recoilSec);
     if (muzzle > 0) muzzle = (muzzle - dt).clamp(0, muzzleSec);
     if (invuln > 0) invuln = (invuln - dt).clamp(0, invulnSec);
+    if (reload > 0) reload = math.max(0, reload - dt);
   }
 
   void tickOvercharge(double dt) {
