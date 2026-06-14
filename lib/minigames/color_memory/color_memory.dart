@@ -141,6 +141,21 @@ class ColorMemory extends MiniGameBase {
   static const double _drumrollTickSec = 0.12; // gap between lead-in drum ticks
   static const Color _white = Color(0xFFFFFFFF); // climax banner ink
 
+  // ── Spectacle escalation (the new bar) ──────────────────────────────────────
+  // Clearing an ever-LONGER pattern is the peak skill moment, so the clutch-recall
+  // banner climbs with the pattern length: a normal clear says GENIUS!, a long one
+  // INCREDIBLE!, a marathon one UNREAL! — each fired via [Juice.bigMoment] (burst +
+  // slow-mo + zoom + flash + haptic). Tiers are the sequence lengths at which the
+  // wording (and a full-screen flash) escalates.
+  static const int _genius2SeqLen = 7; // pattern length → "INCREDIBLE!"
+  static const int _genius3SeqLen = 10; // pattern length → "UNREAL!"
+  static const double _clutchFlashStrength = 0.5; // screen flash on a clutch clear
+  // The light show crossing into the fast tier earns a one-shot "FASTER!" speed
+  // cue so the rising pace reads to the kids as a deliberate difficulty ramp.
+  static const int _speedCueSeqLen = 7; // length at which the FASTER! cue fires
+  // Finale: the champion reveal fires a signature [Juice.bigMoment] on the
+  // winner's pad + a full-board CHAMPION banner + winner-tinted confetti.
+
   // ── Bot memory model (fairness) ─────────────────────────────────────────────
   // A bot rolls ONE planned slip per round (not per entry). The chance it slips
   // grows with how many colors it must hold this round, scaled by difficulty via
@@ -176,6 +191,7 @@ class ColorMemory extends MiniGameBase {
   int _showIndex = -1; // which sequence color is flashing (-1 = lead-in)
   int _round = 1; // 1-based round counter (== sequence length)
   bool _drumrollAnnounced = false; // the climax banner fired for this round
+  bool _speedCueShown = false; // the one-shot FASTER! speed cue fired this round
   double _drumrollAcc = 0; // banks lead-in time toward each drum tick
   Size _lastSize = const Size(1, 1);
 
@@ -212,12 +228,23 @@ class ColorMemory extends MiniGameBase {
     _phaseTimer = 0;
     _showIndex = -1; // lead-in beat before the first color lights
     _drumrollAnnounced = false;
+    _speedCueShown = false;
     _drumrollAcc = 0;
   }
 
   /// True when the current pattern is long enough to be a climax round (the
   /// faster, drumrolled "big one").
   bool get _isClimaxRound => _sequence.length >= _climaxSeqLen;
+
+  /// The clutch-recall banner, escalating with how long a pattern was just
+  /// reproduced: a deeper recall earns a louder shout. Drives the round-win
+  /// [Juice.bigMoment] so the spectacle climbs with the difficulty.
+  String _clutchBanner() {
+    final len = _sequence.length;
+    if (len >= _genius3SeqLen) return 'UNREAL!';
+    if (len >= _genius2SeqLen) return 'INCREDIBLE!';
+    return 'GENIUS!';
+  }
 
   /// Per-color flash duration for the CURRENT pattern: a long pattern is flashed
   /// faster (toward [_showStepMinSec]) so recall gets genuinely harder near the
@@ -358,10 +385,17 @@ class ColorMemory extends MiniGameBase {
         final justWon = _appenderId == null;
         if (justWon) {
           _appenderId = pad.playerId;
-          // Signature GENIUS! cinematic: burst + shake + slow-mo + zoom toward
-          // the winner's pad + flash + banner + haptic. Fired once per round.
+          // Signature clutch-recall cinematic: burst + shake + slow-mo + zoom
+          // toward the winner's pad + flash + banner + haptic. Fired once per
+          // round, and the WORDING escalates with how long a pattern was just
+          // recalled (a longer recall is a bigger feat) — the climax beat.
           _juice.bigMoment(_padCenter(pad.playerId), pad.accent,
-              banner: 'GENIUS!');
+              banner: _clutchBanner());
+          // A long clutch recall also kicks a full-screen flash so the peak skill
+          // moment lands across the room.
+          if (_sequence.length >= _climaxSeqLen) {
+            _juice.flashScreen(pad.accent, strength: _clutchFlashStrength);
+          }
         } else {
           _juice.popup(
               _padCenter(pad.playerId).translate(0, -_blockSide() * 0.5),
@@ -452,7 +486,20 @@ class ColorMemory extends MiniGameBase {
             .clamp(0, _sequence.length - 1);
     if (next != _showIndex) {
       _showIndex = next;
-      if (next >= 0) _flashSequenceColor(_sequence[next]);
+      if (next >= 0) {
+        // The very first color of a fast (long) pattern gets a one-shot
+        // "FASTER!" speed cue + a soft screen flash so the rising pace reads as
+        // a deliberate difficulty ramp, not a glitch.
+        if (next == 0 &&
+            !_speedCueShown &&
+            _sequence.length >= _speedCueSeqLen) {
+          _speedCueShown = true;
+          _juice.popup(Offset(_lastSize.width / 2, _lastSize.height * 0.30),
+              'FASTER!', _white, size: 30);
+          _juice.flashScreen(_white, strength: 0.18);
+        }
+        _flashSequenceColor(_sequence[next]);
+      }
     }
     if (_phaseTimer >= total) _enterInput();
   }
@@ -646,8 +693,20 @@ class ColorMemory extends MiniGameBase {
     for (final p in ctx.players) {
       if (seen.add(p.id)) full.add(p.id);
     }
-    // The winning player's mascot cheers on the final board.
-    if (full.isNotEmpty) _padOf(full.first)?.figure.victory();
+    // ── Champion reveal (the finale spectacle) ────────────────────────────────
+    // The winner is the deepest-recalling survivor. Crown them with a signature
+    // bigMoment on their pad (burst + slow-mo + zoom + flash + haptic), a
+    // full-board CHAMPION banner, winner-tinted confetti, and a victory cheer.
+    if (full.isNotEmpty) {
+      final champ = _padOf(full.first);
+      if (champ != null) {
+        final at = _padCenter(champ.playerId);
+        _juice.bigMoment(at, champ.accent, banner: 'CHAMPION!', sparks: 34);
+        _juice.bigBanner('CHAMPION!', color: champ.accent);
+        _juice.confetti(_lastSize, colors: [champ.accent]);
+        champ.figure.victory();
+      }
+    }
     finishByOrder(full);
   }
 
