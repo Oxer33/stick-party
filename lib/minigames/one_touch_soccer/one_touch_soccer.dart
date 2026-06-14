@@ -531,7 +531,10 @@ class OneTouchSoccer extends MiniGameBase {
       bottomLine: _bottomLine,
     );
     if (dir == null || pad == null) return;
-    _arena.impulse(_ballId, dir * (_pitch.height * _padBoostPerSecond));
+    // SET (not add) the ball's velocity so a pad can never STACK on top of an
+    // existing shot to exceed the goal-speed gate — a pad redirects a loose ball
+    // at a fixed, sub-gate pace; it can never gift a scoring shot.
+    _ball.vel = dir * (_pitch.height * _padBoostPerSecond);
     _ballSquash = 1.0;
     SoccerFx.fireSpeedBurst(_juice, pad, dir, _ballRadius);
   }
