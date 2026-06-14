@@ -84,6 +84,20 @@ class SumoSmash extends MiniGameBase {
   // While charging, retain only this share of speed per 1/60s — a near-root so a
   // whiffed charge is punishable (the player is briefly a sitting duck).
   static const double _chargeRootRetain = 0.62;
+  // The kid-safe "tap aims at the nearest rival" auto-assist is EARNED by
+  // committing to a hold: only a release whose charge reached this threshold
+  // gets the nearest-target fallback. An instant down→up MASH (no hold, no
+  // drag) fires in the wrestler's *last committed* aim with NO retarget, so
+  // blind tap-spam sprays stale-direction shoves that whiff — and self-eject
+  // when the stale aim points at the rim. A real player either drags to aim or
+  // holds a beat to unlock the assist; flailing the button does neither.
+  static const double _autoAimMinCharge = 0.18;
+  // An UNCHARGED shove (below this charge) transfers only a fraction of its
+  // contact knockback, so a weak blind nudge cannot luck-launch a rival off the
+  // ring — only a committed (charged) hit ejects. Scales linearly to full at
+  // [_committedCharge].
+  static const double _weakHitKnockbackFloor = 0.35;
+  static const double _committedCharge = 0.5;
 
   // ── Knockback (contact) tuning ──────────────────────────────────────────────
   static const double _contactSpeedRef = 700.0;
@@ -103,6 +117,10 @@ class SumoSmash extends MiniGameBase {
   static const double _suddenDeathShrinkMul = 2.6; // shrink speed multiplier
   static const double _suddenDeathFloorMul =
       0.78; // tighter floor in sudden death
+  // FINAL-2 SHOWDOWN: in the climax, if EXACTLY two players are tied for the
+  // lead within this KO margin (a genuine race for the win), throw a one-shot
+  // "FINAL TWO!" banner + slow-mo so the table feels the stakes.
+  static const double _showdownMargin = 1.0; // within this many KOs of the lead
 
   // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
   // One star at a time floats near the center; grabbing it grants a brief shove
@@ -190,6 +208,7 @@ class SumoSmash extends MiniGameBase {
 
   late StarController _stars;
   bool _suddenDeathAnnounced = false;
+  bool _showdownAnnounced = false; // one-shot: the FINAL-2 KO-race callout
   bool _winnerCheered = false; // one-shot: the leader cheers when time expires
 
   @override
@@ -317,10 +336,17 @@ class SumoSmash extends MiniGameBase {
         if (f.charging) {
           f.charging = false;
           _applyDragAim(input, body, f); // final flick can still steer
-          // Player-chosen aim wins; with no drag, fall back to nearest (kids).
+          // Aim resolution (the heart of the skill gate):
+          //  * a thumb-chosen drag aim ALWAYS wins (full agency); else
+          //  * the kid-safe nearest-rival auto-assist is unlocked ONLY by a
+          //    committed hold (charge >= [_autoAimMinCharge]); else
+          //  * a pure instant down→up MASH keeps the wrestler's *last* aim with
+          //    NO retarget — so blind tap-spam sprays stale-direction shoves
+          //    that whiff (and self-eject when the stale aim faces the rim).
+          final earnedAssist = f.charge >= _autoAimMinCharge;
           final aim = f.hasDragAim
               ? f.aim
-              : (_aimAtNearest(input.playerId) ?? f.aim);
+              : (earnedAssist ? (_aimAtNearest(input.playerId) ?? f.aim) : f.aim);
           _commitDash(input.playerId, body, aim, f.charge);
           f.charge = 0;
           f.hasDragAim = false;
@@ -399,8 +425,12 @@ class SumoSmash extends MiniGameBase {
       if (_isAlive(entry.key) && f.charging) {
         f.charge = math.min(1.0, f.charge + dt / _chargeTimeSec);
         // No drag yet → preview the nearest-opponent fallback so the arrow the
-        // player sees matches where a release would actually fire.
-        if (!f.hasDragAim) {
+        // player sees matches where a release would actually fire — but ONLY
+        // once the hold has earned the auto-assist ([_autoAimMinCharge]). Below
+        // that, the arrow holds the stale aim, so an instant tap that releases
+        // before committing fires unaimed (the skill gate is honest, not a
+        // silent free retarget on the very first frame of a flick).
+        if (!f.hasDragAim && f.charge >= _autoAimMinCharge) {
           final a = _aimAtNearest(entry.key);
           if (a != null) f.aim = a;
         }
@@ -446,14 +476,19 @@ class SumoSmash extends MiniGameBase {
     final err =
         (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botAimErrorRad;
 
-    // Near the edge: save self with a moderate shove back toward the centre.
+    // Near the edge: a competent bot saves itself with a shove back toward the
+    // centre — but a LOW-ACCURACY (easy) bot mis-judges the save by [err], so it
+    // can over-commit and fling ITSELF off the rim. Skill (accuracy) buys a
+    // clean recovery; a weak bot self-ejects, exactly the beatable behaviour the
+    // human exploits. The save is charged enough to actually carry inward.
     if (_isNearEdge(self)) {
       final aim = math.atan2(
-        _center.dy - self.pos.dy,
-        _center.dx - self.pos.dx,
-      );
+            _center.dy - self.pos.dy,
+            _center.dx - self.pos.dx,
+          ) +
+          ctx.rng.jitter(err);
       f.aim = aim;
-      _commitDash(playerId, self, aim, 0.5);
+      _commitDash(playerId, self, aim, 0.45 + 0.25 * ctx.botProfile.accuracy);
       return;
     }
 
@@ -464,9 +499,15 @@ class SumoSmash extends MiniGameBase {
     final to = targetPos - self.pos;
     final aim = math.atan2(to.dy, to.dx) + ctx.rng.jitter(err);
     // Far → a light nudge to close in; close → a charged shove into the rival.
+    // The attack charge scales with accuracy so the COMMIT GATE creates a real
+    // skill gradient: a HARD bot (high accuracy) charges past [_committedCharge]
+    // and lands true ring-out launches, while an EASY bot mostly stays under it
+    // — its weak, mis-aimed shoves shove but rarely eject, so a human who aims
+    // charged shoves out-KOs it. (Mirrors the human's own hold-to-commit cost.)
+    final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
     final charge = to.distance > _bodyRadius * _botCloseRangeFactor
         ? 0.06
-        : (ctx.botProfile.accuracy * ctx.rng.range(0.25, 0.55)).clamp(0.0, 1.0);
+        : (0.22 + 0.6 * acc * ctx.rng.range(0.7, 1.0)).clamp(0.0, 1.0);
     f.aim = aim;
     _commitDash(playerId, self, aim, charge);
   }
@@ -485,6 +526,7 @@ class SumoSmash extends MiniGameBase {
     _arena.impulse(playerId, dir * magnitude);
     _arena.impulse(playerId, -dir * magnitude * _selfPushback);
 
+    f.markShove(charge); // contact knockback reads this: only a charged shove KOs
     f.fire(_cooldownSec);
     f.trail = _DashTrail(from: self.pos, dir: dir, life: _trailLifeSec);
 
@@ -572,10 +614,25 @@ class SumoSmash extends MiniGameBase {
     final headOn = (attackerDir.dx * toVictim.dx + attackerDir.dy * toVictim.dy)
         .clamp(0.0, 1.0);
     final speedFactor = (speed / _contactSpeedRef).clamp(0.0, 1.4);
+    // COMMIT GATE: a blind, uncharged nudge transfers only [_weakHitKnockbackFloor]
+    // of its contact knockback; a fully committed (charged) shove transfers the
+    // full hit. So a rival is launched off the ring only by an *aimed, charged*
+    // shove — an incidental or weak bump can shove someone but not eject them,
+    // which is what makes button-spam unable to luck-KO. A star-buffed attacker
+    // always counts as committed (the buff IS the commitment).
+    final atkF = _fighters[attacker.id];
+    final commit = (atkF?.buffed ?? false)
+        ? 1.0
+        : (atkF == null
+            ? 1.0
+            : (atkF.committedCharge / _committedCharge).clamp(0.0, 1.0));
+    final commitFactor = _weakHitKnockbackFloor +
+        (1.0 - _weakHitKnockbackFloor) * commit;
     final bonus =
         _ringRadius *
         _contactBonusScale *
         speedFactor *
+        commitFactor *
         (1.0 + _headOnExtra * headOn);
     _arena.impulse(victim.id, toVictim * bonus);
 
@@ -859,6 +916,19 @@ class SumoSmash extends MiniGameBase {
         size: 38,
       );
     }
+    // FINAL-2 SHOWDOWN: once in the climax, the FIRST time the lead narrows to a
+    // genuine two-player KO race, slam a cinematic "FINAL TWO!" banner + slow-mo
+    // so the decisive stretch reads as a duel for the win. One-shot per round.
+    if (!_showdownAnnounced &&
+        _isSuddenDeath &&
+        ctx.players.length > 2 &&
+        _isTwoWayShowdown()) {
+      _showdownAnnounced = true;
+      _juice.slowMo(dur: 0.45, scale: 0.4);
+      _juice.flashScreen(_accent, strength: 0.35);
+      _juice.bigBanner('FINAL TWO!', color: _accent);
+      _juice.shake.medium();
+    }
     // SCORED BRAWL: the round runs the FULL limit (KO'd wrestlers respawn), so it
     // NEVER ends early just because only one is on the ring. Most ring-outs wins.
     if (_elapsed >= _timeLimit) _finishScored();
@@ -876,8 +946,35 @@ class SumoSmash extends MiniGameBase {
         fig.setLoco(LocoState.idle);
         fig.victory();
       }
+      // The bell: a celebratory finish — confetti rain, a WINNER banner and a
+      // big-moment punch centred on the leader so the round ends on a cheer
+      // instead of a freeze. (A lone-practice round skips the banner fanfare.)
+      _juice.confetti(_size, colors: [_accent, _starColor, _colorOfLeader(leader)]);
+      if (ctx.players.length > 1) {
+        final at = (leader != null ? _bodyOf(leader)?.pos : null) ?? _center;
+        _juice.bigMoment(at, _colorOfLeader(leader), banner: 'WINNER!');
+      }
     }
     finishByScore();
+  }
+
+  /// True when EXACTLY two players are within [_showdownMargin] KOs of the top
+  /// score and that top score is a real lead (> 0) — a genuine two-way race for
+  /// the win, the cue for the FINAL-2 showdown beat. (3+ contenders is a melee,
+  /// not a showdown; 0-0 is not yet a race.)
+  bool _isTwoWayShowdown() {
+    var top = double.negativeInfinity;
+    for (final p in ctx.players) {
+      final s = _fighters[p.id]?.koScore ?? 0;
+      if (s > top) top = s;
+    }
+    if (top <= 0) return false;
+    var contenders = 0;
+    for (final p in ctx.players) {
+      final s = _fighters[p.id]?.koScore ?? 0;
+      if (top - s <= _showdownMargin) contenders++;
+    }
+    return contenders == 2;
   }
 
   /// The id with the highest [koScore] (ties → lowest id), or null if empty.
@@ -1036,6 +1133,10 @@ class SumoSmash extends MiniGameBase {
     return const Color(0xFFFFFFFF);
   }
 
+  /// The leader's color, or the theme accent when there is no leader (empty
+  /// board). Used for the bell fanfare so the confetti/banner match the winner.
+  Color _colorOfLeader(int? leader) => leader == null ? _accent : _colorOf(leader);
+
   static int _pairKey(int a, int b) => a < b ? a * 8 + b : b * 8 + a;
 
   static Color _brighten(Color c, double t) =>
@@ -1067,12 +1168,39 @@ class _Fighter {
   double invuln = 0; // post-respawn grace, seconds (no KO either way)
   int lastAttacker = -1; // id of the wrestler who last shoved this one (-1 none)
   double attackerAge = 0; // seconds since [lastAttacker] was recorded
+  // Charge (0..1) of this wrestler's most recent shove, decaying over a short
+  // window. Read at contact time so only a COMMITTED (charged) shove transfers
+  // full knockback — a blind uncharged nudge cannot luck-launch a rival out.
+  double shoveCharge = 0;
+  double _shoveChargeAge = 0;
 
   _Fighter({required this.aim});
 
   bool get ready => _cooldown <= 0;
   bool get buffed => buff > 0;
   bool get invulnerable => invuln > 0;
+
+  /// Window (seconds) over which [shoveCharge] stays meaningful after a shove —
+  /// long enough that a committed lunge still counts when it CONNECTS (the body
+  /// usually crosses the gap within this window), but short enough that a body
+  /// kept fast only by later collision carries is treated as incidental, not an
+  /// aimed launch. Tuned so legit charged KOs land while luck-bumps stay weak.
+  static const double _shoveChargeWindow = 0.6;
+
+  /// The freshness-weighted charge of the last shove (0..1). Fades to 0 over
+  /// [_shoveChargeWindow] so only a body actively mid-lunge counts as committed.
+  double get committedCharge {
+    if (_shoveChargeAge >= _shoveChargeWindow) return 0;
+    final f = 1.0 - (_shoveChargeAge / _shoveChargeWindow);
+    return (shoveCharge * f).clamp(0.0, 1.0);
+  }
+
+  /// Record the charge of a just-fired shove so contact knockback can tell a
+  /// committed launch from an incidental bump.
+  void markShove(double charge) {
+    shoveCharge = charge.clamp(0.0, 1.0);
+    _shoveChargeAge = 0;
+  }
 
   /// Record [attackerId] as the most recent shover of this wrestler (for KO
   /// credit). Self-hits never overwrite a real attacker.
@@ -1087,6 +1215,7 @@ class _Fighter {
     if (buff > 0) buff = math.max(0, buff - dt);
     if (invuln > 0) invuln = math.max(0, invuln - dt);
     attackerAge += dt;
+    _shoveChargeAge += dt;
     if (trail != null) {
       trail!.life -= dt;
       if (trail!.life <= 0) trail = null;
