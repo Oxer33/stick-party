@@ -330,31 +330,34 @@ class SumoRenderer {
     required double charge,
   }) {
     final c = charge.clamp(0.0, 1.0);
-    if (c <= 0.01) return;
     final dir = Offset(math.cos(aim), math.sin(aim));
     final base = bodyR * 0.95;
-    final len = bodyR * (1.8 + 2.4 * c);
+    // A faint short stub at rest (the idle "you'll shove THIS way" preview) that
+    // grows long + bright as the charge fills — so the player always sees their
+    // aim and never fires in a surprise direction.
+    final len = bodyR * (1.2 + 2.4 * c);
+    final alpha = 0.4 + 0.55 * c;
     final start = center + dir * base;
     final end = center + dir * (base + len);
-    final w = bodyR * (0.22 + 0.26 * c);
+    final w = bodyR * (0.2 + 0.28 * c);
 
     canvas.drawLine(
         start,
         end,
         Paint()
-          ..color = color.withValues(alpha: 0.95)
+          ..color = color.withValues(alpha: alpha)
           ..strokeWidth = w
           ..strokeCap = StrokeCap.round);
     canvas.drawLine(
         start,
         end,
         Paint()
-          ..color = _white.withValues(alpha: 0.6)
+          ..color = _white.withValues(alpha: 0.55 * alpha)
           ..strokeWidth = w * 0.4
           ..strokeCap = StrokeCap.round);
 
     final perp = Offset(-dir.dy, dir.dx);
-    final head = bodyR * (0.55 + 0.34 * c);
+    final head = bodyR * (0.5 + 0.34 * c);
     final tip = end + dir * head;
     final l = end + perp * head * 0.66;
     final r = end - perp * head * 0.66;
@@ -364,21 +367,24 @@ class SumoRenderer {
         ..lineTo(l.dx, l.dy)
         ..lineTo(r.dx, r.dy)
         ..close(),
-      Paint()..color = color.withValues(alpha: 0.95),
+      Paint()..color = color.withValues(alpha: alpha),
     );
 
-    final groundCenter = center.translate(0, bodyR);
-    canvas.drawArc(
-      Rect.fromCircle(center: groundCenter, radius: bodyR * 1.25),
-      -math.pi / 2,
-      math.pi * 2 * c,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = bodyR * 0.18
-        ..strokeCap = StrokeCap.round
-        ..color = (_blend(color, _white, c)).withValues(alpha: 0.9),
-    );
+    // The radial charge ring only once a hold is building (skipped at rest).
+    if (c > 0.01) {
+      final groundCenter = center.translate(0, bodyR);
+      canvas.drawArc(
+        Rect.fromCircle(center: groundCenter, radius: bodyR * 1.25),
+        -math.pi / 2,
+        math.pi * 2 * c,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = bodyR * 0.18
+          ..strokeCap = StrokeCap.round
+          ..color = (_blend(color, _white, c)).withValues(alpha: 0.9),
+      );
+    }
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────

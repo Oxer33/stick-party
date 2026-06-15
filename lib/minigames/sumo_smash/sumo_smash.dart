@@ -84,14 +84,6 @@ class SumoSmash extends MiniGameBase {
   // While charging, retain only this share of speed per 1/60s — a near-root so a
   // whiffed charge is punishable (the player is briefly a sitting duck).
   static const double _chargeRootRetain = 0.62;
-  // The kid-safe "tap aims at the nearest rival" auto-assist is EARNED by
-  // committing to a hold: only a release whose charge reached this threshold
-  // gets the nearest-target fallback. An instant down→up MASH (no hold, no
-  // drag) fires in the wrestler's *last committed* aim with NO retarget, so
-  // blind tap-spam sprays stale-direction shoves that whiff — and self-eject
-  // when the stale aim points at the rim. A real player either drags to aim or
-  // holds a beat to unlock the assist; flailing the button does neither.
-  static const double _autoAimMinCharge = 0.18;
   // An UNCHARGED shove (below this charge) transfers only a fraction of its
   // contact knockback, so a weak blind nudge cannot luck-launch a rival off the
   // ring — only a committed (charged) hit ejects. Scales linearly to full at
@@ -326,27 +318,25 @@ class SumoSmash extends MiniGameBase {
       case InputPhase.down:
         if (f.ready && !f.invulnerable) {
           f.charging = true; // begin charging
-          f.hasDragAim = false; // until the thumb moves, no chosen direction
-          _applyDragAim(input, body, f); // a press already away from us aims
+          f.hasDragAim = false; // a plain tap stays on the nearest-rival aim
+          f.downPos = Offset(
+            input.normPos.dx * _size.width,
+            input.normPos.dy * _size.height,
+          );
         }
       case InputPhase.holdTick:
-        // A drag sample re-aims toward the thumb (the player owns the angle).
+        // Only a real DRAG (finger travels from the press point) re-aims by hand.
         _applyDragAim(input, body, f);
       case InputPhase.up:
         if (f.charging) {
           f.charging = false;
-          _applyDragAim(input, body, f); // final flick can still steer
-          // Aim resolution (the heart of the skill gate):
-          //  * a thumb-chosen drag aim ALWAYS wins (full agency); else
-          //  * the kid-safe nearest-rival auto-assist is unlocked ONLY by a
-          //    committed hold (charge >= [_autoAimMinCharge]); else
-          //  * a pure instant down→up MASH keeps the wrestler's *last* aim with
-          //    NO retarget — so blind tap-spam sprays stale-direction shoves
-          //    that whiff (and self-eject when the stale aim faces the rim).
-          final earnedAssist = f.charge >= _autoAimMinCharge;
-          final aim = f.hasDragAim
-              ? f.aim
-              : (earnedAssist ? (_aimAtNearest(input.playerId) ?? f.aim) : f.aim);
+          _applyDragAim(input, body, f); // a final flick can still steer
+          // A deliberate DRAG aims by hand (full agency); a plain TAP always
+          // shoves at the nearest rival — readable + kid-safe, never a surprise
+          // direction. Spam is stopped by the weak-hit knockback floor + the
+          // charge-root (an uncharged shove can't eject), not by a random aim.
+          final aim =
+              f.hasDragAim ? f.aim : (_aimAtNearest(input.playerId) ?? f.aim);
           _commitDash(input.playerId, body, aim, f.charge);
           f.charge = 0;
           f.hasDragAim = false;
@@ -361,14 +351,18 @@ class SumoSmash extends MiniGameBase {
   /// the nearest-opponent fallback — intact.
   void _applyDragAim(PlayerInput input, Body body, _Fighter f) {
     if (!f.charging) return;
+    if (input.normPos == Offset.zero) return; // a bare per-frame tick has no pos
     final touch = Offset(
       input.normPos.dx * _size.width,
       input.normPos.dy * _size.height,
     );
-    final d = touch - body.pos;
     final minSide = math.min(_size.width, _size.height);
-    if (d.distance < minSide * _aimDragDeadzone) return;
-    f.aim = math.atan2(d.dy, d.dx);
+    // Manual aim engages only once the finger DRAGS from where it pressed; a
+    // tap-in-place leaves the nearest-rival default, so a tap never shoves in a
+    // surprise direction. The angle points from the wrestler toward the finger
+    // (you push toward where you point).
+    if ((touch - f.downPos).distance < minSide * _aimDragDeadzone) return;
+    f.aim = math.atan2(touch.dy - body.pos.dy, touch.dx - body.pos.dx);
     f.hasDragAim = true;
   }
 
@@ -421,24 +415,27 @@ class SumoSmash extends MiniGameBase {
   /// wrestler is rooted to a near-stop so a whiffed charge is punishable.
   void _tickFighters(double dt) {
     for (final entry in _fighters.entries) {
+      final id = entry.key;
       final f = entry.value;
-      if (_isAlive(entry.key) && f.charging) {
+      final isBot = _botClocks.containsKey(id);
+      if (_isAlive(id) && f.charging) {
         f.charge = math.min(1.0, f.charge + dt / _chargeTimeSec);
-        // No drag yet → preview the nearest-opponent fallback so the arrow the
-        // player sees matches where a release would actually fire — but ONLY
-        // once the hold has earned the auto-assist ([_autoAimMinCharge]). Below
-        // that, the arrow holds the stale aim, so an instant tap that releases
-        // before committing fires unaimed (the skill gate is honest, not a
-        // silent free retarget on the very first frame of a flick).
-        if (!f.hasDragAim && f.charge >= _autoAimMinCharge) {
-          final a = _aimAtNearest(entry.key);
+        // No manual drag → lock the aim on the nearest rival so the arrow the
+        // player sees is exactly where a release will fire.
+        if (!f.hasDragAim) {
+          final a = _aimAtNearest(id);
           if (a != null) f.aim = a;
         }
-        final body = _bodyOf(entry.key);
+        final body = _bodyOf(id);
         if (body != null) {
           final retain = math.pow(_chargeRootRetain, dt * 60.0).toDouble();
           body.vel *= retain;
         }
+      } else if (_isAlive(id) && !isBot && f.ready && !f.invulnerable) {
+        // Idle preview: a ready human's aim tracks the nearest rival so the faint
+        // "shove here" arrow is always shown (teaches the control at a glance).
+        final a = _aimAtNearest(id);
+        if (a != null) f.aim = a;
       }
       f.tick(dt);
     }
@@ -1099,8 +1096,13 @@ class SumoSmash extends MiniGameBase {
         color,
       );
 
-      // The aim arrow + charge — the player's control, drawn on top.
-      if (f != null && f.charging) {
+      // The aim arrow + charge — the player's control, drawn on top. Shown
+      // faint at rest (idle preview) and bright while charging for any human who
+      // can act, so the shove direction is ALWAYS readable (bots show nothing).
+      final showAim = f != null &&
+          (f.charging ||
+              (!_botClocks.containsKey(b.id) && f.ready && !f.invulnerable));
+      if (showAim) {
         SumoRenderer.drawAim(
           canvas,
           b.pos,
@@ -1158,6 +1160,7 @@ class SumoSmash extends MiniGameBase {
 /// (for KO credit). Mutable round-scoped state (allowed for one round).
 class _Fighter {
   double aim; // current aim angle (radians) — set by the player's drag
+  Offset downPos = Offset.zero; // touch point at press, to tell a tap from a drag
   bool charging = false;
   bool hasDragAim = false; // true once this charge has a thumb-chosen angle
   double charge = 0; // 0..1 while held
