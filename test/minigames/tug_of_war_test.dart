@@ -218,6 +218,53 @@ void main() {
         reason: 'a double-tap in one window must slip back the gained ground');
   });
 
+  // ── THE VISIBLE SKILL: ROPE TENSION → POWER HEAVE ──────────────────────────
+  //
+  // The rework makes the skill VISIBLE: clean centered heaves wind a per-side
+  // ROPE TENSION meter; once it is TAUT a heave is a POWER HEAVE (2–3× pull),
+  // while a SLACK heave is a dud. These drive the meter directly via the
+  // @visibleForTesting hooks so the payoff curve is asserted with no reliance on
+  // exact beat timing.
+
+  test('tension: a chain of clean centered heaves winds the rope TAUT', () {
+    // A single human, no opponent. Tap once, dead-center, on each beat window.
+    // Tension must start SLACK (0) and climb past the POWER-HEAVE threshold as the
+    // chain lands — the meter is the visible, learnable cue.
+    final g = solo1p();
+    expect(g.tensionForTest(0), 0, reason: 'tension starts slack');
+
+    var reachedTaut = false;
+    for (var beat = 0; beat < 8 && !reachedTaut; beat++) {
+      advanceToWindow(g);
+      // Tap only at/near dead-center so each heave winds maximum tension.
+      var guard = 0;
+      while (g.beatPrecisionForTest < 0.95 && guard++ < 60) {
+        g.update(1 / 60);
+      }
+      g.onInput(PlayerInput.down(0));
+      g.update(1 / 60);
+      if (g.tensionForTest(0) >= TugOfWar.tautThresholdForTest) {
+        reachedTaut = true;
+      }
+      advancePastWindow(g); // re-arm for the next beat
+    }
+    expect(reachedTaut, isTrue,
+        reason: 'steady centered heaves must wind the rope into the TAUT band');
+  });
+
+  test('power heave: a TAUT heave hauls multiples of a SLACK one', () {
+    // Drive the same dead-center heave at two tensions and compare how far each
+    // dragged the marker. The TAUT (fully wound) heave must out-haul the SLACK one
+    // by at least ~2× — the whole risk/reward of reading the meter.
+    final slack = solo1p();
+    final slackPull = slack.driveHeaveAtTensionForTest(0, 0.0);
+    final taut = solo1p();
+    final tautPull = taut.driveHeaveAtTensionForTest(0, 1.0);
+    expect(slackPull, greaterThan(0), reason: 'even a slack heave nudges the rope');
+    expect(tautPull, greaterThan(slackPull * 2.0),
+        reason: 'a TAUT power heave must haul at least twice a slack dud');
+  });
+
   // ── THE ANTI-MASH PROOF: a blind spammer LOSES the rope to an on-beat tapper ─
   //
   // Two HUMANS, head-to-head, no bots (id 0 even → top, id 1 odd → bottom). Both
@@ -311,6 +358,58 @@ void main() {
         reason: 'the on-beat tapper is hauling the rope home');
     expect(rhythm, greaterThan(spammer + 0.2),
         reason: 'the on-beat side must lead by a decisive margin, not a tie');
+  });
+
+  // ── THE POWER-HEAVE PROOF: a TENSION READER buries a SLACK MASHER ───────────
+  //
+  // The rework's headline claim, made deterministic. Two HUMANS, no bots (id 0
+  // top, id 1 bottom). The MASHER (top) taps EVERY frame: it lands one SLACK dud
+  // per window then SLIPS on every other tap, so its ROPE TENSION is dumped to
+  // ~zero and pinned SLACK — it can NEVER power heave. The READER (bottom) taps
+  // once per window, near dead-center, building tension into the TAUT band and
+  // POWER-HEAVING. The reader must take the rope outright AND by a wide margin —
+  // proving the visible tension read, not raw tap rate, is what wins.
+  test('TENSION READER buries a SLACK MASHER outright (deterministic)', () {
+    final players = [
+      PlayerSlot.defaults(0), // human, top → SLACK MASHER (taps every frame)
+      PlayerSlot.defaults(1), // human, bottom → TENSION READER (one centered tap)
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(13),
+      zones: ZoneLayout.forPlayers(2, mode: GameMode.duel1v1),
+      mode: GameMode.duel1v1,
+    );
+    final g = TugOfWar()..init(ctx);
+
+    var readerArmed = true;
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      // MASHER: blind frame-by-frame spam.
+      g.onInput(PlayerInput.down(0));
+      // READER: a single deliberate tap once the beat is near dead-center, so each
+      // heave winds maximum tension toward a POWER HEAVE.
+      final open = g.beatWindowOpenForTest;
+      if (open && readerArmed && g.beatPrecisionForTest >= 0.85) {
+        g.onInput(PlayerInput.down(1));
+        readerArmed = false;
+      } else if (!open) {
+        readerArmed = true;
+      }
+      g.update(1 / 60);
+    }
+
+    expect(g.status, MiniGameStatus.finished, reason: 'the contest must resolve');
+    expect(g.winResult!.winner, 1,
+        reason: 'the tension reader (power heaves) must beat the slack masher');
+    // The masher never gets the marker to its half — its tension stays slack and
+    // its slips drive it backward, so its advantage is pinned at zero.
+    expect(g.scores.of(0).toDouble(), 0,
+        reason: 'a slack masher slips itself backward — it never pulls home');
+    // The reader's POWER HEAVES haul the rope decisively home.
+    expect(g.scores.of(1).toDouble(), greaterThan(0.5),
+        reason: 'reading the tension and power-heaving wins by a wide margin');
   });
 
   // ── Uneven-teams fairness (a lone puller vs two) ──────────────────────────

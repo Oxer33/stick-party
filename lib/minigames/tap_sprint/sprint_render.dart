@@ -44,11 +44,22 @@ class SprintRenderer {
   // ── Hurdle palette (the interposing obstacle) ───────────────────────────────
   /// The trip/knock color — the burst the gameplay fires on a clipped hurdle.
   static const Color hurdleHit = Color(0xFFFF4438);
+  /// The clean-vault color — the bright pop the gameplay fires on a clean
+  /// timed release (a successful sweet-spot vault).
+  static const Color cleanVault = Color(0xFF5BE6B0);
   static const Color _hurdleBar = Color(0xFFF4EFE4); // crossbar (idle, approaching)
   static const Color _hurdleLeg = Color(0xFF2C3A57); // upright legs
-  static const Color _hurdleWarn = Color(0xFFFFC93C); // "JUMP!" telegraph color
+  static const Color _hurdleWarn = Color(0xFFFFC93C); // approach telegraph color
   static const Color _hurdlePassed = Color(0xFF54E08A); // cleared/behind tint
   static const Color _hudTrack = Color(0xCC0B1220); // distance-HUD pill bg
+
+  // ── Wind-up timing bar palette (the SKILL read) ─────────────────────────────
+  static const Color _barTrack = Color(0xCC0A1018); // bar trough (neon-glass bg)
+  static const Color _barFill = Color(0xFF7CF2FF); // rising power fill (cyan)
+  static const Color _barFillHot = Color(0xFFFFE36B); // fill tip near full (warm)
+  static const Color _sweetZone = Color(0xFF5BE6B0); // sweet-spot band (green)
+  static const Color _sweetEdge = Color(0xFFEFFFF6); // sweet-spot edge ticks
+  static const Color _barNeedle = Color(0xFFFFFFFF); // release needle at the fill
 
   // ── Tuning (fractions / px; no inline magic numbers) ───────────────────────
   static const double _standTopFrac = 0.0; // stands start at the very top
@@ -69,6 +80,10 @@ class SprintRenderer {
   static const double _hurdleHeightFrac = 0.46; // crossbar height / laneHeight
   static const double _hurdleHalfWidthFrac = 0.16; // half foot-spread / laneHeight
   static const double _hudHeightFrac = 0.055; // distance-HUD pill height / arenaH
+  // Wind-up timing bar geometry, as fractions of the lane height it floats over.
+  static const double _barWidthFrac = 1.55; // bar width / laneHeight
+  static const double _barHeightFrac = 0.16; // bar height / laneHeight
+  static const double _barLiftFrac = 0.96; // bar centre lift above the bar / laneH
 
   // ── Background: night-stadium sky + tiered stands with a crowd ──────────────
   static void drawBackground(
@@ -633,13 +648,14 @@ class SprintRenderer {
     if (live) _drawJumpCue(canvas, Offset(base.dx, top - h * 0.55), halfW, warnPulse);
   }
 
-  /// The "HOLD!" telegraph above a live hurdle: a pulsing up-chevron + a tag.
-  /// It says HOLD (not JUMP) because a vault only fires from a HELD press — a
-  /// quick tap just strides and trips the bar — so the action is unmistakable.
+  /// A small pulsing up-chevron just above a live hurdle — the "vault here" tell.
+  /// The full read (PRESS to wind up, RELEASE in the sweet spot) is carried by
+  /// the power/timing bar drawn above it ([drawWindupBar]), so this stays a
+  /// compact, uncluttered arrow.
   static void _drawJumpCue(
       Canvas canvas, Offset at, double scale, double pulse) {
     final p = pulse.clamp(0.0, 1.0);
-    final lift = scale * 0.5 * p;
+    final lift = scale * 0.4 * p;
     final c = at.translate(0, -lift);
     final paint = Paint()
       ..style = PaintingStyle.stroke
@@ -647,13 +663,133 @@ class SprintRenderer {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..color = _hurdleWarn.withValues(alpha: 0.7 + 0.3 * p);
-    final s = scale * 0.7;
+    final s = scale * 0.6;
     // Up-chevron (vault arrow).
     canvas.drawLine(c.translate(-s, s * 0.6), c.translate(0, -s * 0.2), paint);
     canvas.drawLine(c.translate(0, -s * 0.2), c.translate(s, s * 0.6), paint);
-    // A compact "HOLD!" tag above the chevron — the vault is a HELD press.
-    _drawText(canvas, 'HOLD!', c.translate(0, -s * 1.1), scale * 0.7, _hurdleWarn,
-        weight: FontWeight.w900, maxWidth: scale * 6);
+  }
+
+  // ── Wind-up timing bar (the SKILL: PRESS to charge, RELEASE in the zone) ─────
+  /// The POWER/TIMING bar that floats above a live hurdle — the visible skill.
+  /// A horizontal neon-glass trough with a bright SWEET-SPOT zone band; while a
+  /// press is held the [fill] rises 0→1 and a needle rides its tip. RELEASE with
+  /// the needle inside the zone = a clean vault. Always shows the zone (the read
+  /// is legible before you commit); the fill + needle + label appear while
+  /// [winding]. Side-effect free; never throws; deterministic off [pulse].
+  ///
+  /// [base] is the hurdle foot point; the bar floats [_barLiftFrac] of a
+  /// [laneHeight] above it. [sweetLo]/[sweetHi] are the zone edges on 0..1.
+  static void drawWindupBar(
+    Canvas canvas,
+    Offset base,
+    double laneHeight, {
+    required double fill,
+    required bool winding,
+    required double sweetLo,
+    required double sweetHi,
+    double pulse = 0,
+  }) {
+    if (laneHeight <= 1) return;
+    final w = (laneHeight * _barWidthFrac).clamp(40.0, laneHeight * 3.2);
+    final h = (laneHeight * _barHeightFrac).clamp(8.0, laneHeight);
+    final cy = base.dy - laneHeight * _hurdleHeightFrac - laneHeight * _barLiftFrac;
+    final left = base.dx - w / 2;
+    final f = fill.clamp(0.0, 1.0);
+    final lo = sweetLo.clamp(0.0, 1.0);
+    final hi = sweetHi.clamp(0.0, 1.0).clamp(lo, 1.0);
+    final p = pulse.clamp(0.0, 1.0);
+    final r = Radius.circular(h * 0.5);
+
+    final trough = Rect.fromLTWH(left, cy - h / 2, w, h);
+    final troughRR = RRect.fromRectAndRadius(trough, r);
+
+    // Soft outer glow halo (stacked translucent rRect, no blur) so it reads as a
+    // lit neon-glass element floating over the track.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(trough.inflate(h * 0.35), Radius.circular(h)),
+      Paint()..color = _barFill.withValues(alpha: 0.10 + 0.06 * p),
+    );
+    // Trough.
+    canvas.drawRRect(troughRR, Paint()..color = _barTrack);
+
+    // Sweet-spot zone band (clip to the trough so the rounded ends stay clean).
+    canvas.save();
+    canvas.clipRRect(troughRR);
+    final zoneL = left + w * lo;
+    final zoneR = left + w * hi;
+    canvas.drawRect(
+      Rect.fromLTRB(zoneL, cy - h / 2, zoneR, cy + h / 2),
+      Paint()..color = _sweetZone.withValues(alpha: 0.34 + 0.18 * p),
+    );
+
+    // The rising power fill up to the current value (cyan → warm near the top).
+    if (winding && f > 0) {
+      final fillR = left + w * f;
+      canvas.drawRect(
+        Rect.fromLTRB(left, cy - h / 2, fillR, cy + h / 2),
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(left, cy),
+            Offset(fillR, cy),
+            [_barFill.withValues(alpha: 0.85), _barFillHot.withValues(alpha: 0.95)],
+          ),
+      );
+    }
+    canvas.restore();
+
+    // Sweet-spot edge ticks (bright verticals marking the zone boundaries).
+    final tick = Paint()
+      ..color = _sweetEdge.withValues(alpha: 0.85)
+      ..strokeWidth = math.max(1.4, h * 0.14)
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(Offset(zoneL, cy - h * 0.6), Offset(zoneL, cy + h * 0.6), tick);
+    canvas.drawLine(Offset(zoneR, cy - h * 0.6), Offset(zoneR, cy + h * 0.6), tick);
+
+    // Trough rim.
+    canvas.drawRRect(
+      troughRR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.2, h * 0.12)
+        ..color = _white.withValues(alpha: 0.22),
+    );
+
+    // Release needle riding the fill tip while winding (the live read point).
+    if (winding) {
+      final nx = left + w * f;
+      final inZone = f >= lo && f <= hi;
+      final needle = Paint()
+        ..color = (inZone ? _sweetZone : _barNeedle)
+            .withValues(alpha: 0.92)
+        ..strokeWidth = math.max(2.0, h * 0.22)
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(
+          Offset(nx, cy - h * 0.95), Offset(nx, cy + h * 0.95), needle);
+      // A small diamond cap so the needle reads as a release marker.
+      final cap = h * 0.42;
+      final path = Path()
+        ..moveTo(nx, cy - h * 0.95 - cap)
+        ..lineTo(nx + cap * 0.7, cy - h * 0.95)
+        ..lineTo(nx, cy - h * 0.95 + cap * 0.5)
+        ..lineTo(nx - cap * 0.7, cy - h * 0.95)
+        ..close();
+      canvas.drawPath(
+          path,
+          Paint()
+            ..color = (inZone ? _sweetZone : _barNeedle).withValues(alpha: 0.95));
+    }
+
+    // A compact label above the bar: prompt to PRESS when idle, RELEASE while
+    // winding — the action is always unmistakable.
+    _drawText(
+      canvas,
+      winding ? 'RELEASE!' : 'HOLD!',
+      Offset(base.dx, cy - h * 1.5),
+      h * 0.92,
+      winding ? _sweetZone : _hurdleWarn,
+      weight: FontWeight.w900,
+      maxWidth: w,
+    );
   }
 
   // ── Distance HUD (the objective: progress toward the finish) ────────────────

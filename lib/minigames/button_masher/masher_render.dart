@@ -86,11 +86,18 @@ class MasherRenderer {
   static const int _groundLines = 4;
   static const int _cloudBands = 5;
   static const int _summitRays = 5; // volumetric light shafts from the top
-  static const double _barThickFrac = 0.34; // hazard bar height / width
+  static const double _barThickFrac = 0.34; // min band height / width (floor)
+  static const double _barBandMaxFrac = 1.1; // max band height / width (clamp)
+  static const double _barFullWidthFrac = 1.18; // slab spans this * tower width
   static const double _barSpikeFrac = 0.16; // spike teeth size / width
 
   // ── Background: cool tower-climb sky + glow + drifting clouds + ground ──────
-  static void drawBackground(Canvas canvas, Size size, double t) {
+  /// [beatPulse] (0..1) is the shared metronome danger glow — 0 deep in the safe
+  /// gap, 1 on the live strike. It tints the whole scene toward danger so the
+  /// rhythm reads at a glance even in peripheral vision: cool sky breathes a red
+  /// wash on the beat, then clears for the climb window.
+  static void drawBackground(Canvas canvas, Size size, double t,
+      {double beatPulse = 0}) {
     final bg = Paint()
       ..shader = Gradient.linear(
         Offset(size.width / 2, 0),
@@ -120,6 +127,46 @@ class MasherRenderer {
     _drawClouds(canvas, size, t);
     _drawGround(canvas, size);
     _drawDepthVignette(canvas, size);
+    _drawBeatWash(canvas, size, beatPulse);
+  }
+
+  /// Tower-wide danger wash on the beat — a top band + side-gutter rim that swell
+  /// with [beatPulse]. Cheap (gradient rects, additive) and drawn over the
+  /// backdrop but under the towers, so the live beat is unmistakable without
+  /// hiding the climbers.
+  static void _drawBeatWash(Canvas canvas, Size size, double pulse) {
+    final p = pulse.clamp(0.0, 1.0);
+    if (p <= 0.01) return;
+    final a = 0.05 + 0.20 * p; // gentle in the gap, hot on the strike
+    // Top band glow (danger rolling down from the bars overhead).
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height * 0.5),
+      Paint()
+        ..blendMode = BlendMode.plus
+        ..shader = Gradient.linear(
+          Offset(0, 0),
+          Offset(0, size.height * 0.5),
+          [hazardRed.withValues(alpha: a), const Color(0x00000000)],
+        ),
+    );
+    // A pulse rim along the left/right gutters too, so the flash reads even
+    // where the towers fill the middle.
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..blendMode = BlendMode.plus
+        ..shader = Gradient.linear(
+          Offset(0, size.height / 2),
+          Offset(size.width, size.height / 2),
+          [
+            hazardRed.withValues(alpha: a * 0.7),
+            const Color(0x00000000),
+            const Color(0x00000000),
+            hazardRed.withValues(alpha: a * 0.7),
+          ],
+          const [0.0, 0.12, 0.88, 1.0],
+        ),
+    );
   }
 
   /// Faint volumetric light shafts fanning down from the summit — sells "tall"
@@ -359,68 +406,69 @@ class MasherRenderer {
         bold: true);
   }
 
-  // ── Hazard bar (sweeps across a band; telegraphed) ──────────────────────────
-  /// A horizontal hazard bar at band height [bandRung]. [laneFrac] (0..1) is the
-  /// bar's sweep position across the lane; the lethal core spans the middle
-  /// [coverFrac] of the lane. [live] draws the solid spiked danger slab; [warn]
-  /// draws a flashing ghost (the telegraph) parked at the start edge; otherwise
-  /// the bar is dwelling and drawn faintly. [warnPulse] (0..1) throbs the warn
-  /// flash. Side-effect free; never throws.
+  // ── Hazard bar (full-width slab on the shared beat; telegraphed) ─────────────
+  /// A FULL-WIDTH hazard bar centered on band height [bandRung], spanning the
+  /// whole lane (no horizontal pocket — timing on the beat is the only out). The
+  /// band's vertical thickness comes from [halfRungs] (the lethal half-height in
+  /// rungs), so what you see is exactly what kills: a climber inside this slab's
+  /// rung band during the LIVE window eats it.
+  ///
+  /// State reads the shared beat directly:
+  ///  * [warn] true  → a flashing telegraph slab (harmless lead-in).
+  ///  * [live] true  → a solid spiked danger slab; [sweep] (0..1) is how far the
+  ///    leading wipe-edge has crossed the lane and [sweepDir] (+1 / -1) the wipe
+  ///    direction, so the slam reads as a fast pass across the band.
+  ///  * neither      → the SAFE gap: a dim parked slab so the band stays legible
+  ///    (you can see WHERE the danger will be while it's harmless).
+  ///
+  /// [beatPhase] (0..1 through this bar's beat) drives the live shimmer/sparks
+  /// deterministically (no clock); [warnPulse] (0..1) throbs the telegraph.
+  /// Side-effect free; never throws.
   static void drawHazardBar(
     Canvas canvas,
     TowerSpec t, {
     required double bandRung,
+    required double halfRungs,
     required int rungs,
-    required double laneFrac,
-    required double coverFrac,
     required bool live,
     required bool warn,
+    required double sweep,
+    required int sweepDir,
+    required double beatPhase,
     double warnPulse = 0,
   }) {
     if (t.width <= 2 || rungs <= 0) return;
     final y = t.rungAt((bandRung / rungs).clamp(0.0, 1.0)).dy;
-    final h = math.max(4.0, t.width * _barThickFrac);
-    // The bar travels across a track a bit wider than the rails so it visibly
-    // enters and exits the lane.
-    final travel = t.width * 1.18;
-    final left = t.center - travel / 2;
-    final barW = travel * coverFrac.clamp(0.0, 1.0);
-    // The bar center slides from the left pocket to the right pocket.
-    final cx = left + barW / 2 + (travel - barW) * laneFrac.clamp(0.0, 1.0);
-    final center = Offset(cx, y);
+    // Band height follows the lethal half-height in rungs, clamped so a thin
+    // band still reads and a wide one never swallows the lane. Falls back to the
+    // legacy slab thickness when the band would be sub-pixel.
+    final rungPx = t.railSpan / rungs;
+    final bandH = (2 * halfRungs.abs() * rungPx)
+        .clamp(t.width * _barThickFrac, t.width * _barBandMaxFrac);
+    // Full-width: the slab spans a touch beyond the rails so its edges read as
+    // entering/leaving the lane rather than floating inside it.
+    final w = t.width * _barFullWidthFrac;
+    final center = Offset(t.center, y);
 
     if (warn) {
-      _drawWarnBar(canvas, center, barW, h, warnPulse);
+      _drawWarnBar(canvas, center, w, bandH, warnPulse);
       return;
     }
-
-    final alpha = live ? 1.0 : 0.28; // dwelling bars sit faint at the edge
-    // Bars sweep either direction across the lane, so the speed fx are kept
-    // symmetric (both vertical faces). laneFrac doubles as the motion phase that
-    // drives the spark trail + shimmer deterministically.
-    _drawLiveBar(canvas, center, barW, h, alpha, laneFrac.clamp(0.0, 1.0), live);
+    if (live) {
+      _drawLiveBar(canvas, center, w, bandH, sweep, sweepDir, beatPhase);
+    } else {
+      _drawSafeBar(canvas, center, w, bandH);
+    }
   }
 
-  static void _drawLiveBar(Canvas canvas, Offset center, double w, double h,
-      double alpha, double phase, bool live) {
-    final a = alpha.clamp(0.0, 1.0);
+  /// The SAFE-gap slab: a dim, full-width parked band so the player always sees
+  /// WHERE the hazard lives even while it is harmless — the climb window reads as
+  /// "step now, the band is asleep". Just a faint fill + hairline edge.
+  static void _drawSafeBar(Canvas canvas, Offset center, double w, double h) {
     final rect = RRect.fromRectAndRadius(
       Rect.fromCenter(center: center, width: w, height: h),
       Radius.circular(h * 0.3),
     );
-    // Motion trail FIRST (behind the slab) so the bar plows over its own streaks
-    // — reads as fast & dangerous without touching the telegraph (warn) layer.
-    if (live) _drawSpeedTrail(canvas, center, w, h, a, phase);
-    // Danger glow (cheap stacked disc, no blur).
-    if (a > 0.5) {
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromCenter(center: center, width: w * 1.06, height: h * 1.7),
-          Radius.circular(h),
-        ),
-        Paint()..color = hazardRed.withValues(alpha: 0.22 * a),
-      );
-    }
     canvas.drawRRect(
       rect,
       Paint()
@@ -428,97 +476,108 @@ class MasherRenderer {
           Offset(0, center.dy - h / 2),
           Offset(0, center.dy + h / 2),
           [
-            _hazardHi.withValues(alpha: a),
-            hazardRed.withValues(alpha: a),
-            _hazardDark.withValues(alpha: a),
+            _hazardDark.withValues(alpha: 0.18),
+            hazardRed.withValues(alpha: 0.14),
+            _hazardDark.withValues(alpha: 0.18),
           ],
           const [0.0, 0.5, 1.0],
         ),
     );
-    // Speed shimmer: a thin diagonal highlight sliding across the slab face,
-    // clipped to the bar so it never bleeds onto the lane guides.
-    if (live) _drawShimmer(canvas, rect, center, w, h, a, phase);
+    canvas.drawLine(
+      Offset(center.dx - w / 2, center.dy),
+      Offset(center.dx + w / 2, center.dy),
+      Paint()
+        ..strokeWidth = math.max(1.0, h * 0.05)
+        ..color = hazardRed.withValues(alpha: 0.22),
+    );
+  }
+
+  /// The LIVE full-width slab: a solid spiked danger band with a bright wipe-edge
+  /// crossing the lane in [sweepDir] at [sweep] (0..1). The whole band is lethal;
+  /// the wipe is pure spectacle (reads as a fast pass), the spikes sell "do not
+  /// touch", and [phase] jitters the speed fx deterministically.
+  static void _drawLiveBar(Canvas canvas, Offset center, double w, double h,
+      double sweep, int sweepDir, double phase) {
+    final s = sweep.clamp(0.0, 1.0);
+    final dir = sweepDir >= 0 ? 1.0 : -1.0;
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: w, height: h),
+      Radius.circular(h * 0.3),
+    );
+    // Danger glow halo behind the slab (cheap stacked rrect, no blur).
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: w * 1.04, height: h * 1.6),
+        Radius.circular(h),
+      ),
+      Paint()..color = hazardRed.withValues(alpha: 0.22),
+    );
+    // Solid slab body.
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(0, center.dy - h / 2),
+          Offset(0, center.dy + h / 2),
+          const [_hazardHi, hazardRed, _hazardDark],
+          const [0.0, 0.5, 1.0],
+        ),
+    );
+    _drawSweepEdge(canvas, rect, center, w, h, s, dir);
+    _drawShimmer(canvas, rect, center, w, h, phase);
     canvas.drawRRect(
       rect,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.5, h * 0.12)
-        ..color = _white.withValues(alpha: 0.5 * a),
+        ..strokeWidth = math.max(1.5, h * 0.1)
+        ..color = _white.withValues(alpha: 0.5),
     );
-    _drawSpikes(canvas, center, w, h, a);
-    // Hot rims on BOTH vertical faces — the cutting edges glow brightest. Kept
-    // symmetric so it's correct whichever way the bar is sweeping.
-    if (live) {
-      final rimPaint = Paint()..color = _hazardHi.withValues(alpha: 0.85 * a);
-      for (final dir in [-1.0, 1.0]) {
-        final ex = center.dx + dir * w / 2;
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTRB(math.min(ex, ex - dir * h * 0.18),
-                center.dy - h / 2, math.max(ex, ex - dir * h * 0.18),
-                center.dy + h / 2),
-            Radius.circular(h * 0.3),
-          ),
-          rimPaint,
-        );
-      }
-    }
+    _drawSpikes(canvas, center, w, h);
   }
 
-  /// Spark/streak trail dragging off BOTH vertical faces — a few tapering
-  /// horizontal whiskers plus tiny sparks, all driven by [phase] so they jitter
-  /// deterministically as the bar sweeps. Symmetric (direction-agnostic). Drawn
-  /// behind the slab; never covers the warn telegraph (which returns early
-  /// before any live drawing).
-  static void _drawSpeedTrail(
-      Canvas canvas, Offset center, double w, double h, double a, double phase) {
-    final len = w * (0.5 + 0.25 * a); // how far the streaks reach outward
-    final streak = Paint()
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
-    const lanes = 4;
-    for (final dir in [-1.0, 1.0]) {
-      final edge = center.dx + dir * w / 2;
-      for (var i = 0; i < lanes; i++) {
-        final ly = center.dy + (i / (lanes - 1) - 0.5) * h * 0.74;
-        // Each whisker pulses its length with the sweep phase + its own offset.
-        final wobble = 0.65 + 0.35 * math.sin(phase * 6.2832 + i * 1.3 + dir);
-        final tail = edge + dir * len * wobble;
-        streak
-          ..strokeWidth = math.max(1.0, h * 0.08 * (1.0 - i * 0.12))
-          ..shader = Gradient.linear(
-            Offset(edge, ly),
-            Offset(tail, ly),
-            [_hazardHi.withValues(alpha: 0.45 * a), const Color(0x00000000)],
-          );
-        canvas.drawLine(Offset(edge, ly), Offset(tail, ly), streak);
-      }
-    }
-    // Darting sparks just off each edge.
-    final sparkPaint = Paint();
-    for (final dir in [-1.0, 1.0]) {
-      final edge = center.dx + dir * w / 2;
-      for (var i = 0; i < 2; i++) {
-        final ph = (phase * 1.7 + i * 0.5 + (dir > 0 ? 0.0 : 0.27)) % 1.0;
-        final sx = edge + dir * len * (0.25 + 0.6 * ph);
-        final sy = center.dy + math.sin(phase * 9.4 + i * 2.1 + dir) * h * 0.3;
-        final sr = h * 0.1 * (1.0 - ph);
-        if (sr <= 0) continue;
-        sparkPaint.color = _blend(_hazardHi, _white, 0.4)
-            .withValues(alpha: 0.6 * a * (1 - ph));
-        canvas.drawCircle(Offset(sx, sy), sr, sparkPaint);
-      }
-    }
+  /// The bright leading wipe-edge crossing a live slab: a hot vertical bar (the
+  /// front of the pass) with a short trailing gradient behind it, clipped to the
+  /// slab. Travels left→right for [dir] +1, right→left for −1, at [sweep] 0..1.
+  static void _drawSweepEdge(Canvas canvas, RRect rect, Offset center, double w,
+      double h, double sweep, double dir) {
+    canvas.save();
+    canvas.clipRRect(rect);
+    final left = center.dx - w / 2;
+    // Position the leading edge by sweep; flip travel direction by dir.
+    final frac = dir > 0 ? sweep : 1.0 - sweep;
+    final ex = left + frac * w;
+    final edgeW = math.max(2.0, w * 0.05);
+    // Trailing wash behind the edge so the pass has a comet head.
+    final tailLen = w * 0.28;
+    final tailStart = ex - dir * tailLen;
+    canvas.drawRect(
+      Rect.fromLTRB(math.min(ex, tailStart), center.dy - h / 2,
+          math.max(ex, tailStart), center.dy + h / 2),
+      Paint()
+        ..blendMode = BlendMode.plus
+        ..shader = Gradient.linear(
+          Offset(tailStart, center.dy),
+          Offset(ex, center.dy),
+          [const Color(0x00000000), _hazardHi.withValues(alpha: 0.5)],
+        ),
+    );
+    // The hot leading edge itself.
+    canvas.drawRect(
+      Rect.fromCenter(
+          center: Offset(ex, center.dy), width: edgeW, height: h),
+      Paint()..color = _blend(_hazardHi, _white, 0.5).withValues(alpha: 0.9),
+    );
+    canvas.restore();
   }
 
   /// A single bright diagonal sweep crossing the slab face for a metallic
   /// speed-glint. Clipped to [rect] so it stays inside the bar.
   static void _drawShimmer(Canvas canvas, RRect rect, Offset center, double w,
-      double h, double a, double phase) {
+      double h, double phase) {
     if (w <= 1) return;
     canvas.save();
     canvas.clipRRect(rect);
-    // Glint travels across the bar, looping with the sweep phase.
+    // Glint travels across the bar, looping with the beat phase.
     final p = (phase * 2.0) % 1.0;
     final gx = center.dx - w / 2 + p * (w + h);
     final band = h * 0.5;
@@ -532,18 +591,17 @@ class MasherRenderer {
       glint,
       Paint()
         ..blendMode = BlendMode.plus
-        ..color = _white.withValues(alpha: 0.16 * a),
+        ..color = _white.withValues(alpha: 0.16),
     );
     canvas.restore();
   }
 
   /// Hazard-stripe spike teeth along the top + bottom edge so the bar reads as
   /// "do not touch" even at a glance.
-  static void _drawSpikes(
-      Canvas canvas, Offset center, double w, double h, double a) {
+  static void _drawSpikes(Canvas canvas, Offset center, double w, double h) {
     final spike = (w * _barSpikeFrac).clamp(3.0, h);
     final n = math.max(2, (w / (spike * 1.6)).floor());
-    final paint = Paint()..color = _hazardHi.withValues(alpha: 0.8 * a);
+    final paint = Paint()..color = _hazardHi.withValues(alpha: 0.8);
     for (var i = 0; i < n; i++) {
       final x = center.dx - w / 2 + (i + 0.5) * (w / n);
       // top tooth
@@ -563,8 +621,8 @@ class MasherRenderer {
     }
   }
 
-  /// The telegraph: a flashing hollow ghost of the bar parked at the start edge,
-  /// pulsing in the warn color so the player knows a live pass is imminent.
+  /// The telegraph: a flashing full-width ghost of the slab pulsing in the warn
+  /// color so the player knows a live pass is imminent — freeze NOW.
   static void _drawWarnBar(
       Canvas canvas, Offset center, double w, double h, double pulse) {
     final p = pulse.clamp(0.0, 1.0);
@@ -583,15 +641,16 @@ class MasherRenderer {
         ..strokeWidth = math.max(2.0, h * 0.16)
         ..color = hazardWarn.withValues(alpha: 0.55 + 0.4 * p),
     );
-    // A couple of warning chevrons in the middle.
+    // A row of warning chevrons across the band so the full-width telegraph
+    // reads at a glance (more than one, since the slab now spans the lane).
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(2.0, h * 0.14)
       ..strokeCap = StrokeCap.round
       ..color = hazardWarn.withValues(alpha: 0.7 + 0.3 * p);
     final s = h * 0.3;
-    for (final dx in [-w * 0.12, w * 0.12]) {
-      final x = center.dx + dx;
+    for (final f in const [-0.3, -0.1, 0.1, 0.3]) {
+      final x = center.dx + f * w;
       canvas.drawLine(Offset(x - s, center.dy - s),
           Offset(x, center.dy), paint);
       canvas.drawLine(Offset(x, center.dy),

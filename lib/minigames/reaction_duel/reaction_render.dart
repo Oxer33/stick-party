@@ -9,11 +9,14 @@ import '../../art/stick/stick_figure.dart';
 /// module stays lean and the drawing stays cohesive (mirrors the sumo_smash /
 /// tug_of_war split).
 ///
-/// The signal states it paints are clear and distinct: WAIT (red wash + "WAIT…"
-/// halo), FEINT (a fake green "GO!" bluff — same look as the real signal so it
-/// genuinely bluffs), and the real GO/DRAW (green flash + "GO!" punch). Per
-/// player it draws a ready stance (with a breathing sway, owned by the game), a
-/// gentle false-start mark, a draw-win pose, and the "first to N" draw tally.
+/// The signal states it paints are a LEARNABLE read — deliberately distinct so a
+/// sharp player can tell fake from real at a glance: WAIT (red wash + "WAIT…"
+/// halo), FEINT (a dim, jittery AMBER "FAKE?" bluff — never the GO-green, no
+/// ping), and the real GO/DRAW (a SUSTAINED green flash + "GO!" punch + a rising
+/// "ping" of expanding rings the feint never fires). On a clean winning tap it
+/// also paints the VISIBLE REWARD: the reaction time (ms) + a "READ x2 ▲" streak.
+/// Per player it draws a ready stance (with a breathing sway, owned by the game),
+/// a gentle false-start mark, a draw-win pose, and the "first to N" draw tally.
 ///
 /// Every method is side-effect free beyond the supplied [Canvas], guards its
 /// own inputs, and never throws (so it is safe to call from `render`).
@@ -41,6 +44,14 @@ class ReactionRenderer {
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _tooSoon = Color(0xFFFF5466);
+
+  // FEINT palette — the bluff is AMBER, never the GO-green. A dim, off-color,
+  // jittery blip the player learns to read as "fake": no white core, no ping,
+  // no full wash. Deliberately a different hue + shape from the real signal so
+  // the read is learnable, not random.
+  static const Color _feintAmber = Color(0xFFE6A23C); // bluff blip core
+  static const Color _feintAmberDeep = Color(0xFF8A5A12); // bluff halo edge
+  static const Color _streakGold = Color(0xFFFFE45C); // streak ▲ accent
 
   // ── Tuning (fractions; no inline magic numbers) ────────────────────────────
   static const double _horizonFrac = 0.46; // sky/ground split height
@@ -463,11 +474,12 @@ class ReactionRenderer {
   /// the KO. When [struck] is false it draws the calm red "WAIT…" pulse;
   /// [waitPulse] in 0..1 throbs it.
   ///
-  /// [feint] (default false) marks a BLUFF "GO!" — same green word so it still
-  /// genuinely bluffs, but deliberately a touch flatter (no white-hot shockwave,
-  /// cooler/dimmer bloom) so the REAL GO punches visibly harder by contrast.
-  /// Opt-in: leave false and the real-GO punch upgrade still applies to every
-  /// strike, so existing callers get the harder pop with no change.
+  /// THE LEARNABLE READ. [feint] (default false) marks a BLUFF — and the bluff is
+  /// drawn DELIBERATELY DIFFERENT from the real GO so a sharp player can learn to
+  /// tell them apart: a dim AMBER "FAKE" blip that jitters (driven by [jitter] in
+  /// 0..1, a wobble phase off the game clock), with NO white-hot core, NO ping,
+  /// NO green. The real GO is a punchy SUSTAINED green "GO!" with a white-hot
+  /// shockwave. So "amber, shaky, brief = fake; green, bright, holds = real."
   static void drawCenterCue(
     Canvas canvas,
     Size size, {
@@ -477,14 +489,88 @@ class ReactionRenderer {
     double strikeWord = 1.0,
     double centerFrac = 0.5,
     bool feint = false,
+    double jitter = 0.0,
   }) {
     final center = Offset(size.width / 2, size.height * centerFrac);
-    if (!struck) {
+    if (feint) {
+      _drawFeintCue(canvas, size, center, strikeFlash.clamp(0.0, 1.0),
+          strikeWord.clamp(0.0, 1.0), jitter.clamp(0.0, 1.0));
+    } else if (!struck) {
       _drawWaitCue(canvas, size, center, waitPulse.clamp(0.0, 1.0));
     } else {
       _drawStrikeCue(canvas, size, center, strikeFlash.clamp(0.0, 1.0),
-          strikeWord.clamp(0.0, 1.0), feint);
+          strikeWord.clamp(0.0, 1.0));
     }
+  }
+
+  /// The BLUFF cue — the fake-out a sharp player learns to ignore. AMBER (never
+  /// the GO-green), dim, and visibly JITTERY: the word "FAKE" and its halo wobble
+  /// by [jitter] so it reads as a nervous flicker, not the clean snap of the real
+  /// signal. No white-hot core / shockwave / ping — those belong only to the real
+  /// GO. [flash]/[word] fade it like the strike cue so the blip is brief.
+  static void _drawFeintCue(Canvas canvas, Size size, Offset center,
+      double flash, double word, double jitter) {
+    // Nervous wobble: a small, fast shake whose amplitude scales with the blip's
+    // own life so it twitches hardest at the peak.
+    final amp = size.width * 0.012 * (0.4 + 0.6 * flash);
+    final wob = Offset(
+      math.sin(jitter * math.pi * 2 * 3) * amp,
+      math.cos(jitter * math.pi * 2 * 5) * amp * 0.7,
+    );
+    final c = center + wob;
+    if (flash > 0.01) {
+      // A small, dim amber bloom — clearly smaller + cooler than the real GO's.
+      final r = size.width * (0.16 + 0.05 * (1 - flash));
+      canvas.drawCircle(
+        c,
+        r,
+        Paint()
+          ..shader = Gradient.radial(
+            c,
+            r,
+            [
+              _feintAmber.withValues(alpha: 0.34 * flash),
+              _feintAmberDeep.withValues(alpha: 0.16 * flash),
+              const Color(0x00000000),
+            ],
+            const [0.0, 0.5, 1.0],
+          ),
+      );
+      // A thin dashed-feel warning ring (broken into ticks) — a different SHAPE
+      // from the real GO's clean solid shockwave, reinforcing "this is a fake".
+      final ringR = size.width * 0.12;
+      final tick = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.5, size.width * 0.006)
+        ..color = _feintAmber.withValues(alpha: 0.55 * flash);
+      const ticks = 8;
+      for (var i = 0; i < ticks; i++) {
+        final a0 = (i / ticks) * math.pi * 2 + jitter * 1.2;
+        final a1 = a0 + math.pi / ticks; // half-on, half-off → dashed look
+        canvas.drawArc(
+          Rect.fromCircle(center: c, radius: ringR),
+          a0,
+          a1 - a0,
+          false,
+          tick,
+        );
+      }
+    }
+    if (word <= 0.01) return;
+    // The word is "FAKE" in amber — a hair smaller than the real GO and shaky, so
+    // it never reads as the genuine signal even at a glance.
+    final scale = 0.92 + 0.18 * (1 - word);
+    _drawText(
+      canvas,
+      'FAKE',
+      c,
+      size.width * _strikeFontFrac * 0.62 * scale,
+      _feintAmber.withValues(alpha: word),
+      weight: FontWeight.w900,
+      glow: true,
+      glowColor: _feintAmberDeep.withValues(alpha: word),
+    );
   }
 
   static void _drawWaitCue(
@@ -524,15 +610,14 @@ class ReactionRenderer {
     );
   }
 
-  static void _drawStrikeCue(Canvas canvas, Size size, Offset center,
-      double flash, double word, bool feint) {
-    // A tight green burst behind the "GO!" word that fades as `flash` → 0. Kept
-    // tight (the full-screen wash is the separate screen-flash overlay) so it
-    // reads as a halo around the banner rather than washing the whole sky. The
-    // feint keeps the same green so it still bluffs, just a touch flatter.
-    final bloomScale = feint ? 0.8 : 1.0;
+  /// The REAL GO cue — always the punchy version (the feint takes a different
+  /// path entirely). A tight green bloom + a white-hot shockwave + a blinding
+  /// white core behind a big green "GO!" word. This is the snap the player learns
+  /// to fire on.
+  static void _drawStrikeCue(
+      Canvas canvas, Size size, Offset center, double flash, double word) {
     if (flash > 0.01) {
-      final r = size.width * (0.28 + 0.12 * (1 - flash)) * bloomScale;
+      final r = size.width * (0.28 + 0.12 * (1 - flash));
       canvas.drawCircle(
         center,
         r,
@@ -541,51 +626,45 @@ class ReactionRenderer {
             center,
             r,
             [
-              _goGreen.withValues(alpha: (feint ? 0.46 : 0.6) * flash),
-              _goGreenDeep.withValues(alpha: (feint ? 0.2 : 0.28) * flash),
+              _goGreen.withValues(alpha: 0.6 * flash),
+              _goGreenDeep.withValues(alpha: 0.28 * flash),
               const Color(0x00000000),
             ],
             const [0.0, 0.45, 1.0],
           ),
       );
 
-      // REAL GO only: a fast white-hot shockwave ring that expands and thins as
-      // the flash decays — the extra "punch" that makes the true signal pop
-      // visibly harder than the bluff. Omitted for the feint so the bluff feels
-      // a hair flat in hindsight without ever ceasing to read as a green GO.
-      if (!feint) {
-        final ringR = size.width * (0.16 + 0.34 * (1 - flash));
-        canvas.drawCircle(
-          center,
-          ringR,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = math.max(2.0, size.width * 0.012 * flash)
-            ..color = _white.withValues(alpha: 0.7 * flash),
-        );
-        // A tight inner white core bloom at the peak for the blinding kick.
-        canvas.drawCircle(
-          center,
-          size.width * 0.10 * flash,
-          Paint()
-            ..shader = Gradient.radial(
-              center,
-              math.max(1.0, size.width * 0.10 * flash),
-              [
-                _white.withValues(alpha: 0.55 * flash),
-                const Color(0x00000000),
-              ],
-            ),
-        );
-      }
+      // A fast white-hot shockwave ring that expands and thins as the flash
+      // decays — the "punch" that marks the genuine signal.
+      final ringR = size.width * (0.16 + 0.34 * (1 - flash));
+      canvas.drawCircle(
+        center,
+        ringR,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, size.width * 0.012 * flash)
+          ..color = _white.withValues(alpha: 0.7 * flash),
+      );
+      // A tight inner white core bloom at the peak for the blinding kick.
+      canvas.drawCircle(
+        center,
+        size.width * 0.10 * flash,
+        Paint()
+          ..shader = Gradient.radial(
+            center,
+            math.max(1.0, size.width * 0.10 * flash),
+            [
+              _white.withValues(alpha: 0.55 * flash),
+              const Color(0x00000000),
+            ],
+          ),
+      );
     }
     // The word punches in big then fades out (alpha + scale from `word`) so it
     // never lingers over the KO that follows. "GO!" in bright green reinforces
-    // the per-zone green flash (the kid-clear "tap now" signal). The real GO
-    // snaps in a touch bigger with a white-hot halo; the feint is flatter.
+    // the per-zone green wash (the "tap now" signal).
     if (word <= 0.01) return;
-    final grow = feint ? 0.36 : 0.55; // real GO booms a little harder
-    final scale = 1.0 + grow * (1 - word);
+    final scale = 1.0 + 0.55 * (1 - word);
     _drawText(
       canvas,
       'GO!',
@@ -594,9 +673,103 @@ class ReactionRenderer {
       _goGreen.withValues(alpha: word),
       weight: FontWeight.w900,
       glow: true,
-      glowColor:
-          (feint ? _goGreenDeep : _white).withValues(alpha: word),
+      glowColor: _white.withValues(alpha: word),
     );
+  }
+
+  /// The RISING GO PING — concentric green rings that bloom outward from
+  /// [center] on the real signal, a clean expanding pulse the FEINT never fires.
+  /// [progress] in 0..1 drives the expansion (0 = just fired, 1 = faded out); two
+  /// staggered rings give the "rising ping" read. Drawn screen-space over the GO
+  /// flash. Pure + no-throw; a [progress] outside 0..1 is clamped.
+  static void drawGoPing(Canvas canvas, Size size, double progress) {
+    final p = progress.clamp(0.0, 1.0);
+    if (p >= 1.0 || size.width <= 1) return;
+    final center = Offset(size.width / 2, size.height * 0.5);
+    final maxR = math.sqrt(size.width * size.width + size.height * size.height) *
+        0.42;
+    // Two rings, the second trailing the first, so the ping reads as a rising
+    // double-pulse rather than a single ring.
+    for (final lead in const [0.0, 0.28]) {
+      final rp = (p - lead) / (1 - lead);
+      if (rp <= 0 || rp >= 1) continue;
+      final radius = maxR * _easeOut(rp);
+      final fade = (1 - rp) * (1 - rp);
+      canvas.drawCircle(
+        center,
+        radius,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, size.width * 0.014 * fade)
+          ..color = _goGreen.withValues(alpha: 0.7 * fade),
+      );
+      // A fainter white inner edge on the lead ring for a crisp "ping" rim.
+      if (lead == 0.0) {
+        canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = math.max(1.0, size.width * 0.005 * fade)
+            ..color = _white.withValues(alpha: 0.5 * fade),
+        );
+      }
+    }
+  }
+
+  /// THE VISIBLE REWARD for a sharp read: the winner's reaction time in big
+  /// digits ("182 ms") plus, on a run, a streak badge ("READ x2 ▲"). Pops in then
+  /// fades via [life] (1 → 0). Placed just under the center cue so it lands on the
+  /// moment the read paid off. Screen-space, no-throw; an empty draw when
+  /// [reactionMs] <= 0 or [life] <= 0.
+  static void drawReadReward(
+    Canvas canvas,
+    Size size, {
+    required int reactionMs,
+    required int streak,
+    required Color color,
+    required double life,
+    double centerFrac = 0.5,
+  }) {
+    final a = life.clamp(0.0, 1.0);
+    if (a <= 0.01 || reactionMs <= 0 || size.width <= 1) return;
+    // Rise + settle: drifts up a touch as it fades so it reads as an earned pop.
+    final rise = size.height * 0.05 * (1 - a);
+    final cy = size.height * centerFrac + size.width * 0.16 - rise;
+    final cx = size.width / 2;
+
+    // Reaction time — the proof the tap was fast.
+    _drawText(
+      canvas,
+      '$reactionMs ms',
+      Offset(cx, cy),
+      size.width * 0.072,
+      _white.withValues(alpha: a),
+      weight: FontWeight.w900,
+      glow: true,
+      glowColor: color.withValues(alpha: a),
+    );
+
+    // Streak badge below it — the running tally a sharp player builds up.
+    if (streak >= 2) {
+      _drawText(
+        canvas,
+        'READ x$streak  ▲',
+        Offset(cx, cy + size.width * 0.075),
+        size.width * 0.05,
+        _streakGold.withValues(alpha: a),
+        weight: FontWeight.w900,
+        glow: true,
+        glowColor: _black.withValues(alpha: a),
+      );
+    }
+  }
+
+  /// Cheap ease-out (quadratic) for the ping expansion. Local helper so the
+  /// renderer keeps its no-Flutter-widgets purity (no `package:flutter` Curves).
+  static double _easeOut(double t) {
+    final x = t.clamp(0.0, 1.0);
+    return 1 - (1 - x) * (1 - x);
   }
 
   /// A lightning slash arc sweeping from [from] toward [to] (the loser), with a

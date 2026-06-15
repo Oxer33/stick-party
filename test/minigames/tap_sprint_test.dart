@@ -7,58 +7,95 @@ import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/minigames/tap_sprint/tap_sprint.dart';
 
-/// Hurdle Dash (legacy id `tap_sprint`): rhythmic TAPS build run speed (a
-/// cadence, not a mash); telegraphed HURDLES must be VAULTED on cue (a controlled
-/// press inside the jump window, or a hold) or the runner TRIPS. First across the
+/// Hurdle Dash (legacy id `tap_sprint`): a TIMED-RELEASE vault sprint.
+///
+/// Rhythmic TAPS build run speed (a cadence, not a mash). As a HURDLE enters the
+/// approach window a power/timing bar rises while a press is HELD; RELEASE inside
+/// the sweet-spot zone = a clean vault (speed reward), release too early/late OR
+/// never winding up at all = a stutter-clip (trip + speed loss). First across the
 /// finish wins; farthest at the buzzer wins if nobody finishes.
+///
+/// The control is PRESS (down) → HOLD (holdTick fills the bar) → RELEASE (up).
+/// A blind tapper that only ever fires `down` every frame never HOLDS, so its
+/// bar never fills and it never releases in the zone — it clips every hurdle.
 void main() {
   const dt = 1 / 60;
-  const strideFrames = 9; // 9/60 = 0.15s — inside the stride window 0.085..0.26
+  // 9/60 = 0.15s — inside the stride window [_strideLo 0.10, _strideHi 0.22].
+  const strideFrames = 9;
 
-  /// A measured solo runner driven to the finish: it taps a steady stride beat
-  /// for speed, and vaults a hurdle ONLY when [TapSprint.shouldVaultNow] says a
-  /// vault would clear (reading the telegraph). Every press is ≥ a stride-gap
-  /// apart, so each registers cleanly. Deterministic (fixed dt + ctx.rng).
-  TapSprint runMeasuredSolo(int seed) {
-    final ctx = MiniGameContext(
-      players: [PlayerSlot.defaults(0)],
-      arena: const Size(800, 1200),
-      rng: SeededRng(seed),
-      zones: ZoneLayout.forPlayers(1),
-    );
-    final g = TapSprint()..init(ctx);
-    var sincePress = strideFrames; // allowed to press on frame 0
-    var n = 0;
-    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
-      if (sincePress >= strideFrames) {
-        if (g.hasHurdleInWindow(0)) {
-          // A hurdle is telegraphed: wait for the exact clear moment, then vault.
-          if (g.shouldVaultNow(0)) {
-            g.onInput(PlayerInput.down(0));
-            sincePress = 0;
-          }
-        } else {
-          g.onInput(PlayerInput.down(0)); // stride on the beat
-          sincePress = 0;
+  MiniGameContext ctxFor(int seed, int n) => MiniGameContext(
+        players: [for (var i = 0; i < n; i++) PlayerSlot.defaults(i)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(n),
+      );
+
+  MiniGameContext botCtxFor(int seed, int n) => MiniGameContext(
+        players: [for (var i = 0; i < n; i++) PlayerSlot.defaults(i, isBot: true)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(n),
+      );
+
+  /// Drive [g]'s player [id] as a SKILLED timed-release runner for one frame's
+  /// worth of input. Between hurdles it strides on the cadence (every
+  /// [strideFrames]); when a hurdle is offered it PRESSES to arm the wind-up,
+  /// fills the bar with holdTicks, and RELEASES the instant the bar sits inside
+  /// the sweet spot ([TapSprint.shouldVaultNow]) — a clean vault every time.
+  ///
+  /// [state] carries the tiny per-player input bookkeeping ('winding', stride
+  /// counter) across frames. Mutates [state].
+  void driveSkilled(TapSprint g, int id, _SkillState state) {
+    if (g.hasHurdleInWindow(id)) {
+      if (!state.winding) {
+        g.onInput(PlayerInput.down(id)); // arm the wind-up (bar starts at 0)
+        state.winding = true;
+      } else {
+        // Fill the bar, then release the moment it enters the sweet spot.
+        g.onInput(PlayerInput(playerId: id, phase: InputPhase.holdTick, dt: dt));
+        if (g.shouldVaultNow(id)) {
+          g.onInput(PlayerInput(playerId: id, phase: InputPhase.up));
+          state.winding = false;
         }
       }
+    } else {
+      if (state.winding) {
+        // Lost the cue before a clean release — let go and resume striding.
+        g.onInput(PlayerInput(playerId: id, phase: InputPhase.up));
+        state.winding = false;
+      }
+      if (state.sinceStride >= strideFrames) {
+        g.onInput(PlayerInput.down(id)); // stride on the run cadence
+        state.sinceStride = 0;
+      }
+    }
+    state.sinceStride++;
+  }
+
+  /// A measured solo runner driven to the finish with the skilled timed-release
+  /// control. Deterministic (fixed dt + ctx.rng). The single human consumes no
+  /// RNG, so the run is identical for any seed.
+  TapSprint runMeasuredSolo(int seed) {
+    final g = TapSprint()..init(ctxFor(seed, 1));
+    final state = _SkillState();
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 90) {
+      driveSkilled(g, 0, state);
       g.update(dt);
-      sincePress++;
     }
     return g;
   }
 
+  test('meta keeps the legacy id, player counts and FFA mode', () {
+    final meta = TapSprint().meta;
+    expect(meta.id, 'tap_sprint');
+    expect(meta.minPlayers, 1);
+    expect(meta.maxPlayers, 4);
+    expect(meta.modes, contains(GameMode.ffa));
+  });
+
   test('finishes with a full ranking inside the pacing bounds (4 bots)', () {
-    final players = [
-      for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)
-    ];
-    final ctx = MiniGameContext(
-      players: players,
-      arena: const Size(800, 1200),
-      rng: SeededRng(7),
-      zones: ZoneLayout.forPlayers(4),
-    );
-    final g = TapSprint()..init(ctx);
+    final g = TapSprint()..init(botCtxFor(7, 4));
 
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 90) {
@@ -79,13 +116,7 @@ void main() {
   });
 
   test('solo player finishes and is ranked first', () {
-    final ctx = MiniGameContext(
-      players: [PlayerSlot.defaults(0, isBot: true)],
-      arena: const Size(800, 1200),
-      rng: SeededRng(3),
-      zones: ZoneLayout.forPlayers(1),
-    );
-    final g = TapSprint()..init(ctx);
+    final g = TapSprint()..init(botCtxFor(3, 1));
 
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 90) {
@@ -103,13 +134,7 @@ void main() {
     // stride floor, so it OVER-MASHES (breaks stride) and its rhythm collapses —
     // proving speed comes from cadence, not finger speed.
     TapSprint runRhythm(bool everyFrame) {
-      final ctx = MiniGameContext(
-        players: [PlayerSlot.defaults(0)],
-        arena: const Size(800, 1200),
-        rng: SeededRng(9),
-        zones: ZoneLayout.forPlayers(1),
-      );
-      final g = TapSprint()..init(ctx);
+      final g = TapSprint()..init(ctxFor(9, 1));
       // Run a fixed 4s with no hurdle reached yet (first hurdle is at 14m; a
       // jogging masher never gets there in 4s) so this isolates SPEED from trips.
       for (var f = 0; f < 60 * 4 && g.status != MiniGameStatus.finished; f++) {
@@ -132,16 +157,11 @@ void main() {
   });
 
   test('a mistimed/absent vault trips the runner on a hurdle', () {
-    // A runner that strides on the beat but NEVER vaults must, at some point,
-    // dead-stop at a hurdle: its meters advance, then hold flat across the trip
-    // stop. (A clean run would never stall.) Proves hurdles physically interpose.
-    final ctx = MiniGameContext(
-      players: [PlayerSlot.defaults(0)],
-      arena: const Size(800, 1200),
-      rng: SeededRng(5),
-      zones: ZoneLayout.forPlayers(1),
-    );
-    final g = TapSprint()..init(ctx);
+    // A runner that strides on the beat but NEVER winds up to vault must, at some
+    // point, dead-stop at a hurdle: its meters advance, then hold flat across the
+    // trip stop. (A clean run would never stall.) Proves hurdles physically
+    // interpose and an un-vaulted hurdle costs a runner real ground.
+    final g = TapSprint()..init(ctxFor(5, 1));
 
     var prev = g.metersOf(0);
     var stalledFrames = 0;
@@ -164,112 +184,113 @@ void main() {
         reason: 'failing to vault a hurdle must dead-stop the runner (a trip)');
   });
 
-  test('a measured runner who HOLDS to vault beats a blind spammer head-to-head',
-      () {
+  test('the wind-up bar only fills while held and resets on a re-press', () {
+    // The timed-release contract, asserted directly on the debug hooks:
+    //  * once a hurdle is offered, a press + holdTicks raise the bar;
+    //  * a fresh press mid-wind RESETS the bar to zero (hammering never charges).
+    final g = TapSprint()..init(ctxFor(5, 1));
+
+    var armed = false;
+    for (var f = 0; f < 60 * 12 && !armed; f++) {
+      if (g.hasHurdleInWindow(0)) {
+        // Arm + fill a few frames, then verify the bar rose above zero.
+        g.onInput(PlayerInput.down(0));
+        for (var k = 0; k < 8; k++) {
+          g.onInput(PlayerInput(playerId: 0, phase: InputPhase.holdTick, dt: dt));
+        }
+        final filled = g.windupOf(0);
+        expect(filled, greaterThan(0.0),
+            reason: 'holding a press with a hurdle offered must fill the bar');
+
+        // A fresh press snaps the bar back to zero (a stutter, not extra charge).
+        g.onInput(PlayerInput.down(0));
+        expect(g.windupOf(0), lessThan(filled),
+            reason: 're-pressing mid-wind must reset the bar (no charge stacking)');
+        armed = true;
+        break;
+      }
+      // Stride on cadence until a hurdle shows up.
+      if (f % strideFrames == 0) g.onInput(PlayerInput.down(0));
+      g.update(dt);
+    }
+    expect(armed, isTrue, reason: 'a hurdle should enter the window within 12s');
+  });
+
+  test('a skilled timed-release runner beats a blind every-frame spammer', () {
     // THE WHOLE DESIGN, proven deterministically in one shared 1v1 race (both
     // face the SAME hurdle course):
     //
-    //  * P0 MEASURED: strides on cadence between hurdles (high rhythm → fast) and
-    //    HOLDS as each hurdle enters its window — the hold auto-leaps at the clear
-    //    moment, so it vaults the gauntlet cleanly and runs the tape down.
-    //  * P1 BLIND SPAMMER: taps EVERY frame. Over-mash crushes its rhythm (crawls)
-    //    AND a tap never vaults — so it clips every hurdle, tripping over and over,
-    //    and is left far behind.
-    final players = [
-      PlayerSlot.defaults(0), // measured (strides + holds to vault)
-      PlayerSlot.defaults(1), // blind spammer
-    ];
-    final ctx = MiniGameContext(
-      players: players,
-      arena: const Size(800, 1200),
-      rng: SeededRng(5),
-      zones: ZoneLayout.forPlayers(2),
-    );
-    final g = TapSprint()..init(ctx);
+    //  * P0 SKILLED: strides on cadence between hurdles (high rhythm → fast) and,
+    //    as each hurdle enters its window, PRESSES to wind up the bar and RELEASES
+    //    inside the sweet spot (shouldVaultNow) — a clean vault every time. It
+    //    clears the gauntlet and runs the tape down.
+    //  * P1 BLIND SPAMMER: fires `down` EVERY frame and never HOLDS. Over-mash
+    //    crushes its rhythm (it crawls) AND — the crux — it never winds the bar
+    //    nor releases in the zone, so it clips every hurdle, tripping over and
+    //    over, and is left far behind.
+    final g = TapSprint()..init(ctxFor(5, 2));
 
-    var holding = false;
-    var sinceStride = strideFrames;
+    final p0 = _SkillState();
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 90) {
-      // Measured P0: hold through a hurdle's window (auto-vaults at the clear
-      // moment), stride on cadence otherwise.
-      if (g.hasHurdleInWindow(0)) {
-        if (!holding) {
-          g.onInput(PlayerInput.down(0));
-          holding = true;
-        }
-        g.onInput(PlayerInput(playerId: 0, phase: InputPhase.holdTick, dt: dt));
-      } else {
-        if (holding) {
-          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
-          holding = false;
-        }
-        if (sinceStride >= strideFrames) {
-          g.onInput(PlayerInput.down(0));
-          sinceStride = 0;
-        }
-      }
+      driveSkilled(g, 0, p0); // skilled press→hold→release
       g.onInput(PlayerInput.down(1)); // blind spam every frame
       g.update(dt);
-      sinceStride++;
     }
 
     expect(g.status, MiniGameStatus.finished);
-    expect(g.metersOf(0), greaterThan(g.metersOf(1)),
-        reason: 'reading + holding to vault must beat a blind mash');
-    // The spammer trips every hurdle and never finishes — left well short.
-    expect(g.metersOf(1), lessThan(g.metersOf(0) * 0.8),
-        reason: 'the blind spammer should be stalled well short');
-    expect(g.winResult!.winner, 0);
+    expect(g.winResult!.winner, 0,
+        reason: 'reading the bar + releasing in the sweet spot must win');
+
+    final skilled = g.metersOf(0);
+    final spammer = g.metersOf(1);
+    expect(skilled, greaterThan(spammer),
+        reason: 'a timed-release vault must out-distance a blind mash');
+    // The spammer trips every hurdle and never finishes — left well short. The
+    // measured margin at seed 5 is ~39m (spammer ≈ 0.61× the skilled runner).
+    expect(spammer, lessThan(skilled * 0.8),
+        reason: 'the blind spammer should be stalled well short of the finish');
   });
 
-  test('hold-to-vault also clears a hurdle (the second one-touch mapping)', () {
-    // A runner that strides on the beat AND holds a press the whole time auto-
-    // vaults each hurdle at the right moment, so HOLD is a valid clearing input.
-    // It should out-distance an identical runner that strides but never vaults.
-    TapSprint runHold(bool hold) {
-      final ctx = MiniGameContext(
-        players: [PlayerSlot.defaults(0)],
-        arena: const Size(800, 1200),
-        rng: SeededRng(5),
-        zones: ZoneLayout.forPlayers(1),
-      );
-      final g = TapSprint()..init(ctx);
+  test('a clean timed release out-distances a stride-only no-vault run', () {
+    // Isolates the vault payoff: two identical solo runners stride the same
+    // cadence; one ALSO times a clean release on each hurdle, the other never
+    // winds up. Over the same window the releaser clears hurdles the no-vault run
+    // trips on, so it pulls clearly ahead.
+    TapSprint runVault(bool vault) {
+      final g = TapSprint()..init(ctxFor(5, 1));
+      final state = _SkillState();
       for (var f = 0; f < 60 * 14 && g.status != MiniGameStatus.finished; f++) {
-        if (f % strideFrames == 0) g.onInput(PlayerInput.down(0)); // stride beat
-        if (hold) {
-          g.onInput(PlayerInput(playerId: 0, phase: InputPhase.holdTick, dt: dt));
+        if (vault) {
+          driveSkilled(g, 0, state);
+        } else if (f % strideFrames == 0) {
+          g.onInput(PlayerInput.down(0)); // stride beat, but never vault
         }
         g.update(dt);
       }
       return g;
     }
 
-    final holder = runHold(true);
-    final noVault = runHold(false);
-    expect(holder.metersOf(0), greaterThan(noVault.metersOf(0)),
-        reason: 'holding to auto-vault must clear hurdles the no-vault run trips on');
+    final releaser = runVault(true);
+    final noVault = runVault(false);
+    expect(releaser.metersOf(0), greaterThan(noVault.metersOf(0)),
+        reason: 'a clean timed release must clear hurdles the no-vault run trips on');
   });
 
-  test('render does not throw across the round', () {
-    final players = [
-      for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)
-    ];
-    final ctx = MiniGameContext(
-      players: players,
-      arena: const Size(800, 1200),
-      rng: SeededRng(11),
-      zones: ZoneLayout.forPlayers(4),
-    );
-    final g = TapSprint()..init(ctx);
-    final canvas = Canvas(PictureRecorder());
+  test('render does not throw across 1..4 players', () {
+    for (var n = 1; n <= 4; n++) {
+      final g = TapSprint()..init(botCtxFor(11 + n, n));
+      final canvas = Canvas(PictureRecorder());
 
-    expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
-    for (var i = 0; i < 400 && g.status != MiniGameStatus.finished; i++) {
-      g.update(dt);
-      g.onInput(PlayerInput.down(0));
+      expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally,
+          reason: 'initial render with $n players must not throw');
+      for (var i = 0; i < 400 && g.status != MiniGameStatus.finished; i++) {
+        g.update(dt);
+        g.onInput(PlayerInput.down(0));
+      }
+      expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally,
+          reason: 'mid-round render with $n players must not throw');
     }
-    expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
   });
 
   test('measured solo run reaches the finish', () {
@@ -277,4 +298,11 @@ void main() {
     expect(g.status, MiniGameStatus.finished);
     expect(g.metersOf(0), greaterThan(0));
   });
+}
+
+/// Tiny mutable per-player input bookkeeping for the skilled-runner driver:
+/// whether a wind-up press is currently held, and frames since the last stride.
+class _SkillState {
+  bool winding = false;
+  int sinceStride = 9; // allowed to stride on frame 0
 }

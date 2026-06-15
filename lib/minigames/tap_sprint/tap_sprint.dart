@@ -29,26 +29,34 @@ import 'sprint_render.dart';
 ///    OVER-MASHING (taps far below the window) breaks stride: it bleeds rhythm,
 ///    so a blind masher actually runs SLOWER than a metronomic runner.
 ///
-/// INTERPOSING DIFFICULTY — HURDLES:
+/// INTERPOSING DIFFICULTY — HURDLES (the SKILL beat, a TIMED-RELEASE vault):
 ///  * Hurdles sit at fixed distances down the track and scroll toward the runner.
-///    Each is **telegraphed**: as it enters the runner's approach zone a "JUMP!"
-///    cue + a flashing arc appear. A VAULT input — a tap landed inside the jump
-///    window, OR a HOLD — clears the hurdle cleanly. An early / late / missing
-///    vault = a TRIP: the runner stumbles (a hard speed loss + a brief dead
-///    stop), then recovers.
-///  * Hurdles get DENSER and the jump window TIGHTER the further you run (a
-///    calibrated ramp), so the back half is a real gauntlet.
-///  * A blind masher never *times* a vault — its taps are strides, not vaults,
-///    so it trips on essentially every hurdle and stalls. A runner who reads the
-///    telegraph and vaults on cue clears them and pulls away. (Proven by a
-///    deterministic test.)
+///    Each is **telegraphed**: as it enters the runner's approach window a
+///    POWER/TIMING bar with a bright SWEET-SPOT zone rises above the runner.
+///  * **PRESS = wind-up.** While the press is held the bar fills 0→1 at a fixed
+///    rate (a readable, predictable sweep). **RELEASE decides everything:**
+///      - release with the bar inside the sweet spot → a CLEAN VAULT (a big
+///        satisfying pop + a rhythm/speed reward — you sail over and surge).
+///      - release too EARLY (bar short of the zone) or too LATE (bar past it),
+///        OR never wind up at all → a STUTTER-CLIP: the runner stumbles into the
+///        bar (a hard speed loss + a brief dead stop), then recovers.
+///    Re-pressing while winding RESETS the bar (a stutter), so hammering the
+///    button never charges a vault — the bar just keeps snapping back to zero.
+///  * Hurdles get DENSER and the sweet-spot zone TIGHTER the further you run (a
+///    calibrated ramp), so the back half demands cleaner release timing.
+///  * A blind tapper never HOLDS, so its bar never fills and it never releases in
+///    the zone — it clips on essentially every hurdle and trips. A runner who
+///    reads the bar and releases in the sweet spot clears cleanly and pulls away.
+///    (Proven by a deterministic test.)
 ///
 /// One-touch read, two clearly-different beats: TAP a steady beat to run; when a
-/// hurdle lights up "JUMP!", press inside the window (or hold) to vault it.
+/// hurdle lights up, PRESS to wind up the bar and RELEASE in the sweet spot to
+/// vault. The skill is VISIBLE (the bar) and FELT (each clean release surges).
 ///
-/// BOTS: stride on a [BotProfile] cadence AND time a vault as each hurdle enters
-/// the window — strong bots clear nearly every hurdle, weak bots ([errorRate])
-/// mistime and trip often. A real, beatable 1+CPU contest.
+/// BOTS: stride on a [BotProfile] cadence AND wind up + release in the sweet spot
+/// as each hurdle enters the window — strong bots release dead-center (clean),
+/// weak bots release off-center or, on an [errorRate] slip, skip the wind-up and
+/// clip. A real, beatable 1+CPU contest.
 class TapSprint extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -73,9 +81,9 @@ class TapSprint extends MiniGameBase {
   // rhythm. A tap FASTER than _strideLo is an over-mash: it banks no rhythm and
   // bleeds a little (mashing breaks stride). Rhythm 0..1 drives run speed, so a
   // metronomic runner outruns a masher outright.
-  static const double _strideLo = 0.085; // good-cadence window (sec) lo
-  static const double _strideHi = 0.26; // good-cadence window (sec) hi
-  static const double _rhythmGainPerStride = 0.16; // rhythm per clean stride
+  static const double _strideLo = 0.10; // good-cadence window (sec) lo
+  static const double _strideHi = 0.22; // good-cadence window (sec) hi — tighter
+  static const double _rhythmGainPerStride = 0.17; // rhythm per clean stride
   static const double _rhythmDecayPerSec = 0.42; // idle / off-beat bleed toward 0
   static const double _overMashRhythmPenalty = 0.10; // rhythm lost per over-mash
   // The opening tap (or a tap after a long idle) is a free clean stride so a
@@ -97,31 +105,41 @@ class TapSprint extends MiniGameBase {
   static const double _gapStartM = 13.0; // spacing between the first hurdles (m)
   static const double _gapEndM = 7.0; // spacing between the last hurdles (m)
 
-  // The jump window: a runner may vault while a hurdle is within this many
-  // meters AHEAD. The window NARROWS down the track (tighter timing late). Vault
-  // outside it (too early) OR fail to vault before contact (too late/missed) =
-  // a trip.
-  static const double _windowStartM = 3.2; // window depth at the first hurdle
-  static const double _windowEndM = 1.7; // window depth at the last hurdle
-  // Airborne time per vault: a hurdle is CLEARED only if the runner is still in
-  // this arc when its body reaches the hurdle, so a vault must be timed to the
-  // approach (launch too early and the arc ends short → trip).
+  // The approach window: the band (meters AHEAD of the runner) in which the
+  // POWER/TIMING bar is OFFERED for the next hurdle — pressing here begins a
+  // wind-up. NARROWS down the track (less lead time late). Reaching the hurdle
+  // without a clean release = a trip.
+  static const double _windowStartM = 6.0; // approach depth at the first hurdle
+  static const double _windowEndM = 3.6; // approach depth at the last hurdle
+  // Airborne arc length once a CLEAN release launches the vault. Purely the
+  // visual hop now — clearance is decided by the release timing, not the arc.
   static const double _vaultAirSec = 0.42; // airborne arc length (sec)
 
-  // TRIP: a mistimed / missed hurdle. The runner loses most of its rhythm, dead
-  // stops for a beat, then recovers. A trip is HEAVY on purpose — it must cost a
-  // masher more than it can claw back before the next (denser) hurdle, so blind
-  // play nets near-zero up the track. A reading runner trips ~never.
+  // ── Timed-release vault (the SKILL) ─────────────────────────────────────────
+  // PRESS with a hurdle in the approach window arms a wind-up; the power bar
+  // fills 0→1 at this rate while HELD (a fixed, readable sweep). RELEASE judges
+  // the bar against the sweet-spot zone: inside → CLEAN vault; outside (early or
+  // late) → clip. The fill rate is constant (≈ [_windupFillSec] to top out) so
+  // the read is a pure timing skill, not a rhythm-coupled one.
+  static const double _windupFillSec = 0.62; // seconds for the bar to fill 0→1
+  // Sweet-spot zone (a band on the 0..1 bar). Centered a little past the middle
+  // so a player builds INTO it. Half-width NARROWS down the track (tighter late)
+  // but stays kid-forgiving early.
+  static const double _sweetCenter = 0.60; // zone centre on the 0..1 bar
+  static const double _sweetHalfStart = 0.22; // zone half-width at hurdle 1 (wide)
+  static const double _sweetHalfEnd = 0.13; // zone half-width at the last hurdle
+  // A clean release rewards a rhythm bump + a brief speed surge (the felt pop).
+  static const double _vaultRhythmReward = 0.14; // rhythm gained on a clean vault
+  static const double _vaultSurgeSec = 0.5; // speed-line / surge tell duration
+
+  // TRIP: a stutter-clip — a mistimed / missing release. The runner loses most
+  // of its rhythm, dead stops for a beat, then recovers. Heavy on purpose — it
+  // must cost a spammer more than it can claw back before the next (denser)
+  // hurdle, so blind play nets near-zero up the track. A reader trips ~never.
   static const double _tripRhythmKeep = 0.15; // rhythm retained after a trip
   static const double _tripStopSec = 0.6; // dead-stop (no advance) after a trip
   // A hurdle can only trip a runner once (a one-shot as it passes the body), so
   // a single hurdle is one trip, never a per-frame grind.
-
-  // ── Vault input (tap-in-window OR hold) ─────────────────────────────────────
-  // A HOLD of at least this long also triggers a vault (the second, clearly
-  // readable one-touch mapping: press-and-hold to leap). A held press auto-vaults
-  // the next hurdle that enters the window.
-  static const double _holdVaultSec = 0.16;
 
   // ── Mash energy / animation tuning ──────────────────────────────────────────
   static const double _energyPerTap = 0.16; // smoothed-rate bump per tap
@@ -142,17 +160,17 @@ class TapSprint extends MiniGameBase {
   // Bots stride on a [BotProfile]-driven interval (harder = faster + steadier =
   // higher rhythm) and time a vault as each hurdle enters their window. Strong
   // bots vault crisply (clear); weak bots mistime on an [errorRate] slip (trip).
-  static const double _botBaseInterval = 0.16;
-  static const double _botAccuracyBonus = 0.06; // faster (better rhythm) when good
-  static const double _botJitterBase = 0.06; // sloppier cadence when weak
-  // When a bot commits its vault, as a fraction of one vault arc-reach of ground
-  // ahead (the distance the runner covers while airborne). A SMALL fraction =
-  // launch LATE/close = reliably still airborne at contact → CLEAR; a LARGE
-  // fraction (≳1) = launch EARLY = the arc ends before the hurdle = land short →
-  // TRIP. So strong bots use a small fraction (crisp clears) and weak bots a
-  // large one (mistimed, trip-prone) — a real skill gradient.
-  static const double _botVaultFracStrong = 0.55; // high accuracy → late, clears
-  static const double _botVaultFracWeak = 1.05; // low accuracy → early, lands short
+  static const double _botBaseInterval = 0.165;
+  static const double _botAccuracyBonus = 0.05; // faster (better rhythm) when good
+  static const double _botJitterBase = 0.05; // sloppier cadence when weak
+  // A bot winds up as a hurdle enters its window and RELEASES at a target point
+  // on the 0..1 bar: the sweet-spot centre plus an accuracy-scaled error. A
+  // strong bot's error is tiny (releases dead-centre → clean); a weak bot's error
+  // is large (releases off-centre → outside the zone → clip). On an [errorRate]
+  // slip it skips the wind-up entirely and clips — a careless miss, like a human
+  // who never reacted. A real skill gradient straight off [BotProfile].
+  static const double _botReleaseErrStrong = 0.03; // release error at accuracy 1
+  static const double _botReleaseErrWeak = 0.30; // release error at accuracy 0
   // Bots hold at the blocks for a beat so a human can get off the line first.
   static const double _botWarmupSec = 1.4;
 
@@ -255,7 +273,7 @@ class TapSprint extends MiniGameBase {
         )..setLoco(LocoState.idle),
         botInterval: _botInterval(),
         botJitter: _botJitter(),
-        botVaultFrac: _botVaultFrac(),
+        botReleaseErr: _botReleaseErr(),
       );
     }
   }
@@ -286,12 +304,13 @@ class TapSprint extends MiniGameBase {
         _botJitterBase * 0.2;
   }
 
-  /// When a bot commits a vault (fraction of one arc-reach of ground ahead).
-  /// High accuracy → the small [_botVaultFracStrong] (launch late → clears); low
-  /// accuracy → the large [_botVaultFracWeak] (launch early → lands short → trip).
-  double _botVaultFrac() {
+  /// A bot's release-timing error magnitude on the 0..1 bar. High accuracy → the
+  /// tiny [_botReleaseErrStrong] (releases dead-centre → clean vault); low
+  /// accuracy → the large [_botReleaseErrWeak] (releases off-centre → outside the
+  /// sweet spot → clip). The actual sign/offset is jittered per hurdle.
+  double _botReleaseErr() {
     final prof = ctx.botProfile;
-    return lerpD(_botVaultFracWeak, _botVaultFracStrong, prof.accuracy.clamp(0.0, 1.0));
+    return lerpD(_botReleaseErrWeak, _botReleaseErrStrong, prof.accuracy.clamp(0.0, 1.0));
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -346,16 +365,17 @@ class TapSprint extends MiniGameBase {
 
   // ── Press / hold → stride or vault ──────────────────────────────────────────
 
-  /// A press (tap-down). A press is a VAULT when (a) a hurdle is in the jump
-  /// window AND (b) it is a CONTROLLED press — at least a stride-gap since the
-  /// last press, i.e. NOT part of a mash. Otherwise it is a STRIDE on the run
-  /// cadence.
+  /// A press (tap-down). Two clearly-different roles, decided by the scene:
+  ///  * A hurdle is in the approach window → the press ARMS a WIND-UP: the
+  ///    power/timing bar starts filling from zero and the player must RELEASE it
+  ///    inside the sweet spot to vault. Pressing AGAIN while already winding
+  ///    RESETS the bar to zero (a stutter) — so hammering never charges a vault.
+  ///  * No hurdle in the window → the press is a STRIDE on the run cadence.
   ///
-  /// This is the anti-spam crux: a vault must be a *deliberate, timed* press. A
-  /// blind masher hammering every frame has near-zero gap between presses, so
-  /// none of its presses qualify as a vault — it never leaves the ground and
-  /// clips every hurdle. A measured runner presses the "JUMP!" cue cleanly
-  /// (a real gap), so its vault registers and it sails over.
+  /// This is the anti-spam crux moved to the RELEASE: a blind tapper hammering
+  /// every frame keeps re-arming the bar at zero and never releases inside the
+  /// zone, so it clips every hurdle. A measured runner presses once, watches the
+  /// bar rise, and releases in the sweet spot — a clean, FELT vault.
   void _press(int id) {
     final r = _runners[id];
     if (r == null || r.finished) return;
@@ -363,30 +383,90 @@ class TapSprint extends MiniGameBase {
     // Energy always bumps so the figure reads as "trying" regardless of timing.
     r.energy = (r.energy + _energyPerTap).clamp(0.0, 1.0);
 
-    // A TAP is ALWAYS a stride — it never clears a hurdle. Vaulting requires a
-    // deliberate HOLD (press-and-hold auto-leaps at the clear moment, see
-    // [_canClearVaultNow]). So a runner who only taps trips on EVERY hurdle: the
-    // obstacle genuinely interposes, and blind tapping loses to a player who
-    // reads each hurdle and holds to leap it.
-    _stride(r);
+    // A press lands as a wind-up only when a hurdle is actually offered (the bar
+    // is on screen). Otherwise it is a plain stride. (Re)arming resets the bar
+    // to zero, so a mid-wind re-press is a stutter, never extra charge.
+    if (_hurdleInWindow(r) != null) {
+      r.windingUp = true;
+      r.windup = 0;
+    } else {
+      _stride(r);
+    }
   }
 
-  /// Hold-to-vault: a press held past [_holdVaultSec] arms auto-vaulting, and the
-  /// runner then leaps automatically at the right moment for each hurdle (see the
-  /// [_canClearVaultNow] gate in [_tickRunners]). A quick tap stays a stride and a
-  /// deliberate press-and-hold is a leap — two clearly-readable one-touch inputs.
+  /// While a press is held, advance the wind-up bar (a fixed-rate sweep, so the
+  /// read is pure timing). Only meaningful once a press armed a wind-up; a held
+  /// press with no hurdle does nothing. The bar clamps at 1 (holding past the top
+  /// just parks it in the over-charged "too late" region until release).
   void _holdTick(int id, double dt) {
     final r = _runners[id];
-    if (r == null || r.finished) return;
-    r.holdSec += dt;
-    if (r.holdSec >= _holdVaultSec) r.holding = true;
+    if (r == null || r.finished || !r.windingUp) return;
+    r.windup = math.min(1.0, r.windup + dt / _windupFillSec);
   }
 
+  /// RELEASE — the decisive skill input. If a wind-up is armed and a hurdle is
+  /// still launchable, judge the bar against the sweet-spot zone: inside → arm a
+  /// CLEAN clearance for that hurdle + reward; outside (released too early or too
+  /// late) → leave it un-armed so the body clips the bar → trip. A release with
+  /// no armed wind-up is a no-op.
   void _release(int id) {
     final r = _runners[id];
     if (r == null) return;
-    r.holding = false;
-    r.holdSec = 0;
+    if (r.windingUp) _resolveRelease(r);
+    r.windingUp = false;
+    r.windup = 0;
+  }
+
+  /// Judge a release: the next hurdle is CLEARED iff the bar sat inside its
+  /// sweet-spot zone at the instant of release. A clean release launches the
+  /// visual vault arc and pays a rhythm bump + a brief speed surge (the felt
+  /// pop). An off-zone release does nothing — the runner reaches the bar grounded
+  /// and trips. (Releasing with no hurdle left in the window is harmless.)
+  void _resolveRelease(_Runner r) {
+    final idx = _hurdleInWindow(r);
+    if (idx == null) return; // nothing to clear (cue already gone)
+    if (_releaseInSweetSpot(r, idx)) {
+      _cleanVault(r, idx);
+    }
+    // else: no clearance armed → the hurdle will trip the runner on contact.
+  }
+
+  /// Whether [r]'s current wind-up bar value lies inside the sweet-spot zone for
+  /// hurdle [idx] (the zone narrows down the track). The core skill predicate.
+  bool _releaseInSweetSpot(_Runner r, int idx) {
+    final half = _sweetHalfAt(_hurdleMeters[idx]);
+    return (r.windup - _sweetCenter).abs() <= half;
+  }
+
+  /// The sweet-spot half-width for a hurdle at [hurdleM] — NARROWS toward the
+  /// finish (tighter release timing late), kid-forgiving early.
+  double _sweetHalfAt(double hurdleM) {
+    final t = (hurdleM / _raceMeters).clamp(0.0, 1.0);
+    return lerpD(_sweetHalfStart, _sweetHalfEnd, t);
+  }
+
+  /// A clean, well-timed release: arm the clearance for [idx], launch the visual
+  /// hop, and pay the reward (rhythm bump + speed surge + a bright pop). The
+  /// felt, satisfying payoff for nailing the bar.
+  void _cleanVault(_Runner r, int idx) {
+    r.clearedHurdle = idx;
+    r.airborne = true;
+    r.airTimer = _vaultAirSec;
+    r.surge = _vaultSurgeSec;
+    r.rhythm = (r.rhythm + _vaultRhythmReward).clamp(0.0, 1.0);
+    r.figure.setLoco(LocoState.jump);
+
+    final at = _runnerRoot(r).translate(0, -_footReach * 1.1);
+    _juice.hit(at, _colorOf(r.slot.id), sparks: 10);
+    _juice.particles.burst(
+      at: at,
+      count: 8,
+      color: SprintRenderer.cleanVault,
+      speed: 300,
+      size: 5,
+      life: 0.5,
+    );
+    _juice.popup(at.translate(0, -_size.height * 0.015), '▲', _accent, size: 30);
   }
 
   /// A clean stride on the run cadence: a tap spaced inside the stride window
@@ -411,34 +491,10 @@ class TapSprint extends MiniGameBase {
     // the lost rhythm.)
   }
 
-  /// A vault attempt: launch a fixed-length airborne ARC ([_vaultAirSec]). A
-  /// hurdle is cleared only if the runner is still airborne WHEN ITS BODY REACHES
-  /// the hurdle (see [_resolveHurdleContact]) — so a vault must be TIMED to the
-  /// hurdle's approach, not just fired whenever it appears on screen:
-  ///  * Vault TOO EARLY (hurdle far away) → the arc ends before contact → land →
-  ///    TRIP. (A blind masher fires the instant the hurdle pops in, far out, and
-  ///    crashes back down well short of it.)
-  ///  * Vault on cue (hurdle close, inside the reach window) → still airborne at
-  ///    contact → CLEAR.
-  /// Re-launching while already airborne just refreshes the arc (a double-hop).
-  void _vault(_Runner r) {
-    final hadHurdle = _hurdleInWindow(r) != null;
-    r.airborne = true;
-    r.airTimer = _vaultAirSec;
-    r.figure.setLoco(LocoState.jump);
-    if (hadHurdle) {
-      _juice.hit(
-        _runnerRoot(r).translate(0, -_footReach * 1.1),
-        _colorOf(r.slot.id),
-        sparks: 6,
-      );
-    }
-  }
-
-  /// Index of the next un-passed hurdle inside the runner's jump window — the
-  /// band where a vault is OFFERED (the "JUMP!" telegraph shows). The window is
-  /// only the cue range; whether a vault actually CLEARS still depends on being
-  /// airborne at contact, so firing at the far edge (too early) still trips.
+  /// Index of the next un-passed hurdle inside the runner's APPROACH window — the
+  /// band where the power/timing bar is OFFERED (the telegraph shows). The window
+  /// is only the cue range; whether the vault CLEARS depends on releasing the bar
+  /// inside the sweet spot (see [_releaseInSweetSpot]).
   int? _hurdleInWindow(_Runner r) {
     final idx = r.nextHurdle;
     if (idx >= _hurdleMeters.length) return null;
@@ -448,42 +504,26 @@ class TapSprint extends MiniGameBase {
     return null;
   }
 
-  /// The jump-window depth (meters of telegraph lead) for a hurdle at distance
-  /// [hurdleM] — NARROWS toward the finish so late hurdles give less lead time
-  /// and demand tighter timing (the calibrated ramp).
+  /// The approach-window depth (meters of telegraph lead) for a hurdle at
+  /// distance [hurdleM] — NARROWS toward the finish so late hurdles give less
+  /// lead time before the runner reaches them (the calibrated ramp).
   double _jumpWindowAt(double hurdleM) {
     final t = (hurdleM / _raceMeters).clamp(0.0, 1.0);
     return lerpD(_windowStartM, _windowEndM, t);
-  }
-
-  /// True when a vault launched THIS instant would clear the next hurdle — i.e.
-  /// the hurdle is close enough that the runner is still inside the [_vaultAirSec]
-  /// arc when its body reaches it. This is the skilled read: vault now and sail
-  /// over. A vault launched outside this band (hurdle too far) lands short → trip.
-  /// Used by the hold-to-vault auto-trigger and the [shouldVaultNow] test seam.
-  bool _canClearVaultNow(_Runner r) {
-    if (r.airborne) return false;
-    final idx = _hurdleInWindow(r); // a vault only fires when one is in the window
-    if (idx == null) return false;
-    final ahead = _hurdleMeters[idx] - r.meters;
-    if (ahead <= 0) return false;
-    final speed = lerpD(_jogSpeed, _sprintSpeed, r.rhythm);
-    final arcReach = speed * _vaultAirSec; // ground covered while airborne
-    // Clears across most of the arc; a small inset off the far edge keeps the
-    // "lands exactly on the bar" knife-edge out of the safe read.
-    return ahead <= arcReach * 0.9;
   }
 
   void _tickRunners(double dt) {
     for (final r in _runners.values) {
       r.sinceTap += dt;
       r.tripStop = math.max(0, r.tripStop - dt);
+      r.surge = math.max(0, r.surge - dt);
 
-      // Auto-vault while holding: the held press leaps automatically at the
-      // right moment (when a vault now would clear), so HOLD is a valid, forgiving
-      // way to clear a hurdle — the second readable one-touch mapping.
-      if (r.holding && _canClearVaultNow(r)) {
-        _vault(r);
+      // A wind-up that loses its hurdle (the runner reached/passed it, or the cue
+      // expired) without a clean release goes stale — drop it so it can't carry
+      // into the next hurdle's bar.
+      if (r.windingUp && _hurdleInWindow(r) == null) {
+        r.windingUp = false;
+        r.windup = 0;
       }
 
       // Rhythm + energy bleed when not actively striding on-beat.
@@ -524,10 +564,11 @@ class TapSprint extends MiniGameBase {
     r.meters = math.min(_raceMeters, r.meters + speed * dt);
   }
 
-  /// Resolve the body passing a hurdle. Clearance is decided purely by whether
-  /// the runner is AIRBORNE at the instant its body reaches the hurdle: airborne
-  /// → vaulted clean; grounded → clipped it → TRIP. One-shot per hurdle (it is
-  /// consumed as the body passes), so one hurdle is one trip, never a grind.
+  /// Resolve the body passing a hurdle. Clearance is decided by the RELEASE: a
+  /// clean, well-timed release armed [_Runner.clearedHurdle] for this index →
+  /// vaulted clean (consume the arm); otherwise the runner clipped it → TRIP.
+  /// One-shot per hurdle (consumed as the body passes), so one hurdle is one
+  /// trip, never a per-frame grind.
   void _resolveHurdleContact(_Runner r) {
     final idx = r.nextHurdle;
     if (idx >= _hurdleMeters.length) return;
@@ -535,13 +576,22 @@ class TapSprint extends MiniGameBase {
     if (r.meters < hurdleM) return; // not reached yet
 
     r.nextHurdle++; // consume this hurdle
-    if (!r.airborne) _trip(r, hurdleM);
+    if (r.clearedHurdle == idx) {
+      r.clearedHurdle = -1; // clean vault — consume the armed clearance
+    } else {
+      _trip(r, hurdleM);
+    }
   }
 
-  /// A TRIP: the runner clipped a hurdle (no vault in the window). Lose most of
+  /// A TRIP: a stutter-clip — the runner reached the hurdle without a clean
+  /// release (released off-zone, never wound up, or still mid-wind). Lose most of
   /// the gait rhythm, dead-stop for a beat, and play a full-body stumble. Heavy
-  /// on purpose — a masher that trips every hurdle stalls; a reader trips ~never.
+  /// on purpose — a spammer that trips every hurdle stalls; a reader trips ~never.
   void _trip(_Runner r, double hurdleM) {
+    r.windingUp = false;
+    r.windup = 0;
+    r.clearedHurdle = -1;
+    r.surge = 0;
     r.rhythm = math.min(r.rhythm, _tripRhythmKeep);
     r.tripStop = _tripStopSec;
     r.airborne = false;
@@ -620,15 +670,20 @@ class TapSprint extends MiniGameBase {
     _juice.hit(_tapeHitPoint(r), _colorOf(r.slot.id), sparks: 10);
   }
 
-  /// Bots stride on a cadence clock AND vault each hurdle as it enters their
-  /// window. Strong bots stride faster (higher rhythm) and vault crisply; weak
-  /// bots stride sloppier and, on an [errorRate] slip, fail to vault → trip. The
-  /// guard caps catch-up strides for huge frame steps.
+  /// Bots stride on a cadence clock AND run the SAME timed-release vault as a
+  /// human: as a hurdle enters the window they wind the power bar up and release
+  /// at a target point. Strong bots stride faster (higher rhythm) and release
+  /// dead-centre (clean); weak bots stride sloppier and release off-centre, or on
+  /// an [errorRate] slip skip the wind-up entirely → clip. The guard caps catch-up
+  /// strides for huge frame steps.
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return; // hold bots at the blocks for a beat
     for (final r in _runners.values) {
       if (!r.slot.isBot || r.finished) continue;
-      _botMaybeVault(r);
+      _botDriveVault(r, dt);
+      // While winding up a vault the bot "holds" — it doesn't stride (its press
+      // is committed to the bar), so the cadence clock only runs in the open.
+      if (r.windingUp) continue;
       r.botClock += dt;
       var guard = 0;
       while (r.botClock >= r.nextTapAt && guard++ < 8) {
@@ -639,28 +694,39 @@ class TapSprint extends MiniGameBase {
     }
   }
 
-  /// A bot vaults the next hurdle once its body closes to [_Runner.botVaultFrac]
-  /// of one vault arc-reach away. A SMALL fraction (strong bot) launches LATE/
-  /// close so the runner is still airborne at contact → CLEAR; a LARGE fraction
-  /// (weak bot, ≳1) launches EARLY so the arc ends before the hurdle → land short
-  /// → TRIP. On an [errorRate] slip the bot skips the vault entirely and clips the
-  /// hurdle — a careless miss, exactly like a human who didn't react in time.
-  void _botMaybeVault(_Runner r) {
+  /// Drive a bot's timed-release vault for the next hurdle. The first frame the
+  /// hurdle is in the window the bot COMMITS: on an [errorRate] slip it skips the
+  /// wind-up (→ clip, a careless miss); otherwise it arms the bar and picks a
+  /// release target = the sweet-spot centre plus an accuracy-scaled error (tiny
+  /// for strong bots → dead-centre clean; large for weak bots → off-zone clip).
+  /// Each frame it then fills the bar and releases once it reaches that target.
+  void _botDriveVault(_Runner r, double dt) {
     if (r.airborne) return;
-    final idx = r.nextHurdle;
-    if (idx >= _hurdleMeters.length) return;
-    if (r.botVaultedFor == idx) return; // already attempted this hurdle
-    final hurdleM = _hurdleMeters[idx];
-    final ahead = hurdleM - r.meters;
-    if (ahead <= 0) return;
-    final speed = lerpD(_jogSpeed, _sprintSpeed, r.rhythm);
-    final arcReach = speed * _vaultAirSec; // ground covered while airborne
-    final commitAt = arcReach * r.botVaultFrac;
-    if (ahead > commitAt) return; // hurdle still too far to commit a vault
-    r.botVaultedFor = idx;
-    // Careless slip: skip the vault on this hurdle and eat the trip.
-    if (ctx.rng.chance(ctx.botProfile.errorRate)) return;
-    _vault(r);
+    final idx = _hurdleInWindow(r);
+    if (idx == null) return; // no hurdle offered yet
+
+    if (r.botVaultedFor != idx) {
+      r.botVaultedFor = idx;
+      if (ctx.rng.chance(ctx.botProfile.errorRate)) {
+        r.windingUp = false; // careless slip → never winds → trips on contact
+        r.botReleaseTarget = -1;
+        return;
+      }
+      // Signed release error: strong bots land inside the (narrow) zone, weak
+      // bots overshoot or undershoot it.
+      final err = ctx.rng.jitter(r.botReleaseErr);
+      r.botReleaseTarget = (_sweetCenter + err).clamp(0.06, 0.99);
+      r.windingUp = true;
+      r.windup = 0;
+      return;
+    }
+
+    if (!r.windingUp) return; // committed to skip this hurdle
+    r.windup = math.min(1.0, r.windup + dt / _windupFillSec);
+    if (r.windup >= r.botReleaseTarget) {
+      _resolveRelease(r); // release at the chosen point — clean iff in the zone
+      r.windingUp = false;
+    }
   }
 
   /// A bot's next stride interval, CLAMPED inside the stride window so a bot
@@ -772,13 +838,15 @@ class TapSprint extends MiniGameBase {
   }
 
   /// Draw the hurdles approaching in every lane. Each hurdle is telegraphed: as
-  /// it enters a runner's jump window it lights up (a "JUMP!" cue + arc) so a
-  /// reading player always gets the tell; a cleared/passed hurdle fades.
+  /// it enters a runner's approach window it lights up so a reading player always
+  /// gets the tell; a cleared/passed hurdle fades. The active (live) hurdle also
+  /// flies the POWER/TIMING bar (the wind-up + sweet-spot zone) above it.
   void _drawHurdles(Canvas canvas) {
     for (var lane = 0; lane < _laneOrder.length; lane++) {
       final r = _runners[_laneOrder[lane]];
       if (r == null) continue;
       final y = _laneYs[lane];
+      final liveIdx = _hurdleInWindow(r);
       for (var idx = 0; idx < _hurdleMeters.length; idx++) {
         final hurdleM = _hurdleMeters[idx];
         final ahead = hurdleM - r.meters;
@@ -787,8 +855,7 @@ class TapSprint extends MiniGameBase {
         if (ahead < -2 || ahead > 26) continue;
         final x = lerpDouble(_startX, _finishX, hurdleM / _raceMeters)!;
         final passed = idx < r.nextHurdle;
-        final live =
-            !passed && idx == r.nextHurdle && _hurdleInWindow(r) != null;
+        final live = !passed && idx == liveIdx;
         SprintRenderer.drawHurdle(
           canvas,
           Offset(x, y),
@@ -797,6 +864,22 @@ class TapSprint extends MiniGameBase {
           passed: passed,
           warnPulse: 0.5 + 0.5 * math.sin(_animClock * 12.0 + idx),
         );
+
+        // The wind-up bar rides above the live hurdle: the sweet-spot zone is
+        // always shown (the read), the fill + needle appear while winding.
+        if (live) {
+          final half = _sweetHalfAt(hurdleM);
+          SprintRenderer.drawWindupBar(
+            canvas,
+            Offset(x, y),
+            _laneHeight(lane),
+            fill: r.windup,
+            winding: r.windingUp,
+            sweetLo: (_sweetCenter - half).clamp(0.0, 1.0),
+            sweetHi: (_sweetCenter + half).clamp(0.0, 1.0),
+            pulse: 0.5 + 0.5 * math.sin(_animClock * 9.0),
+          );
+        }
       }
     }
   }
@@ -809,7 +892,10 @@ class TapSprint extends MiniGameBase {
       final root = _runnerRoot(r);
       final feet = Offset(root.dx, root.dy + _footReach);
       final color = _colorOf(r.slot.id);
-      final speed01 = r.energy;
+      // A fresh clean vault briefly drives the speed/effort tells to the top —
+      // the felt "surge" payoff for nailing the release.
+      final surge01 = (r.surge / _vaultSurgeSec).clamp(0.0, 1.0);
+      final speed01 = math.max(r.energy, surge01);
 
       // Leader spotlight underfoot.
       if (r.slot.id == leaderId && !r.finished) {
@@ -940,7 +1026,7 @@ class TapSprint extends MiniGameBase {
   @visibleForTesting
   double rhythmOf(int id) => _runners[id]?.rhythm ?? -1;
 
-  /// Whether a hurdle is inside [id]'s jump window — the "JUMP!" telegraph is
+  /// Whether a hurdle is inside [id]'s approach window — the power/timing bar is
   /// showing (a hurdle is approaching and a vault is offered). The earliest tell.
   /// Read-only; for deterministic gameplay tests + smart play.
   @visibleForTesting
@@ -950,16 +1036,36 @@ class TapSprint extends MiniGameBase {
     return _hurdleInWindow(r) != null;
   }
 
-  /// Whether a vault launched THIS instant would CLEAR [id]'s next hurdle — the
-  /// precise skilled read (the hurdle is close enough that the runner is still
-  /// airborne when its body reaches it). A measured player vaults exactly here;
-  /// vaulting earlier (merely on the telegraph) lands short → trip. Read-only;
-  /// for deterministic gameplay tests + smart play.
+  /// [id]'s current wind-up bar fill 0..1 (0 when not winding), or -1 if there is
+  /// no such runner. Read-only; for deterministic gameplay tests + smart play.
+  @visibleForTesting
+  double windupOf(int id) => _runners[id]?.windup ?? -1;
+
+  /// The sweet-spot zone [lo, hi] on the 0..1 bar for [id]'s next hurdle (the
+  /// band a release must land in to vault cleanly). Empty when no hurdle is
+  /// offered. Read-only; for deterministic gameplay tests + smart play.
+  @visibleForTesting
+  (double, double) sweetSpotOf(int id) {
+    final r = _runners[id];
+    if (r == null) return (0, 0);
+    final idx = _hurdleInWindow(r);
+    if (idx == null) return (0, 0);
+    final half = _sweetHalfAt(_hurdleMeters[idx]);
+    return ((_sweetCenter - half).clamp(0.0, 1.0),
+        (_sweetCenter + half).clamp(0.0, 1.0));
+  }
+
+  /// Whether RELEASING [id]'s wind-up THIS instant would CLEAR the next hurdle —
+  /// i.e. the bar is currently inside the sweet-spot zone. This is the precise
+  /// skilled read: a measured player releases exactly here. Read-only; for
+  /// deterministic gameplay tests + smart play.
   @visibleForTesting
   bool shouldVaultNow(int id) {
     final r = _runners[id];
-    if (r == null) return false;
-    return _canClearVaultNow(r);
+    if (r == null || !r.windingUp) return false;
+    final idx = _hurdleInWindow(r);
+    if (idx == null) return false;
+    return _releaseInSweetSpot(r, idx);
   }
 }
 
@@ -970,7 +1076,7 @@ class _Runner {
   final StickFigure figure;
   final double botInterval;
   final double botJitter;
-  final double botVaultFrac; // where in the window this bot commits its vault
+  final double botReleaseErr; // this bot's release-timing error on the 0..1 bar
 
   bool finished = false;
 
@@ -983,24 +1089,28 @@ class _Runner {
 
   // Hurdle bookkeeping.
   int nextHurdle = 0; // index of the next hurdle the body will reach
+  int clearedHurdle = -1; // index a clean release has armed to clear cleanly
   double tripStop = 0; // seconds of dead-stop remaining after a trip
-  bool airborne = false; // mid-vault arc
+  bool airborne = false; // mid-vault visual arc (hop)
   double airTimer = 0; // seconds of airborne arc remaining
+  double surge = 0; // seconds of post-clean-vault speed-surge tell remaining
 
-  // Hold-to-vault.
-  bool holding = false; // a press is held long enough to arm auto-vault
-  double holdSec = 0; // seconds the current press has been held
+  // Timed-release wind-up (the skill): a held press fills [windup] 0..1 while a
+  // hurdle is in the window; RELEASE inside the sweet spot clears it.
+  bool windingUp = false; // a press is held with a hurdle offered (bar charging)
+  double windup = 0; // 0..1 power/timing bar fill
 
-  // Bot cadence clock.
+  // Bot cadence clock + release target.
   double botClock = 0;
   double nextTapAt;
-  int botVaultedFor = -1; // hurdle index this bot has already attempted to vault
+  int botVaultedFor = -1; // hurdle index this bot has already committed to
+  double botReleaseTarget = -1; // bar value this bot releases at for that hurdle
 
   _Runner({
     required this.slot,
     required this.figure,
     required this.botInterval,
     required this.botJitter,
-    required this.botVaultFrac,
+    required this.botReleaseErr,
   }) : nextTapAt = botInterval;
 }

@@ -153,6 +153,100 @@ void main() {
     expect(gate.winner, 2);
   });
 
+  test('SHARP READ REWARDED: a duelist who taps only on the real GO banks a '
+      'reaction time + builds a READ streak and beats a masher', () {
+    // The heart of the rework: the read is now VISIBLE and REWARDED. Player 0 is
+    // a "sharp reader" — it taps ONLY while the genuine GO is open (g.isGoOpen),
+    // which stays false through every feint, so it never false-starts and wins
+    // every draw it can reach. Player 1 is a blind MASHER — it taps every frame,
+    // so it false-starts on the wait/feints and wins nothing. Deterministic via
+    // ctx.rng(seed); easy bot would otherwise be irrelevant — both seats here are
+    // driven by the test, not bot AI.
+    final ctx = MiniGameContext(
+      players: [
+        PlayerSlot.defaults(0), // sharp reader (human)
+        PlayerSlot.defaults(1), // blind masher (human)
+      ],
+      arena: const Size(800, 1200),
+      rng: SeededRng(7),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = ReactionDuel()..init(ctx);
+
+    var frames = 0;
+    var sawReward = false;
+    var maxStreak = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+      // The masher spams blindly every frame (false-starts on wait + feints).
+      g.onInput(PlayerInput.down(1));
+      // The sharp reader fires ONLY when the real GO is open — never on a feint.
+      if (g.isGoOpen) g.onInput(PlayerInput.down(0));
+      g.update(1 / 60);
+      // The reward is visible the instant a clean tap lands: a reaction time and
+      // (on a run) a streak. Capture the peak streak seen across the match.
+      if (g.lastReadMs > 0) sawReward = true;
+      if (g.readStreak > maxStreak) maxStreak = g.readStreak;
+    }
+
+    expect(g.status, MiniGameStatus.finished);
+    final ranking = g.winResult!.ranking;
+    expect(ranking.toSet(), {0, 1});
+    // The sharp reader wins the match; the masher is dead last.
+    expect(ranking.first, 0, reason: 'the duelist who reads the GO wins');
+    expect(ranking.last, 1, reason: 'the blind masher loses');
+    // The read is REWARDED visibly: a real reaction time was banked...
+    expect(sawReward, isTrue,
+        reason: 'a clean tap must surface a reaction time (ms)');
+    expect(g.lastReadMs, greaterThan(0));
+    // ...and the sharp reader strung wins into a READ streak (first-to-3 means a
+    // clean sweep reaches at least a 2-streak before the match ends).
+    expect(maxStreak, greaterThanOrEqualTo(2),
+        reason: 'consecutive clean reads build a streak ▲');
+    // The masher never banked a single won draw (live score stays under 1.0).
+    expect(g.scores.of(1), lessThan(1.0),
+        reason: 'a masher can never reach even one won draw');
+  });
+
+  test('LEARNABLE READ: the GO window is open ONLY on the real signal, never on '
+      'a feint — so the read is a skill, not a guess', () {
+    // The cue must be learnable: g.isGoOpen (the "tap now and win" window) has to
+    // be FALSE through every feint and TRUE only once the genuine GO fires. We
+    // drive a long-wait gate with a guaranteed feint and watch the window.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0, isBot: true)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(4),
+      zones: ZoneLayout.forPlayers(1),
+    );
+    final g = ReactionDuel()..init(ctx);
+
+    var sawGoOpen = false;
+    var frames = 0;
+    // Watch the first draw only: step until the GO opens (or we time out). Any
+    // frame the window is open must be the REAL GO (the gate proof below shows a
+    // feint can never flip phase==go, which is what isGoOpen is gated on).
+    while (!g.isGoOpen && frames++ < 60 * 10) {
+      // A solo bot resolves the draw itself; we only sample the window here.
+      g.update(1 / 60);
+      if (g.isGoOpen) sawGoOpen = true;
+    }
+    sawGoOpen = sawGoOpen || g.isGoOpen;
+    expect(sawGoOpen, isTrue, reason: 'the real GO must eventually open');
+
+    // Structural proof on the shared gate the duel reads: a lit feint keeps the
+    // phase WAITING (so isGoOpen, gated on phase==go, can never be true on it).
+    final gate = ReactionGate(SeededRng(4),
+        minDelay: 3.0, maxDelay: 3.0, feints: 1, feintFlashSec: 0.25);
+    var t = 0.0;
+    while (!gate.feintActive && t < 3.0) {
+      gate.update(1 / 120);
+      t += 1 / 120;
+    }
+    expect(gate.feintActive, isTrue, reason: 'a feint must light');
+    expect(gate.phase, ReactionPhase.waiting,
+        reason: 'a feint is NOT the GO — the read stays a skill');
+  });
+
   test('quick-draw solo player finishes within the time limit', () {
     final ctx = MiniGameContext(
       players: [PlayerSlot.defaults(0, isBot: true)],

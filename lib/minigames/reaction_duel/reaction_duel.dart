@@ -23,15 +23,20 @@ import 'reaction_render.dart';
 /// [_targetDraws] draws wins the whole duel. The HUD shows each duelist's draw
 /// tally and the "FIRST TO N" target.
 ///
-/// INTERPOSING DIFFICULTY — feints + a tightening ramp: during the wait the
-/// field flashes 1–3 brief FAKE GOs (feints) that look like the signal but are
-/// NOT it (the gate stays WAITING). Tapping during the wait OR on a feint is a
-/// FALSE START → you LOSE that draw outright and are locked out for it. As the
-/// match progresses the GO delay band drifts later, feints grow more numerous +
-/// more GO-like (longer flashes), and the post-GO reaction window tightens (see
-/// [_gateForDraw] / [_goWindowForDraw]). So a spammer who taps early/repeatedly
-/// FALSE-STARTS every draw and wins none; a duelist who reads real-vs-fake and
-/// holds their nerve wins.
+/// THE LEARNABLE READ (real-vs-fake) — the skill the rework makes VISIBLE. During
+/// the wait the field flashes 1–3 brief FAKE GOs (feints), but a feint and the
+/// real GO are drawn UNMISTAKABLY DIFFERENTLY so a sharp player can learn to tell
+/// them apart at a glance:
+///   • FEINT  = a brief, dim, JITTERY AMBER blip + an amber "FAKE?" — no ping, no
+///     full green wash. The gate stays WAITING, so tapping it is a FALSE START.
+///   • REAL GO = a SUSTAINED bright GREEN wash that HOLDS + a green "DRAW!" + a
+///     rising "ping" (expanding rings the feint never fires). Tap fast → you win.
+/// "Amber, shaky, brief = fake; green, bright, holds + pings = real." A masher
+/// who taps on any flash FALSE-STARTS on the feints and wins none; a duelist who
+/// reads the cue and holds their nerve banks the draw — and the read is REWARDED
+/// visibly (reaction-ms + a READ streak ▲ on a clean tap). As the match tightens
+/// the GO band drifts later, feints grow more numerous, and the post-GO window
+/// shrinks (see [_gateForDraw] / [_goWindowForDraw]).
 ///
 /// ANTI-INCIDENTAL: a tap before the real GO can NEVER win a draw — the gate
 /// classifies any wait-phase tap (including on a feint) as an early false start
@@ -93,6 +98,13 @@ class ReactionDuel extends MiniGameBase {
   static const double _hitStopSec = 0.22; // slow-mo on the decisive strike
   static const double _hitStopScale = 0.12;
   static const double _matchPointCueSec = 1.5; // "MATCH POINT!" banner life
+
+  // ── The learnable read: rising-ping + visible reward tuning ──────────────────
+  // The real GO fires a rising "ping" (expanding rings the feint never fires) and
+  // a visible reward (reaction-ms + a read streak) so a sharp read feels earned.
+  static const double _goPingSec = 0.7; // rising-ping expand/fade life
+  static const double _readRewardSec = 1.3; // reaction-ms + streak popup life
+  static const double _feintJitterHz = 1.0; // bluff wobble clock multiplier
   // Ragdoll fling is a velocity in px/s (the ragdoll integrates at g≈1800), so
   // it is sized off arena height for a dramatic, resolution-independent launch.
   // The lift dominates and the sideways push is capped so the loser pops UP and
@@ -128,11 +140,16 @@ class ReactionDuel extends MiniGameBase {
   // calm grey with a gentle "TOO EARLY!" — readable, never harsh.
   static const Color _zoneRed = Color(0xFFE53935); // WAIT red
   static const Color _zoneGreen = Color(0xFF24D16A); // GO green
+  static const Color _zoneAmber = Color(0xFFE6A23C); // FEINT amber (the bluff)
   static const Color _zoneGrey = Color(0xFF6B6B72); // false-start grey
   static const double _zoneWaitAlpha = 0.30; // resting red wash strength
   static const double _zoneWaitPulse = 0.10; // red wash throb amplitude
   static const double _zoneGoBaseAlpha = 0.42; // steady green while GO holds
   static const double _zoneGoFlashAlpha = 0.45; // extra green at the GO edge
+  // FEINT wash sits visibly below the real GO's steady green so the bluff can
+  // never pass for the genuine signal — amber + dim + a fast nervous flicker.
+  static const double _zoneFeintAlpha = 0.22; // resting amber bluff strength
+  static const double _zoneFeintPulse = 0.12; // amber nervous flicker amplitude
   static const double _zoneWinPulse = 0.18; // winner zone celebratory throb
 
   late Juice _juice;
@@ -152,6 +169,17 @@ class ReactionDuel extends MiniGameBase {
   bool _signalSeen = false; // the GO signal has fired at least once
   bool _confettiFired = false;
   bool _feintLitLast = false; // edge-detect each fake-GO flash (bot bait)
+
+  // ── The learnable read (visible reward) ──────────────────────────────────────
+  // The real GO's rising "ping" + the reaction-ms / streak payoff. Cleared per
+  // draw. The ping is the ONE cue the feint never fires, so it teaches the read.
+  double _goPing = 0; // 1 → 0 over [_goPingSec]: expanding-ring ping on real GO
+  double _readReward = 0; // 1 → 0 over [_readRewardSec]: reaction-ms + streak pop
+  int _rewardMs = 0; // winner's reaction time (ms) on the current reward pop
+  int _rewardStreak = 0; // read streak shown on the current reward pop
+  int _rewardColorArgb = 0xFFFFFFFF; // winner color for the reward pop
+  int _readStreak = 0; // consecutive draws won by the same duelist
+  int? _lastDrawWinner; // who won the previous draw (drives the streak)
 
   // ── Best-of "first to N draws" state ────────────────────────────────────────
   int _drawIndex = 0; // 0-based index of the current draw (drives the ramp)
@@ -173,6 +201,22 @@ class ReactionDuel extends MiniGameBase {
     }
     return false;
   }
+
+  /// Read-only HUD/telemetry: the running READ streak (consecutive draws won by
+  /// the same duelist). Drives the "READ x2 ▲" reward badge; exposed so the HUD
+  /// and tests can observe that a sharp read is rewarded. 0 between streaks.
+  int get readStreak => _readStreak;
+
+  /// Read-only HUD/telemetry: the reaction time (ms) banked on the most recent
+  /// clean winning tap — the proof the read was fast. 0 before any draw is won.
+  int get lastReadMs => _rewardMs;
+
+  /// Read-only: true while the REAL GO is showing and still unclaimed — the
+  /// window where a tap wins. A feint is NOT the GO, so this stays false through
+  /// every bluff. Lets a coach/replay (and tests) act on the genuine signal only,
+  /// proving the read is the skill: tap when this is true, never on a feint.
+  bool get isGoOpen =>
+      !_between && _signalSeen && _gate.phase == ReactionPhase.go;
 
   /// True while a fake-GO flash is lit before the real signal — the field bluffs
   /// green to bait a tap, but the gate is still WAITING so any tap is an early
@@ -350,6 +394,7 @@ class ReactionDuel extends MiniGameBase {
     _signalSeen = true;
     _strikeFlash = 1.0;
     _strikeWord = 1.0;
+    _goPing = 1.0; // the rising ping: a real-GO-only cue the feint never fires
     _juice.shake.medium();
     _juice.hitStop.trigger(0.06);
     // A bright GREEN screen flash on the real GO — the unmistakable "now!" cue.
@@ -369,6 +414,12 @@ class ReactionDuel extends MiniGameBase {
     if (_matchPointCue > 0) {
       _matchPointCue =
           (_matchPointCue - dt / _matchPointCueSec).clamp(0.0, 1.0);
+    }
+    if (_goPing > 0) {
+      _goPing = (_goPing - dt / _goPingSec).clamp(0.0, 1.0);
+    }
+    if (_readReward > 0) {
+      _readReward = (_readReward - dt / _readRewardSec).clamp(0.0, 1.0);
     }
     for (final r in _reactors.values) {
       if (r.tooSoon > 0) {
@@ -458,6 +509,17 @@ class ReactionDuel extends MiniGameBase {
     final decisive =
         (1.0 - (reaction / _decisiveRefSec)).clamp(0.0, 1.0); // 0..1
     final color = _colorOf(winner.slot.id);
+
+    // VISIBLE REWARD for the read: bank the reaction time (ms) + advance a streak
+    // (consecutive draws won by the SAME duelist) and pop them big, so nailing a
+    // sharp tap on the real GO feels earned — not just "you didn't false-start".
+    _readStreak =
+        (winner.slot.id == _lastDrawWinner) ? _readStreak + 1 : 1;
+    _lastDrawWinner = winner.slot.id;
+    _rewardMs = (reaction * 1000).round();
+    _rewardStreak = _readStreak;
+    _rewardColorArgb = winner.slot.colorArgb;
+    _readReward = 1.0;
 
     // Face the loser cluster, level the blade at them, and snap into a full-body
     // VICTORY hold (fired once per draw) so the "FASTEST!" banner lands on a
@@ -605,6 +667,12 @@ class ReactionDuel extends MiniGameBase {
   void _tallyDraw() {
     if (_drawScored) return;
     _drawScored = true;
+    // A washed draw (no valid tap — a timed-out GO or all false starts) breaks
+    // any running read streak, so the streak only ever counts cleanly-won draws.
+    if (_gate.winner == null) {
+      _readStreak = 0;
+      _lastDrawWinner = null;
+    }
     final award = drawAward(
       ctx.players.map((p) => p.id).toList(),
       _gate.winner,
@@ -635,6 +703,8 @@ class ReactionDuel extends MiniGameBase {
     _signalSeen = false;
     _confettiFired = false;
     _feintLitLast = false;
+    _goPing = 0; // the new draw arms fresh; ping fires again on its real GO
+    _readReward = 0;
     _sinceDone = 0;
     _sinceGo = 0;
     _slashes.clear();
@@ -708,18 +778,29 @@ class ReactionDuel extends MiniGameBase {
     // every player reads their own state at a glance.
     _drawZoneLabels(canvas, size);
 
-    // During a feint we paint the same green "GO!" cue (a bluff). A steady flash
-    // value keeps the fake burst lit for the blink, snapping back to red after.
+    // THE LEARNABLE READ. A feint paints the AMBER, jittery "FAKE" cue — never
+    // the green GO — so a sharp player learns to ignore it. The real GO is the
+    // punchy green "GO!" with its rising ping (below). Same center slot so both
+    // demand a read, but they look unmistakably different.
     final feinting = _feintLit;
     ReactionRenderer.drawCenterCue(
       canvas,
       size,
-      struck: _signalSeen || feinting,
+      struck: _signalSeen,
       strikeFlash: feinting ? 1.0 : _strikeFlash,
       strikeWord: feinting ? 1.0 : _strikeWord,
       waitPulse: _waitPulse(),
       centerFrac: _cueCenterFrac,
+      feint: feinting,
+      jitter: (_animClock * _feintJitterHz) % 1.0,
     );
+
+    // The rising GO PING — expanding rings the feint NEVER fires, drawn world-
+    // space so it blooms from the same center as the cue. The single cue that
+    // teaches "this one is real".
+    if (_goPing > 0) {
+      ReactionRenderer.drawGoPing(canvas, size, 1.0 - _goPing);
+    }
 
     _juice.render(canvas);
     canvas.restore();
@@ -730,6 +811,21 @@ class ReactionDuel extends MiniGameBase {
     // overlay fired once on the signal edge.
     _drawDrawTally(canvas, size);
     _juice.renderOverlay(canvas, size);
+
+    // The VISIBLE REWARD for the read: the winner's reaction time (ms) + a read
+    // streak ▲, popped screen-space under the center cue so a sharp tap feels
+    // earned. Drawn last so it reads clearly over everything.
+    if (_readReward > 0) {
+      ReactionRenderer.drawReadReward(
+        canvas,
+        size,
+        reactionMs: _rewardMs,
+        streak: _rewardStreak,
+        color: Color(_rewardColorArgb),
+        life: _readReward,
+        centerFrac: _cueCenterFrac,
+      );
+    }
   }
 
   /// The "first to N draws" HUD: a per-player tally of won-draw pips plus the
@@ -883,13 +979,16 @@ class ReactionDuel extends MiniGameBase {
     }
     if (reacted) return (_zoneGreen, _zoneGoBaseAlpha * 0.85);
     if (_signalSeen) {
-      // Bright GREEN: a flash spike at the GO edge that settles to a steady "DRAW".
+      // Bright GREEN that SUSTAINS: a flash spike at the GO edge that settles to a
+      // steady, held "DRAW" green for the whole window — the real signal holds.
       return (_zoneGreen, _zoneGoBaseAlpha + _zoneGoFlashAlpha * _strikeFlash);
     }
     if (_feintLit) {
-      // FAKE GO: flash bright green to bait an early tap — same look as the real
-      // signal, but the gate is still waiting so tapping it is a false start.
-      return (_zoneGreen, _zoneGoBaseAlpha + _zoneGoFlashAlpha);
+      // FAKE GO: an AMBER, dimmer, jittery wash — clearly NOT the GO-green, so the
+      // zone itself teaches the read. A fast throb keeps it nervous/flickery and
+      // the alpha sits below the real GO's steady green, so it never passes for it.
+      final flick = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz * 2.4);
+      return (_zoneAmber, _zoneFeintAlpha + _zoneFeintPulse * flick);
     }
     // Waiting: a gently throbbing RED so the kid feels "not yet".
     final throb = 0.5 + 0.5 * math.sin(_animClock * _vignettePulseHz);
@@ -906,8 +1005,11 @@ class ReactionDuel extends MiniGameBase {
     if (_gate.reactionTimes.containsKey(id)) {
       return ('GOT IT!', const Color(0xFFFFFFFF));
     }
-    // A feint shows the same "DRAW!" bait as the real signal (it's a fake-out).
-    if (_signalSeen || _feintLit) return ('DRAW!', const Color(0xFFFFFFFF));
+    // The real GO — and ONLY the real GO — shows the green "DRAW!" word. A feint
+    // shows a small amber "FAKE?" instead (never "DRAW!"), so the zone word is a
+    // learnable tell: green DRAW! = tap now, amber FAKE? = hold.
+    if (_signalSeen) return ('DRAW!', const Color(0xFFFFFFFF));
+    if (_feintLit) return ('FAKE?', _zoneAmber);
     return ('WAIT', const Color(0xFFFFFFFF));
   }
 

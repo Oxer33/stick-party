@@ -777,48 +777,139 @@ class TugRenderer {
     );
   }
 
-  /// A team effort bar showing how hard a team is pulling. [effort] 0..1 fills
-  /// it from the left edge inward; [heave] 0..1 brightens + adds a surge glow
-  /// tip when the rhythm bonus is hot. [dir] -1 = top team, +1 = bottom (used to
-  /// tag which team the bar labels; the bar itself is horizontal for both).
-  static void drawEffortBar(
+  static const Color _tautGold = Color(0xFFFFC23A);
+
+  /// The headline ROPE TENSION meter for one side. [tension] 0..1 fills the rail
+  /// from the left; the segment at/above [tautFrac] is the **TAUT zone** — a
+  /// heave landed while the fill is in it becomes a POWER HEAVE, so the band is
+  /// drawn distinctly (a hot gold zone + a TAUT tick) and the whole bar IGNITES
+  /// (swells, glows, the fill turns white-hot, a "TAUT! POWER HEAVE" label reads)
+  /// while [powerFlash] (0..1, a fresh power heave) is live. This is the visible,
+  /// learnable cue: the player watches the bar climb into gold, then power-heaves.
+  /// [dir] -1 = top side (label above the bar), +1 = bottom (label below).
+  ///
+  /// Self-contained, guards its inputs, never throws. [t] is the animation clock.
+  static void drawTensionBar(
     Canvas canvas,
     Offset anchor,
     double width,
-    double effort,
-    double heave,
-    Color color, {
+    double tension,
+    double tautFrac,
+    double powerFlash,
+    Color color,
+    Color accent, {
     required double dir,
+    required double t,
   }) {
-    final e = effort.clamp(0.0, 1.0);
-    const h = 8.0;
+    if (width <= 4) return;
+    final tn = tension.clamp(0.0, 1.0);
+    final taut = tautFrac.clamp(0.05, 0.95);
+    final flash = powerFlash.clamp(0.0, 1.0);
+    final isTaut = tn >= taut;
+    final left = anchor.dx - width / 2;
+    // A prominent rail (taller than the old effort bar) so it reads as the
+    // headline meter; it swells a touch on a power flash.
+    final h = 13.0 + 5.0 * flash;
+    final breath = 0.5 + 0.5 * math.sin(t * 6.0);
+
+    // Track.
     final track = RRect.fromRectAndRadius(
       Rect.fromCenter(center: anchor, width: width, height: h),
-      const Radius.circular(h / 2),
+      Radius.circular(h / 2),
     );
-    canvas.drawRRect(track, Paint()..color = _black.withValues(alpha: 0.35));
+    canvas.drawRRect(track, Paint()..color = _black.withValues(alpha: 0.45));
 
-    final fillW = width * e;
+    // TAUT zone plate (the gold danger band on the right of the rail). Brightens
+    // + breathes once the fill actually reaches it so "you can power heave NOW"
+    // reads at a glance.
+    final tautLeft = left + width * taut;
+    final tautW = width * (1.0 - taut);
+    final zoneAlpha =
+        (isTaut ? 0.5 + 0.4 * breath : 0.26) * (0.7 + 0.3 * flash);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(tautLeft, anchor.dy - h / 2, tautW, h),
+        Radius.circular(h / 2),
+      ),
+      Paint()..color = _tautGold.withValues(alpha: zoneAlpha.clamp(0.0, 0.9)),
+    );
+
+    // Fill: side color while SLACK, igniting to white-hot gold once TAUT / on a
+    // power flash so the moment the heave turns POWER is unmistakable.
+    final fillW = width * tn;
     if (fillW > 1) {
-      final left = anchor.dx - width / 2;
-      final fillRect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(left, anchor.dy - h / 2, fillW, h),
-        const Radius.circular(h / 2),
+      final ignite = (isTaut ? 0.55 : 0.0) + 0.45 * flash;
+      final fillColor = Color.lerp(color, _white, ignite.clamp(0.0, 1.0))!;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(left, anchor.dy - h / 2, fillW, h),
+          Radius.circular(h / 2),
+        ),
+        Paint()..color = fillColor,
       );
-      final hot = Color.lerp(color, _white, 0.3 * heave.clamp(0.0, 1.0))!;
-      canvas.drawRRect(fillRect, Paint()..color = hot);
+      // Power-flash / taut halo riding the whole fill (stacked translucent, no blur).
+      if (flash > 0.02 || isTaut) {
+        final glow = (isTaut ? 0.18 : 0.0) + 0.3 * flash;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(left, anchor.dy - h / 2 - 3, fillW, h + 6),
+            Radius.circular(h / 2 + 3),
+          ),
+          Paint()
+            ..color =
+                _tautGold.withValues(alpha: (glow * breath).clamp(0.0, 0.5)),
+        );
+      }
     }
 
-    // Heave surge glow tip at the leading edge of the fill: stacked translucent
-    // discs instead of a per-frame blur.
-    if (heave > 0.05) {
-      final tipX = anchor.dx - width / 2 + fillW;
-      final hv = heave.clamp(0.0, 1.0);
-      canvas.drawCircle(Offset(tipX, anchor.dy), h * (1.2 + heave),
-          Paint()..color = _white.withValues(alpha: 0.18 * hv));
-      canvas.drawCircle(Offset(tipX, anchor.dy), h * (0.8 + heave),
-          Paint()..color = _white.withValues(alpha: 0.4 * hv));
+    // TAUT tick line marking the power-heave threshold on the rail.
+    canvas.drawLine(
+      Offset(tautLeft, anchor.dy - h / 2 - 3),
+      Offset(tautLeft, anchor.dy + h / 2 + 3),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _tautGold.withValues(alpha: isTaut ? 0.95 : 0.55),
+    );
+
+    // Rail outline (brightens when taut).
+    canvas.drawRRect(
+      track,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = (isTaut ? _tautGold : _white)
+            .withValues(alpha: isTaut ? 0.6 : 0.14),
+    );
+
+    // Label sits OUTWARD from the field: above the top bar (dir < 0), below the
+    // bottom bar (dir > 0). "TAUT! POWER HEAVE" while live, a quiet "TENSION"
+    // otherwise.
+    const labelSize = 13.0;
+    final labelY =
+        dir < 0 ? anchor.dy - h - 4 - labelSize : anchor.dy + h + 4;
+    if (isTaut || flash > 0.02) {
+      _drawBarLabel(canvas, Offset(anchor.dx, labelY), 'TAUT!  POWER HEAVE',
+          _tautGold, labelSize, breath);
+    } else {
+      _drawBarLabel(canvas, Offset(anchor.dx, labelY), 'TENSION',
+          accent.withValues(alpha: 0.55), 11, 1);
     }
+  }
+
+  static void _drawBarLabel(Canvas canvas, Offset topCenter, String text,
+      Color color, double size, double alphaPulse) {
+    final a = (color.a * (0.7 + 0.3 * alphaPulse)).clamp(0.0, 1.0);
+    final builder = ParagraphBuilder(ParagraphStyle(
+      textAlign: TextAlign.center,
+      fontSize: size,
+      fontWeight: FontWeight.w900,
+    ))
+      ..pushStyle(TextStyle(color: color.withValues(alpha: a)))
+      ..addText(text);
+    final para = builder.build()
+      ..layout(const ParagraphConstraints(width: 220));
+    canvas.drawParagraph(para, Offset(topCenter.dx - 110, topCenter.dy));
   }
 
   /// Expanding ring shockwave near a team when their HEAVE surge fires.

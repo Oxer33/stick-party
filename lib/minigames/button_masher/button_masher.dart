@@ -12,39 +12,40 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'masher_render.dart';
 
-/// Tower Climb — a race UP a tall tower to the FLAG at the top, past sweeping
-/// hazard bars. (Keeps the legacy `button_masher` id; the old spam-a-button
-/// "high striker" is gone.)
+/// Tower Climb (legacy id `button_masher`) — a race UP a tall tower to the FLAG
+/// at the top, threading a clear, learnable RHYTHM of full-width hazard bars.
 ///
 /// OBJECTIVE (obvious from the scene): be FIRST to climb your stickman to the
-/// FLAG atop the tower. If nobody summits before the buzzer, the climber who
-/// reached the HIGHEST rung wins. The flag sits at the top of every lane and the
-/// score is the best rung ever reached ([_Climber.peakRung]).
+/// FLAG. If nobody summits before the buzzer, the climber who reached the
+/// HIGHEST rung wins. Score is the best rung ever reached ([_Climber.peakRung]).
 ///
-/// CORE — one-touch, NOT a mash:
+/// CORE — climb on the BEAT (a one-touch rhythm, NOT a mash):
 ///  * **One TAP = climb ONE rung.** No tap = hold your rung. That is the whole
 ///    control: when to step, when to wait.
-///
-/// INTERPOSING DIFFICULTY — sweeping HAZARD BARS:
-///  * Horizontal bars sweep left↔right across the tower at fixed HEIGHTS (bands).
-///    Each bar is **telegraphed**: it spends a beat in a flashing WARN state
-///    (harmless) before it goes LIVE and lethal, so a reading player always gets
-///    a tell. If your climber sits in a bar's band while the LIVE bar sweeps
-///    across your lane, you are KNOCKED DOWN several rungs and briefly STUNNED.
-///  * So you climb through the GAP — step up when no live bar is at your level,
-///    and WAIT a beat when one is sweeping through. Bars sweep FASTER and the
-///    bands pack CLOSER together higher up (a calibrated ramp), so the top is a
-///    real gauntlet.
-///  * A blind masher taps every frame, climbs straight into the next bar, gets
+///  * The whole tower pulses on a single METRONOME beat. One (low) or two
+///    FULL-WIDTH hazard bars share that beat: they spend most of it parked and
+///    dim (the SAFE gap), then a WARN telegraph flashes, then they go LIVE — a
+///    solid full-width slab sweeping across — for a short danger window, then
+///    back to safe. Climb… climb… HOLD on the danger beat… climb. One bar = one
+///    rhythm the player can actually feel and ride.
+///  * A bar is lethal only while LIVE, and only to a climber whose rung sits in
+///    that bar's band. Step into a LIVE bar and you are KNOCKED DOWN several
+///    rungs and briefly STUNNED. There is no horizontal pocket to thread — the
+///    live slab covers the whole lane, so the only skill is TIMING: ride the gap
+///    between beats. The beat just SPEEDS UP higher (shorter safe windows) and a
+///    second bar joins in the upper tower, so the top is a real gauntlet.
+///  * A blind masher taps every frame, climbs straight into the live beat, gets
 ///    knocked down, climbs into it again → it loses height to a measured climber
-///    who steps only in the safe windows. (Proven by a deterministic test.)
+///    who only steps in the safe gap. (Proven by a deterministic test.)
 ///
-/// BOTS: climb on a [BotProfile] cadence but PAUSE when a live/telegraphing bar
-/// threatens the rung just above them — strong bots read the tell and thread the
-/// gap, weak bots ([errorRate]) sometimes step anyway and eat a bar. A real,
+/// BOTS: climb on a [BotProfile] cadence but read the beat — they HOLD when the
+/// rung just above is live or telegraphing (only stepping into a band when the
+/// gap can carry them clear through it) and step in the safe gap. Strong bots
+/// step FASTER (more clean attempts per beat → climb higher); weak bots
+/// ([errorRate]) sometimes mistime a step into the live bar and eat it. A real,
 /// beatable 1+CPU contest.
 ///
-/// Kid read: tap to climb, stop when a bar swings past your guy, go for the flag.
+/// Kid read: tap to climb, freeze when the tower flashes red, go for the flag.
 class ButtonMasher extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -57,13 +58,14 @@ class ButtonMasher extends MiniGameBase {
       );
 
   // ── Round tuning (no magic numbers inline) ──────────────────────────────────
-  // Nobody-summits ceiling. A measured solo climber summits in ~25s (well
-  // inside this), so a clean run ends on the flag; the timer only bites when
-  // the gauntlet keeps everyone short (the ~25-40s target band).
+  // Nobody-summits ceiling. A measured solo climber summits in ~22s (well inside
+  // this), so a clean run ends on the flag; the timer only bites when the beat
+  // keeps everyone short.
   static const double _timeLimit = 34;
-  // A tall tower: a measured climb takes ~25s, but a blind masher gets knocked
-  // out of the upper bands so hard it plateaus around rung ~22 and never tops
-  // out before the buzzer (the whole anti-spam point — verified across seeds).
+  // A tall tower: a measured beat-climb tops out in ~22s, but a blind masher
+  // climbs into the live beat over and over, so it plateaus well below the flag
+  // and never tops out before the buzzer (the anti-spam point — verified across
+  // seeds).
   static const int _rungs = 40; // rungs from ground (0) to the flag (_rungs)
   // peakRung is 0.._rungs; the HUD shows the rung count directly as the score.
 
@@ -72,42 +74,63 @@ class ButtonMasher extends MiniGameBase {
   // The climber visually eases toward its target rung so a step reads as a
   // spring up rather than a teleport.
   static const double _climbSpringPerSec = 16.0;
+  // A step has a real cadence: a tap only counts once per this interval, so the
+  // control is "one deliberate STEP per beat-slot", NOT a frame-rate mash. This
+  // is the spam lever — a blind every-frame tapper climbs at a fixed moderate
+  // rate (~7 rungs/s), so it can't rocket through a hazard band between beats;
+  // it sits in the band as the slab goes live and eats the knockback. A measured
+  // climber spends the same taps in the SAFE gap and holds on the danger beat.
+  // (Taps inside the window are dropped, not queued, so mashing buys nothing.)
+  static const double _tapCooldownSec = 0.14;
+  // A CAREFUL climber's reaction margin on top of the time it needs to climb
+  // clear of a band (see [_threatForRung]): it only steps into a band when the
+  // safe gap covers the whole crossing PLUS this slack, so it never gets caught
+  // mid-band. Small, so a threadable gap still exists every beat.
+  static const double _safeStepLeadSec = 0.10;
 
-  // ── Knockback on a bar hit ──────────────────────────────────────────────────
+  // ── Knockback on a live-beat hit ────────────────────────────────────────────
   // A hit is HEAVY: it must cost a continuous masher MORE height than it can
-  // regain before the next sweep catches it, so a blind climb nets negative in
-  // the upper tower and stalls. A careful climber takes the hit ~never.
-  static const double _knockbackRungs = 8.0; // rungs lost when a bar hits you
-  static const double _stunSec = 1.5; // taps ignored while stunned
-  // A climber is only re-hittable after a short grace so one sweep = one hit
-  // (not a per-frame grind while the bar overlaps).
-  static const double _hitGraceSec = 0.7;
+  // regain in one safe gap, so a blind climb nets negative in the upper tower
+  // and stalls. A careful climber takes the hit ~never.
+  static const double _knockbackRungs = 6.0; // rungs lost when a live bar hits you
+  static const double _stunSec = 1.2; // taps ignored while stunned
+  // A climber is only re-hittable after a short grace so one beat = one hit (not
+  // a per-frame grind while the live window overlaps).
+  static const double _hitGraceSec = 0.5;
 
-  // ── Hazard bands + sweeping bars (the interposing difficulty) ───────────────
-  // Bands are evenly spaced up the climb. The bottom of the tower has a safe
-  // run-up with no band; bands then pack the rest up to just below the flag.
-  static const int _bandCount = 10;
-  static const double _firstBandRung = 5.0; // safe run-up below this
-  static const double _lastBandRung = 37.0; // top band sits just under the flag
-  // A bar's lethal half-height in rungs: you are "in the band" within this many
-  // rungs of the band center.
-  static const double _bandHalfRungs = 1.25;
-
-  // Sweep speed (phase units/sec, phase 0..1 = one lane crossing). Higher bands
-  // sweep faster — the top is busier. Speed lerps from lo (bottom band) to hi
-  // (top band) by band height.
-  static const double _sweepSpeedLo = 0.45;
-  static const double _sweepSpeedHi = 0.95;
-  // Telegraph: each LIVE pass is preceded by a WARN beat where the bar parks at
-  // the lane edge and flashes (harmless). warnSec shrinks higher up so top bars
-  // give less lead time (still always a tell).
-  static const double _warnSecLo = 0.95;
-  static const double _warnSecHi = 0.5;
-  // The lethal core only covers the MIDDLE of the lane sweep; a margin at each
-  // edge is the safe pocket where a climber can pass while the bar is parked.
-  static const double _barCoverFrac = 0.72; // fraction of lane width the bar spans
-  // Idle dwell at the far edge between passes (a breath where the band is open).
-  static const double _dwellSec = 0.4;
+  // ── The metronome beat (the whole readable difficulty) ──────────────────────
+  // One shared beat drives every bar, so the tower pulses on a single rhythm the
+  // player can feel. A beat is split into three readable phases:
+  //   SAFE  — bars parked & dim at the lane edge, the climb window.
+  //   WARN  — bars flash a telegraph in place (harmless lead-in).
+  //   LIVE  — bars are a solid full-width slab sweeping across (lethal).
+  // The danger window (warn+live) is a fixed FRACTION of the beat, so a faster
+  // beat = the same readable shape, just quicker. The beat PERIOD shrinks as the
+  // leading climber rises, so the rhythm tightens toward the summit.
+  static const double _beatSecLo = 1.55; // beat period near the ground (relaxed)
+  static const double _beatSecHi = 0.82; // beat period near the flag (tight)
+  static const double _warnFrac = 0.20; // fraction of the beat spent telegraphing
+  static const double _liveFrac = 0.34; // fraction of the beat the slab is lethal
+  // → DANGER fraction (warn+live) = 0.54, SAFE = 0.46 of every beat. The danger
+  //   beat occupies a bit MORE than half: a careful climber, stepping only on a
+  //   clear beat, crosses a band cleanly; a continuous tapper is stepping >half
+  //   the time INTO a warn/live band and eats the slab over and over. The hit is
+  //   decided AT STEP TIME (see [_tap]) so it's a deterministic rhythm read, not
+  //   a fragile dwell race that a metronomic mash can phase-thread.
+  // The lower bar sits here; the upper (second) bar engages higher up. The
+  // bottom run-up (everything below this bar's band) is open so the start always
+  // reads, and the top above the upper band's reach is a clean dash to the flag.
+  static const double _lowerBarRung = 14.0;
+  static const double _upperBarRung = 28.0;
+  // A bar's lethal half-height in rungs: a climber is "in the band" within this
+  // many rungs of the bar center. A THIN band (height ~2 rungs) so the band is a
+  // single readable rung-row to step across — the danger is the TIMING of the
+  // step, not a tall wall.
+  static const double _barHalfRungs = 1.0;
+  // The upper bar runs half a beat out of phase, so the two bars are a clear
+  // call-and-response (lower beats, then upper) rather than one synced wall —
+  // still one felt rhythm.
+  static const double _upperBeatOffset = 0.5;
 
   // ── Summit / flag ───────────────────────────────────────────────────────────
   // Reaching the flag (the top rung) ends the climb for that player (they plant
@@ -119,15 +142,15 @@ class ButtonMasher extends MiniGameBase {
   static const int _maxFlashes = 5;
   static const double _stepLungeSec = 0.16; // a quick reach-up clip per step
 
-  // ── Bot climb cadence (sec/step); harder bots read bars + step crisper ──────
+  // ── Bot climb cadence (sec/step); harder bots ride the beat crisper ─────────
+  // A bot reads the beat with the same careful margin as a sharp human, so a bot
+  // that commits a step always threads a genuinely clear gap. Its difficulty is
+  // expressed through [BotProfile.errorRate] (a weak bot slips a step into the
+  // closing slab and eats the knockback) and through cadence below (strong bots
+  // step faster → more clean attempts per beat → climb higher).
   static const double _botBaseInterval = 0.34;
   static const double _botAccuracyBonus = 0.16; // faster steps at high accuracy
   static const double _botJitterBase = 0.12; // sloppier cadence at low accuracy
-  // How far ahead (seconds of sweep) a bot looks for a threatening bar before it
-  // commits a step. Strong bots scan a wide window (wait early, thread cleanly);
-  // weak bots scan a narrow one so they step late and eat sweeps.
-  static const double _botLookaheadLo = 0.18; // low accuracy
-  static const double _botLookaheadHi = 0.6; // high accuracy
   // Bots wait a beat at the gun so a human gets a fair head start.
   static const double _botWarmupSec = 1.2;
 
@@ -139,10 +162,10 @@ class ButtonMasher extends MiniGameBase {
   int? _summitWinner; // first climber to plant the flag (ends the round)
 
   final Map<int, _Climber> _climbers = <int, _Climber>{};
-  // The shared ladder of sweeping hazard bands. One set of bars for the whole
-  // tower; each lane reads the same band phases so the contest is identical for
-  // everyone (fair race). Built once at init.
-  late final List<_Band> _bands;
+  // The shared rhythm of full-width hazard bars. One beat for the whole tower so
+  // every lane reads the same pulse (a fair race). Built once at init.
+  late final _Beat _beat;
+  late final List<_Bar> _bars;
   // Lane layout depends only on the (fixed) arena + roster, so build it once.
   late final Map<int, _Lane> _laneByPlayer;
 
@@ -152,7 +175,8 @@ class ButtonMasher extends MiniGameBase {
     _juice = Juice(rng: ctx.rng);
     _size = ctx.arena;
     _laneByPlayer = _lanes(_size);
-    _bands = _buildBands();
+    _beat = _Beat();
+    _bars = _buildBars();
 
     final proportions = _climberProportions();
 
@@ -166,7 +190,6 @@ class ButtonMasher extends MiniGameBase {
         )..setLoco(LocoState.idle),
         botInterval: _botInterval(),
         botJitter: _botJitter(),
-        botLookahead: _botLookahead(),
       );
     }
     begin();
@@ -187,31 +210,14 @@ class ButtonMasher extends MiniGameBase {
         smearAlpha: 0.28,
       );
 
-  /// Evenly spaced hazard bands, the lowest at [_firstBandRung] and the highest
-  /// at [_lastBandRung]. Higher bands sweep faster, warn for less time and start
-  /// out of phase with one another (staggered so they don't all open at once).
-  List<_Band> _buildBands() {
-    final bands = <_Band>[];
-    final span = _lastBandRung - _firstBandRung;
-    for (var i = 0; i < _bandCount; i++) {
-      final t = _bandCount <= 1 ? 0.0 : i / (_bandCount - 1); // 0 (low)..1 (high)
-      final rung = _firstBandRung + span * t;
-      bands.add(_Band(
-        rung: rung,
-        sweepSpeed: lerpD(_sweepSpeedLo, _sweepSpeedHi, t),
-        warnSec: lerpD(_warnSecLo, _warnSecHi, t),
-        // Stagger start: alternate edges + a phase offset so the gauntlet is a
-        // shifting pattern, not a synced wall.
-        dir: i.isEven ? 1 : -1,
-        phase: (i * 0.37) % 1.0,
-        state: _BandState.sweeping,
-        // Deterministic per-band warm-in so the bottom band isn't lethal on the
-        // very first frame (the run-up stays open a moment).
-        timer: ctx.rng.range(0, _dwellSec),
-      ));
-    }
-    return bands;
-  }
+  /// The two full-width hazard bars on the shared beat: a lower one (engages
+  /// just past the run-up) and an upper one (the second half of the climb). The
+  /// upper bar runs half a beat out of phase so the pair is a readable
+  /// call-and-response, not one wall.
+  List<_Bar> _buildBars() => <_Bar>[
+        _Bar(rung: _lowerBarRung, beatOffset: 0.0, sweepDir: 1),
+        _Bar(rung: _upperBarRung, beatOffset: _upperBeatOffset, sweepDir: -1),
+      ];
 
   double _botInterval() {
     final prof = ctx.botProfile;
@@ -222,14 +228,6 @@ class ButtonMasher extends MiniGameBase {
     final prof = ctx.botProfile;
     return _botJitterBase * (1.0 - prof.accuracy.clamp(0.0, 1.0)) +
         _botJitterBase * 0.25;
-  }
-
-  /// Seconds of sweep a bot looks ahead before stepping — wide for strong bots
-  /// (they wait early and thread the gap) and narrow for weak ones (they step
-  /// late and clip bars).
-  double _botLookahead() {
-    final prof = ctx.botProfile;
-    return lerpD(_botLookaheadLo, _botLookaheadHi, prof.accuracy.clamp(0.0, 1.0));
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -252,7 +250,9 @@ class ButtonMasher extends MiniGameBase {
     final sdt = dt * _juice.hitStop.timeScale;
     _juice.update(dt);
 
-    _tickBands(sdt);
+    // The beat tightens as the LEADING climber rises, so the rhythm speeds up
+    // toward the summit (a calibrated ramp) for everyone at once.
+    _beat.tick(sdt, _beatPeriodFor(_leadFraction()));
     _driveBots(sdt);
 
     for (final c in _climbers.values) {
@@ -268,43 +268,26 @@ class ButtonMasher extends MiniGameBase {
     }
   }
 
-  /// Advance every band's sweep + telegraph clock. Pure phase bookkeeping; the
-  /// hit test reads the resulting [_Band.coversLaneCenter].
-  void _tickBands(double dt) {
-    for (final b in _bands) {
-      switch (b.state) {
-        case _BandState.dwell:
-          b.timer -= dt;
-          if (b.timer <= 0) {
-            b.dir = -b.dir; // turn around for the next pass
-            b.state = _BandState.warn;
-            b.timer = b.warnSec;
-          }
-          break;
-        case _BandState.warn:
-          // Parked at the start edge, flashing — harmless lead time.
-          b.timer -= dt;
-          if (b.timer <= 0) {
-            b.state = _BandState.sweeping;
-            b.phase = b.dir > 0 ? 0.0 : 1.0;
-          }
-          break;
-        case _BandState.sweeping:
-          b.phase += b.dir * b.sweepSpeed * dt;
-          if (b.phase >= 1.0 || b.phase <= 0.0) {
-            b.phase = b.phase.clamp(0.0, 1.0);
-            b.state = _BandState.dwell;
-            b.timer = _dwellSec;
-          }
-          break;
-      }
+  /// 0..1 height of the highest climber right now — drives the shared beat
+  /// tempo so the rhythm tightens as the race climbs.
+  double _leadFraction() {
+    var best = 0.0;
+    for (final c in _climbers.values) {
+      if (c.peakRung > best) best = c.peakRung;
     }
+    return (best / _summitRung).clamp(0.0, 1.0);
   }
 
+  /// Beat period at climb height [frac] (0 ground .. 1 flag): relaxed low, tight
+  /// high.
+  double _beatPeriodFor(double frac) =>
+      lerpD(_beatSecLo, _beatSecHi, frac.clamp(0.0, 1.0));
+
   void _tickClimber(_Climber c, double dt) {
-    // Stun + hit-grace clocks.
+    // Stun + hit-grace + step-cadence clocks.
     if (c.stun > 0) c.stun = math.max(0.0, c.stun - dt);
     if (c.hitGrace > 0) c.hitGrace = math.max(0.0, c.hitGrace - dt);
+    if (c.tapCooldown > 0) c.tapCooldown = math.max(0.0, c.tapCooldown - dt);
 
     // Ease the rendered rung toward the target rung (a step springs up).
     final follow = (1.0 - math.exp(-_climbSpringPerSec * dt)).clamp(0.0, 1.0);
@@ -312,12 +295,11 @@ class ButtonMasher extends MiniGameBase {
     if (c.rung < 0) c.rung = 0;
     c.peakRung = math.max(c.peakRung, c.rung);
 
-    // Hazard hit test: a LIVE bar whose band straddles this climber's rung and
-    // whose lethal core currently covers the lane (center) knocks the climber
-    // down. Off-grace only, and never after planting the flag.
+    // Hazard hit test: a LIVE bar whose band straddles this climber's rung
+    // knocks it down. Off-grace only, and never after planting the flag.
     if (!c.planted && c.stun <= 0 && c.hitGrace <= 0) {
-      final band = _bandHitting(c);
-      if (band != null) _knockDown(c, band);
+      final bar = _barHitting(c);
+      if (bar != null) _knockDown(c, bar);
     }
 
     // Plant the flag the first time a climber tops out.
@@ -333,15 +315,19 @@ class ButtonMasher extends MiniGameBase {
     c.figure.update(dt);
   }
 
-  /// The band currently hitting [c] (LIVE bar, band straddles the climber's
-  /// rung, lethal core over the lane center) — or null when the climber is in a
-  /// safe pocket. The lane center is at sweep-fraction 0.5, so the core covers
-  /// it only while the bar sweeps through the middle [_barCoverFrac] of its run.
-  _Band? _bandHitting(_Climber c) {
-    for (final b in _bands) {
-      if (b.state != _BandState.sweeping) continue; // warn/dwell are harmless
-      if ((c.rung - b.rung).abs() > _bandHalfRungs) continue; // not in the band
-      if (b.coversLaneCenter(_barCoverFrac)) return b;
+  /// The bar currently hitting [c] (LIVE on the beat AND its band straddles the
+  /// climber's rung) — or null when the climber is in the safe gap or away from
+  /// every band. Full-width: there is no horizontal pocket; being in the band
+  /// during the LIVE window is the whole test.
+  _Bar? _barHitting(_Climber c) {
+    for (final b in _bars) {
+      // In the band if EITHER the rendered rung or the rung the climber just
+      // stepped to sits within it — so a step UP into a live slab lands even
+      // before the spring eases there (a tap into the live beat always bites).
+      final inBand = (c.rung - b.rung).abs() <= _barHalfRungs ||
+          (c.targetRung - b.rung).abs() <= _barHalfRungs;
+      if (!inBand) continue;
+      if (_beat.isLive(b.beatOffset)) return b;
     }
     return null;
   }
@@ -349,7 +335,7 @@ class ButtonMasher extends MiniGameBase {
   /// Knock [c] down several rungs + stun it, with a hurt flinch and a puff. The
   /// peak rung is untouched, so a hit costs progress on THIS attempt but never
   /// erases how high the climber has been (fair, readable scoring).
-  void _knockDown(_Climber c, _Band band) {
+  void _knockDown(_Climber c, _Bar bar) {
     c.targetRung = math.max(0.0, c.targetRung - _knockbackRungs);
     c.stun = _stunSec;
     c.hitGrace = _hitGraceSec;
@@ -450,10 +436,31 @@ class ButtonMasher extends MiniGameBase {
     final c = _climbers[id];
     if (c == null) return;
     // A stunned or summited climber ignores taps (the knockdown is the cost of
-    // mashing into a bar; once you've planted the flag you're done).
+    // mashing into the live beat; once you've planted the flag you're done).
     if (c.stun > 0 || c.planted) return;
+    // Step cadence: a tap inside the cooldown is DROPPED (not queued), so a
+    // frame-rate mash climbs no faster than a deliberate tap and can't out-run
+    // the beat read.
+    if (c.tapCooldown > 0) return;
+    c.tapCooldown = _tapCooldownSec;
 
-    c.targetRung = math.min(_summitRung, c.targetRung + _climbPerTap);
+    // RHYTHM READ (the whole skill): a step whose destination row lands in a bar
+    // that is telegraphing (WARN) or LIVE is MISTIMED — the climber reaches into
+    // the closing/live slab and is KNOCKED DOWN instead of climbing. A careful
+    // player steps only on a clear beat and never eats this; a continuous tapper
+    // hits it on >half its steps (danger fills >half the beat) and stalls. The
+    // hit is decided here, at the instant of the step, so it is fully
+    // deterministic — a metronomic mash cannot phase-thread it.
+    final dest = math.min(_summitRung, c.targetRung + _climbPerTap);
+    if (c.hitGrace <= 0) {
+      final danger = _barInDangerAt(dest);
+      if (danger != null) {
+        _knockDown(c, danger);
+        return; // mistimed step: bonk, no climb
+      }
+    }
+
+    c.targetRung = dest;
 
     // Reach-up lunge clip + a little hop-loco for life.
     c.lunge = _stepLungeSec;
@@ -461,6 +468,19 @@ class ButtonMasher extends MiniGameBase {
 
     _spawnStepFeedback(c);
     if (c.targetRung >= _summitRung) _plantFlag(c);
+  }
+
+  /// The bar whose band contains [rung] AND is in its danger window (WARN or
+  /// LIVE) right now — i.e. stepping onto [rung] this instant is mistimed into a
+  /// closing/live slab — or null if [rung] is clear to step onto. This is the
+  /// step-time rhythm gate; full-width, so being in the band during danger is
+  /// the whole test (no horizontal dodge).
+  _Bar? _barInDangerAt(double rung) {
+    for (final b in _bars) {
+      if ((rung - b.rung).abs() > _barHalfRungs) continue; // not this band
+      if (_beat.isWarn(b.beatOffset) || _beat.isLive(b.beatOffset)) return b;
+    }
+    return null;
   }
 
   /// Each step = a flash ring + a small dust kick off the rung the climber
@@ -484,10 +504,10 @@ class ButtonMasher extends MiniGameBase {
   }
 
   /// Bots step on a [BotProfile] cadence, but only AFTER checking the rung just
-  /// above them is clear within their lookahead window. A strong bot scans far
-  /// ahead (waits for the gap, threads it); a weak bot scans little and, on an
-  /// [errorRate] slip, steps into a closing bar anyway. The guard caps catch-up
-  /// steps for huge frame steps.
+  /// above them is safe on the beat within their lookahead window. A strong bot
+  /// scans far ahead (waits for the gap, threads it); a weak bot scans little
+  /// and, on an [errorRate] slip, steps into the live beat anyway. The guard
+  /// caps catch-up steps for huge frame steps.
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return; // human head start
     for (final c in _climbers.values) {
@@ -510,28 +530,46 @@ class ButtonMasher extends MiniGameBase {
     }
   }
 
-  /// A bot steps unless stepping would carry it into a bar. It reads the band it
-  /// would enter (the rung just above) and waits while that band's bar is LIVE
-  /// over the lane OR is about to be (telegraphing / arriving within the bot's
+  /// A bot steps unless stepping would carry it into the live beat. It reads the
+  /// bar it would enter (the rung just above) and waits while that bar is LIVE
+  /// over its band OR is about to be (telegraphing / going live within the bot's
   /// lookahead). On an [errorRate] slip it ignores the tell and steps anyway —
-  /// mistiming into the bar exactly like a careless human.
+  /// mistiming into the slab exactly like a careless human.
   bool _botShouldStep(_Climber c) {
     final nextRung = c.targetRung + _climbPerTap;
-    final threat = _threatForRung(c, nextRung);
-    if (threat == null) return true; // clear above → climb
-    // Careless slip: step into the closing bar and (likely) eat it.
+    // Bots read the beat with the same careful margin as a sharp human, so they
+    // thread a band whenever the gap is genuinely clear. Their SKILL shows in
+    // [errorRate] (a weak bot slips a step into the closing slab and eats it)
+    // and in cadence (strong bots step faster → more clean attempts per beat),
+    // NOT in a bigger safety buffer — a fatter buffer would paradoxically make
+    // weak bots climb cleaner.
+    final threat = _threatForRung(c, nextRung, _safeStepLeadSec);
+    if (threat == null) return true; // safe gap above → climb
+    // Careless slip: step into the closing beat and (likely) eat it.
     if (ctx.rng.chance(ctx.botProfile.errorRate)) return true;
-    return false; // read the bar, hold this beat
+    return false; // read the beat, hold this step
   }
 
-  /// The band threatening a climb to [rung] for [c] within its bot lookahead —
-  /// LIVE-and-over-lane now, or warning / sweeping toward the lane soon — or null
-  /// if that rung is safe to step into.
-  _Band? _threatForRung(_Climber c, double rung) {
-    final look = c.botLookahead;
-    for (final b in _bands) {
-      if ((rung - b.rung).abs() > _bandHalfRungs) continue; // not this band
-      if (b.threatensLaneSoon(_barCoverFrac, look)) return b;
+  /// The bar that makes stepping onto [rung] unsafe — its band contains [rung]
+  /// and its danger (WARN/LIVE) is here now or arrives before the climber could
+  /// climb clear of the band's TOP edge — or null if [rung] is safe to step
+  /// onto. This is what stops a careful climber from ever PARKING inside a band:
+  /// it only steps in when the gap is long enough to climb all the way through.
+  /// [extraLookSec] is added to the band-exit time as the reader's reaction
+  /// margin (both bots and the [isStepSafe] seam use the same careful margin —
+  /// see [_botShouldStep]). Uses the live beat period so the estimate is honest.
+  _Bar? _threatForRung(_Climber c, double rung, double extraLookSec) {
+    final period = _beatPeriodFor(_leadFraction());
+    for (final b in _bars) {
+      final topEdge = b.rung + _barHalfRungs; // last rung still inside the band
+      if (rung < b.rung - _barHalfRungs || rung > topEdge) continue; // clear
+      // Beat-seconds to climb from this rung out past the band's top edge.
+      final rungsToExit = (topEdge - rung) + _climbPerTap;
+      final exitSec = rungsToExit * _tapCooldownSec;
+      if (_beat.threatensSoon(b.beatOffset, exitSec + extraLookSec,
+          period: period)) {
+        return b;
+      }
     }
     return null;
   }
@@ -546,7 +584,10 @@ class ButtonMasher extends MiniGameBase {
     canvas.save();
     _juice.applyWorldTransform(canvas);
 
-    MasherRenderer.drawBackground(canvas, size, _animClock);
+    // The shared beat pulse (0 deep in the safe gap .. 1 on the live strike)
+    // drives a tower-wide flash so the rhythm is unmistakable.
+    final beatFlash = _beat.dangerGlow();
+    MasherRenderer.drawBackground(canvas, size, _animClock, beatPulse: beatFlash);
 
     for (final p in ctx.players) {
       final c = _climbers[p.id];
@@ -577,20 +618,22 @@ class ButtonMasher extends MiniGameBase {
       glowPulse: 0.5 + 0.5 * math.sin(_animClock * 3.0 + c.slot.id),
     );
 
-    // Sweeping hazard bars across this lane. Each band reads its phase/state so
-    // a LIVE bar is a solid danger slab and a WARN bar is a flashing ghost — the
-    // telegraph the player reads to time a step.
-    for (final b in _bands) {
+    // The full-width hazard bars across this lane, each reading the shared beat:
+    // a parked dim slab in the SAFE gap, a flashing telegraph in WARN, a solid
+    // sweeping slab in LIVE. One beat = one readable rhythm across every lane.
+    for (final b in _bars) {
       MasherRenderer.drawHazardBar(
         canvas,
         tower.spec,
         bandRung: b.rung,
+        halfRungs: _barHalfRungs,
         rungs: _rungs,
-        laneFrac: b.laneFrac,
-        coverFrac: _barCoverFrac,
-        live: b.state == _BandState.sweeping,
-        warn: b.state == _BandState.warn,
-        warnPulse: 0.5 + 0.5 * math.sin(_animClock * 14.0 + b.rung),
+        live: _beat.isLive(b.beatOffset),
+        warn: _beat.isWarn(b.beatOffset),
+        sweep: _beat.liveSweep(b.beatOffset), // 0..1 across the lane while live
+        sweepDir: b.sweepDir,
+        beatPhase: _beat.phase(b.beatOffset),
+        warnPulse: 0.5 + 0.5 * math.sin(_animClock * 16.0 + b.rung),
       );
     }
 
@@ -688,14 +731,24 @@ class ButtonMasher extends MiniGameBase {
   double peakRungOf(int id) => _climbers[id]?.peakRung ?? -1;
 
   /// Whether [id]'s climber can safely step up ONE rung right now — i.e. the
-  /// rung just above it is not threatened by any LIVE-or-imminent hazard bar.
-  /// This is exactly the read a careful player (or a hint cue) makes before
-  /// stepping. Read-only; for deterministic gameplay tests + smart play.
+  /// rung just above it is not threatened by any LIVE-or-imminent hazard bar on
+  /// the beat. This is exactly the read a careful player (or a hint cue) makes
+  /// before stepping. Read-only; for deterministic gameplay tests + smart play.
   @visibleForTesting
   bool isStepSafe(int id) {
     final c = _climbers[id];
     if (c == null) return false;
-    return _threatForRung(c, c.targetRung + _climbPerTap) == null;
+    return _threatForRung(c, c.targetRung + _climbPerTap, _safeStepLeadSec) ==
+        null;
+  }
+
+  /// The shared beat phase (0..1) for the bar at [barIndex] (0 = lower, 1 =
+  /// upper), or -1 if out of range. Read-only; lets a deterministic test assert
+  /// the rhythm/telegraph timing the player rides. For tests + tuning only.
+  @visibleForTesting
+  double beatPhaseOf(int barIndex) {
+    if (barIndex < 0 || barIndex >= _bars.length) return -1;
+    return _beat.phase(_bars[barIndex].beatOffset);
   }
 }
 
@@ -743,69 +796,95 @@ class _Flash {
   _Flash({required this.at, required this.life});
 }
 
-/// Telegraph state of a sweeping hazard band.
-enum _BandState { sweeping, dwell, warn }
+/// The shared metronome. A single phase clock in [0,1) loops every beat; bars
+/// read it (with their own offset) to derive WARN / LIVE / SAFE. Keeping ONE
+/// clock for the whole tower is what makes the danger a single felt rhythm
+/// instead of a wall of independent timers. Mutable round-scoped state.
+class _Beat {
+  // The phase fraction at which a beat goes LIVE: WARN occupies the slice just
+  // before it, SAFE is everything after the live window. So one beat reads:
+  //   [ SAFE … | WARN | LIVE | SAFE … ]
+  static const double _warnFrac = ButtonMasher._warnFrac;
+  static const double _liveFrac = ButtonMasher._liveFrac;
+  static const double _liveStart = 1.0 - _liveFrac; // live runs to the beat end
+  static const double _warnStart = _liveStart - _warnFrac;
 
-/// One horizontal hazard band on the shared ladder: a bar that sweeps across the
-/// lane at a fixed rung [rung], with a WARN tell before each LIVE pass and a
-/// DWELL breath at the far edge. Mutable round-scoped state.
-class _Band {
-  final double rung; // band center height (in rungs)
-  final double sweepSpeed; // phase units/sec while sweeping
-  final double warnSec; // telegraph lead time before a live pass
+  double phaseRaw = 0; // 0..1, advances at 1/period per second
 
-  int dir; // +1 sweeping right, -1 sweeping left
-  double phase; // 0..1 sweep fraction across the lane (0 = left edge)
-  _BandState state;
-  double timer; // counts down in warn/dwell
-
-  _Band({
-    required this.rung,
-    required this.sweepSpeed,
-    required this.warnSec,
-    required this.dir,
-    required this.phase,
-    required this.state,
-    required this.timer,
-  });
-
-  /// Sweep fraction for rendering: the parked WARN bar sits at its start edge.
-  double get laneFrac {
-    if (state == _BandState.warn) return dir > 0 ? 0.0 : 1.0;
-    return phase.clamp(0.0, 1.0);
+  /// Advance the metronome by [dt] at the current [period] (seconds/beat).
+  void tick(double dt, double period) {
+    if (period <= 0) return;
+    phaseRaw = (phaseRaw + dt / period) % 1.0;
   }
 
-  /// True while the LIVE lethal core (the middle [coverFrac] of the sweep)
-  /// covers the lane center (sweep-fraction 0.5).
-  bool coversLaneCenter(double coverFrac) {
-    if (state != _BandState.sweeping) return false;
-    final half = coverFrac.clamp(0.0, 1.0) / 2;
-    return (phase - 0.5).abs() <= half;
+  /// Phase 0..1 through THIS bar's beat (its [offset] shifts the shared clock).
+  double phase(double offset) => (phaseRaw + offset) % 1.0;
+
+  bool isWarn(double offset) {
+    final p = phase(offset);
+    return p >= _warnStart && p < _liveStart;
   }
 
-  /// True if this band threatens the lane center NOW or within [lookSec] of
-  /// sweep — i.e. it is warning (a live pass is imminent), or it is sweeping and
-  /// its core is over / arriving at the center within the lookahead. Used by
-  /// bots to wait for a safe pocket.
-  bool threatensLaneSoon(double coverFrac, double lookSec) {
-    switch (state) {
-      case _BandState.warn:
-        // A live pass is coming the instant warn ends; treat as a threat if the
-        // warn ends within the lookahead.
-        return timer <= lookSec;
-      case _BandState.dwell:
-        return false; // breathing at the edge — safe for now
-      case _BandState.sweeping:
-        final half = coverFrac.clamp(0.0, 1.0) / 2;
-        // Distance (in phase) from the core's leading edge to the center.
-        final aheadOfCenter = (dir > 0 && phase < 0.5) || (dir < 0 && phase > 0.5);
-        final distToCore = (phase - 0.5).abs() - half;
-        if (distToCore <= 0) return true; // already over the center
-        if (!aheadOfCenter) return false; // core already passed the center
-        final secsToCore = distToCore / sweepSpeed;
-        return secsToCore <= lookSec;
+  bool isLive(double offset) => phase(offset) >= _liveStart;
+
+  /// 0..1 sweep position of the live slab across the lane (only meaningful while
+  /// live); a smooth wipe so the live window reads as a fast pass.
+  double liveSweep(double offset) {
+    final p = phase(offset);
+    if (p < _liveStart) return 0;
+    return ((p - _liveStart) / _liveFrac).clamp(0.0, 1.0);
+  }
+
+  /// True if a bar at [offset] is LIVE now, or will go live within [lookSec] of
+  /// beat (i.e. it is in WARN whose end is within the lookahead, or already
+  /// live). Used to wait for the safe gap; [period] is the live seconds/beat so
+  /// the lookahead is measured in real time.
+  bool threatensSoon(double offset, double lookSec, {required double period}) {
+    if (isLive(offset)) return true;
+    final p = phase(offset);
+    if (p >= _warnStart && p < _liveStart) {
+      // Telegraphing — live the instant warn ends; threat if that is soon.
+      final secsToLive = (_liveStart - p) * period;
+      return secsToLive <= lookSec;
     }
+    // In the safe gap: live is a full lap minus the distance already travelled.
+    final secsToLive = ((_liveStart - p) % 1.0) * period;
+    return secsToLive <= lookSec;
   }
+
+  /// 0 deep in the safe gap → 1 on the live strike. Drives the tower-wide danger
+  /// glow so the LIVE beat flashes the whole scene. Uses the hottest of the two
+  /// bar offsets in play for a single unified pulse.
+  double dangerGlow() =>
+      math.max(_glowAt(0.0), _glowAt(ButtonMasher._upperBeatOffset));
+
+  double _glowAt(double offset) {
+    final p = phase(offset);
+    if (p >= _liveStart) return 1.0; // live → full flash
+    if (p >= _warnStart) {
+      return 0.4 + 0.6 * ((p - _warnStart) / _warnFrac).clamp(0.0, 1.0);
+    }
+    // Safe gap: glow fades as we move away from the last live strike and rises
+    // again as the next warn approaches (a breathing pulse, brightest at warn).
+    final toWarn = _warnStart <= 0 ? 0.0 : (_warnStart - p) / _warnStart;
+    return (1.0 - toWarn.clamp(0.0, 1.0)) * 0.3;
+  }
+}
+
+/// One full-width hazard bar on the shared beat. It is lethal only while LIVE
+/// and only to a climber whose rung is within the band; there is no horizontal
+/// pocket — timing on the beat is the whole game. Pure value (its danger state
+/// is read from the shared [_Beat]).
+class _Bar {
+  final double rung; // band center height (in rungs)
+  final double beatOffset; // phase shift on the shared beat (0..1)
+  final int sweepDir; // +1 live slab wipes right, -1 wipes left (visual only)
+
+  const _Bar({
+    required this.rung,
+    required this.beatOffset,
+    required this.sweepDir,
+  });
 }
 
 /// Per-player climb state for one round. Mutable round-scoped state (allowed for
@@ -815,13 +894,13 @@ class _Climber {
   final StickFigure figure;
   final double botInterval;
   final double botJitter;
-  final double botLookahead; // seconds of sweep this bot reads ahead
 
   double rung = 0; // current rendered rung (eased)
   double targetRung = 0; // rung the climber is stepping toward
   double peakRung = 0; // best rung reached — THIS is the score source
   double stun = 0; // seconds of stun remaining (taps ignored)
   double hitGrace = 0; // seconds before this climber can be hit again
+  double tapCooldown = 0; // seconds before the next tap counts (step cadence)
   double lunge = 0; // seconds of reach-up clip remaining
   bool planted = false; // reached the flag and planted it
 
@@ -836,6 +915,5 @@ class _Climber {
     required this.figure,
     required this.botInterval,
     required this.botJitter,
-    required this.botLookahead,
   }) : nextStepAt = botInterval;
 }
