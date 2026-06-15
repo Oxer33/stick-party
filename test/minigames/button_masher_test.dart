@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
@@ -253,5 +254,145 @@ void main() {
       expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally,
           reason: '$count-player render at the end');
     }
+  });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ───────────────
+  //
+  // The anti-spam tests above prove spam LOSES. These pin the other half of a
+  // good game: against a SKILLED human the bots form a real difficulty gradient,
+  // and the HARD bot is a genuine threat — beatable but tough, neither a wall
+  // nor a pushover.
+  //
+  // Setup (the cleanest skilled-vs-bot read): seat 0 is a frame-perfect human
+  // that steps only when [ButtonMasher.isStepSafe] reads clear (rides the beat,
+  // never eats a slab); the opposing seats are bots at a fixed difficulty. We
+  // run a 1v1 (the clean head-to-head — see the 4p note below) over a wide seed
+  // window and measure seat 0's win-rate.
+  //
+  // MEASURED (this tuning, 14-seed window A / 14-seed disjoint window B / 28
+  // combined), 1v1 seat-0 win-rate:
+  //   easy   1.000 / 1.000 / 1.000   (margin +12..+27 — always wins, decisively)
+  //   medium 1.000 / 1.000 / 1.000   (margin +3..+26  — wins, sometimes by a hair)
+  //   hard   0.714 / 0.571 / 0.643   (margin −4..+27  — the human LOSES some seeds)
+  //
+  // The hard bot lands squarely inside the spec's beatable-but-tough envelope
+  // ~[0.15, 0.90]: a frame-perfect human wins ~64% across 28 seeds, the hard bot
+  // takes the other ~36% (including seeds where it out-climbs the human by 4
+  // rungs). The lever is the accuracy-scaled bot warmup: a sharp bot is off the
+  // line almost at the gun and races the human's first-to-summit line, a weak
+  // bot keeps most of the head-start. Bands below are robust supersets of the
+  // measured values and are asserted on BOTH the A and B (disjoint) windows so a
+  // future tuning regression that turns the hard bot into a wall or a pushover
+  // trips the test.
+  //
+  // 4p NOTE: with three bots in the field the human must beat the FASTEST of
+  // three first-to-summit racers, so 4p-hard is harder still (measured ~0.14
+  // seat-0 win-rate) — consistent with the same gradient, just steeper. We lock
+  // the 1v1 read because it isolates one skilled human vs one bot cleanly.
+
+  // Disjoint seed windows: bands proven on A must also hold on B (and vice
+  // versa), so the gradient is a property of the tuning, not of one seed batch.
+  const seedsA = [1, 5, 7, 11, 42, 99, 777, 3, 13, 23, 88, 101, 202, 303];
+  const seedsB = [2, 4, 6, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20];
+
+  /// Run one 1v1 round to the finish: seat 0 = SKILLED human (steps only when
+  /// [ButtonMasher.isStepSafe]), seat 1 = a bot at [d]. Returns whether seat 0
+  /// won (ranked first) and the peak-rung margin (seat 0 − bot). Deterministic.
+  ({bool won, num margin}) skilledVsBot(int seed, BotDifficulty d) {
+    final ctx = MiniGameContext(
+      players: [
+        PlayerSlot.defaults(0), // skilled human, seat 0
+        PlayerSlot.defaults(1, isBot: true), // bot opponent
+      ],
+      arena: const Size(800, 1200),
+      rng: SeededRng(seed),
+      zones: ZoneLayout.forPlayers(2),
+      difficulty: d,
+    );
+    final g = ButtonMasher()..init(ctx);
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      if (g.isStepSafe(0)) g.onInput(PlayerInput.down(0));
+      g.update(1 / 60);
+    }
+    final won = g.winResult!.ranking.first == 0;
+    return (won: won, margin: g.scores.of(0) - g.scores.of(1));
+  }
+
+  /// Seat-0 (skilled human) win-rate vs a [d] bot across [seeds] (1v1).
+  double winRateVs(BotDifficulty d, List<int> seeds) {
+    var wins = 0;
+    for (final seed in seeds) {
+      if (skilledVsBot(seed, d).won) wins++;
+    }
+    return wins / seeds.length;
+  }
+
+  test('COMPETITIVE: skill gradient + beatable-but-tough hard bot', () {
+    for (final seeds in [seedsA, seedsB]) {
+      final winEasy = winRateVs(BotDifficulty.easy, seeds);
+      final winMedium = winRateVs(BotDifficulty.medium, seeds);
+      final winHard = winRateVs(BotDifficulty.hard, seeds);
+
+      // EASY is clearly beatable — a skilled human runs it down.
+      expect(winEasy, greaterThanOrEqualTo(0.70),
+          reason: 'easy must be clearly beatable (got $winEasy)');
+
+      // HARD is beatable-but-tough: a real threat, not a wall (>0) and not a
+      // trivial pushover (<1.0). Robust superset of measured 0.571..0.714,
+      // inside the spec envelope ~[0.15, 0.90].
+      expect(winHard, greaterThanOrEqualTo(0.25),
+          reason: 'hard must not be a wall — a skilled human beats it '
+              'sometimes (got $winHard)');
+      expect(winHard, lessThanOrEqualTo(0.90),
+          reason: 'hard must not be a pushover — it takes real games off a '
+              'skilled human (got $winHard)');
+
+      // GRADIENT: harder difficulty never makes the human win MORE, and the
+      // hard bot is strictly tougher than the easy one.
+      expect(winEasy, greaterThanOrEqualTo(winMedium),
+          reason: 'easy must be at least as beatable as medium '
+              '(easy=$winEasy medium=$winMedium)');
+      expect(winMedium, greaterThanOrEqualTo(winHard),
+          reason: 'medium must be at least as beatable as hard '
+              '(medium=$winMedium hard=$winHard)');
+      expect(winEasy, greaterThan(winHard),
+          reason: 'the skill gradient must separate easy from hard '
+              '(easy=$winEasy hard=$winHard)');
+    }
+  });
+
+  test('COMPETITIVE: not luck-dominated — easy falls reliably every seed', () {
+    // A skilled human beats the easy bot on EVERY seed in both windows: the win
+    // is earned by reading the beat, not handed out by a lucky roll.
+    for (final seeds in [seedsA, seedsB]) {
+      for (final seed in seeds) {
+        final r = skilledVsBot(seed, BotDifficulty.easy);
+        expect(r.won, isTrue,
+            reason: 'skilled human must reliably beat easy (seed $seed)');
+        expect(r.margin, greaterThan(0),
+            reason: 'and out-climb it, not scrape a tie (seed $seed)');
+      }
+    }
+  });
+
+  test('COMPETITIVE: no runaway — the hard contest swings both ways', () {
+    // Outcomes against the hard bot must VARY across seeds: the human takes some
+    // and the bot takes some (a comeback exists), so neither side runs away with
+    // a fixed result. Proven on the union of both windows.
+    final allSeeds = [...seedsA, ...seedsB];
+    var humanWins = 0;
+    var botWins = 0;
+    for (final seed in allSeeds) {
+      if (skilledVsBot(seed, BotDifficulty.hard).won) {
+        humanWins++;
+      } else {
+        botWins++;
+      }
+    }
+    expect(humanWins, greaterThan(0),
+        reason: 'the human must win some hard games (not a wall)');
+    expect(botWins, greaterThan(0),
+        reason: 'the hard bot must win some games (not a pushover / runaway)');
   });
 }

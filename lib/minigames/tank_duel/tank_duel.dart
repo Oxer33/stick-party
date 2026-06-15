@@ -183,9 +183,18 @@ class TankDuel extends MiniGameBase {
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botWarmupSec = 1.5; // grace before bots start firing
-  static const double _botBaseTolerance = 0.085; // good-aim cone at full accuracy
+  // The bot fires once its barrel has SETTLED onto this shot's committed target
+  // (the led lead + its per-shot aim bias) within this tight cone — the miss now
+  // lives in the committed bias below, not in a loose firing cone, so a weak bot
+  // genuinely shoots wide instead of waiting out its error for a perfect shot.
+  static const double _botFireCone = 0.05; // settled-on-target cone (radians)
   static const double _botAimErrorRad = 0.42; // max steady aim error at accuracy 0
   static const double _botFlinchRad = 0.22; // extra random yank added per shot
+  // Even the most accurate bot keeps THIS much aim spread (a floor on `miss`), so
+  // a hard bot is a tough tracker but never a frame-perfect sniper — it still
+  // commits the odd wide shot, leaving the duel beatable-but-tough rather than a
+  // wall. Tuned (measured) so a skilled human wins vs hard in ~[0.15, 0.90].
+  static const double _botMissFloor = 0.26; // min (1 − accuracy) used for the bias
   static const int _botArcCandidates = 13; // angles probed across the band
   static const int _botArcSteps = 26; // integration steps per probed arc
   static const double _botArcDt = 0.05; // arc-probe timestep (seconds)
@@ -723,16 +732,24 @@ class TankDuel extends MiniGameBase {
       final clock = t.clock;
       if (clock == null) continue;
       if (t.hp <= 0) continue; // a downed tank stops shooting
-      // EVERY frame a bot STEERS its manual aim toward the lead (the same barrel
-      // a human drags), at a bounded turn speed scaled by accuracy. So a hard bot
-      // tracks a strafing foe while an easy bot lags it — and a bot can only fire
-      // once its own aim has actually reached the line-up, exactly like a player.
-      _steerBotAim(t, dt);
       // A bot lives under the SAME reload economy as the player: while the breech
       // is hot its reaction clock simply waits (no wasted tick), so a bot also
       // gets only the scarce, reload-paced shells — its edge is timing/aim, not
-      // a higher fire-rate than a human could ever reach.
-      if (!t.loaded) continue;
+      // a higher fire-rate than a human could ever reach. While reloading it also
+      // forgets its committed aim error so the NEXT shot rolls a fresh one.
+      if (!t.loaded) {
+        t.hasAimBias = false;
+        continue;
+      }
+      // The instant the breech comes up, COMMIT this shot's aim error once (a
+      // weaker bot commits a bigger one) and hold it through the whole aiming
+      // cycle — the barrel will steer onto, and fire DOWN, the corrupted lead.
+      _rollBotAimBias(t);
+      // EVERY frame a bot STEERS its manual aim toward the lead (the same barrel
+      // a human drags), at a bounded turn speed scaled by accuracy. So a hard bot
+      // tracks a strafing foe while an easy bot lags it — and a bot can only fire
+      // once its own aim has actually reached the (corrupted) line-up.
+      _steerBotAim(t, dt);
       if (!clock.tick(clockDt)) continue;
       // Pick this shot's charge: mostly a flat snap, but a more accurate bot
       // sometimes winds up a charged lob/snipe. The arc is then SOLVED at this
@@ -743,17 +760,45 @@ class TankDuel extends MiniGameBase {
     }
   }
 
-  /// Turn [shooter]'s manual aim a step toward the angle that would land a snap
-  /// shot on the nearest enemy's PREDICTED (led) strafe position. The turn is
-  /// capped per frame (accuracy-scaled) so the barrel physically tracks rather
-  /// than teleporting; with no reachable foe it eases back to the band center so
-  /// it never freezes pointed at a wall.
+  /// Turn [shooter]'s manual aim a step toward the COMMITTED target — the led
+  /// launch angle onto the nearest foe's predicted strafe position, OFFSET by
+  /// this shot's persistent aim bias (so a weaker bot's barrel physically rests
+  /// off the true lead and its shell flies wide). The turn is capped per frame
+  /// (accuracy-scaled) so the barrel tracks rather than teleporting; with no
+  /// reachable foe it eases back to the band center so it never freezes on a wall.
   void _steerBotAim(_Tank shooter, double dt) {
-    final want = _bestLaunchAngle(shooter, _shellSpeed) ?? shooter.barrel.center;
+    final want = _botWantAngle(shooter, _shellSpeed);
     final accuracy = ctx.botProfile.accuracy.clamp(0.0, 1.0);
     final turn = (_botTurnBaseRad + _botTurnAccGain * accuracy) * dt;
     final delta = wrapAngle(want - shooter.barrel.angle);
     shooter.barrel.nudge(delta.abs() <= turn ? delta : turn * delta.sign);
+  }
+
+  /// The angle a bot is steering its barrel ONTO this shot: the led launch angle
+  /// corrupted by the committed [_Tank.aimBias]. Falls back to the band center
+  /// when no foe is reachable (so the barrel rests inward, never on a wall).
+  double _botWantAngle(_Tank shooter, double shellSpeed) {
+    final best =
+        _bestLaunchAngle(shooter, shellSpeed, leadSec: _botLeadFor());
+    if (best == null) return shooter.barrel.center;
+    return best + shooter.aimBias;
+  }
+
+  /// Commit this shot's aim error ONCE per loaded aiming cycle. A weaker bot
+  /// (lower accuracy) commits a larger steady bias plus a per-shot flinch, both
+  /// scaling with `miss = 1 − accuracy`, so its barrel settles OFF the true lead
+  /// and the shell it fires down that barrel sails wide. A hard bot's bias is
+  /// tiny, so it lands. Deterministic via [ctx.rng]; held until the next reload
+  /// clears [_Tank.hasAimBias].
+  void _rollBotAimBias(_Tank shooter) {
+    if (shooter.hasAimBias) return;
+    shooter.hasAimBias = true;
+    // A floor on `miss` keeps even a hard bot's bias non-trivial, so it tracks
+    // tightly yet still sprays the occasional wide shell (beatable, not a wall).
+    final miss = math.max(
+        _botMissFloor, 1 - ctx.botProfile.accuracy.clamp(0.0, 1.0));
+    shooter.aimBias = ctx.rng.jitter(miss * _botAimErrorRad) +
+        ctx.rng.jitter(miss * _botFlinchRad);
   }
 
   /// The charge a bot commits to this shot. Accuracy gates how often it bothers
@@ -765,30 +810,22 @@ class TankDuel extends MiniGameBase {
     return ctx.rng.range(_botChargeMin, _botChargeMax);
   }
 
-  /// A bot fires when its live MANUAL aim angle is within an accuracy-scaled cone
-  /// of the launch angle that would land a shell — fired at [shellSpeed] — on the
-  /// nearest reachable enemy's LED strafe position.
+  /// A bot fires once its barrel has actually REACHED this shot's committed
+  /// target — the led launch angle plus the persistent [_Tank.aimBias] — within a
+  /// tight cone, then looses DOWN that barrel.
   ///
-  /// Fairness on TWO axes now. (1) The wanted angle is the LEAD: it's solved onto
-  /// where the foe will be after an accuracy-scaled lead time, so an easy bot
-  /// under-leads and its shell trails a strafing target. (2) The wanted angle is
-  /// then corrupted by a steady accuracy error PLUS a fresh per-shot flinch. At
-  /// low accuracy these are large versus the firing cone, so an easy bot commits
-  /// the trigger while badly off the lead — it fires and *misses* often rather
-  /// than waiting for a perfect line-up. A small chance of an extra wild shot
-  /// keeps it from ever stalling.
+  /// Fairness on TWO axes. (1) The committed target is the LEAD: solved onto where
+  /// the foe will be after an accuracy-scaled lead time, so an easy bot under-leads
+  /// and trails a strafing target. (2) The barrel is committed OFF the true lead by
+  /// [_Tank.aimBias] — large for a weak bot, tiny for a hard one — so the bot fires
+  /// while badly off the line-up and its shell sails wide, instead of self-selecting
+  /// only perfect shots. The breech is loaded only a handful of times a round, so
+  /// each committed miss is a real, scarce wasted shell. A small wild-shot chance
+  /// keeps it from ever stalling on a frame where the barrel hasn't quite settled.
   bool _botShouldFire(_Tank shooter, double shellSpeed) {
-    final accuracy = ctx.botProfile.accuracy.clamp(0.2, 1.0);
-    final tol = _botBaseTolerance / accuracy;
-    final best = _bestLaunchAngle(shooter, shellSpeed, leadSec: _botLeadFor());
-    if (best != null) {
-      final miss = 1 - accuracy;
-      // Steady bias + a fresh flinch each shot; both shrink as accuracy rises.
-      final err = ctx.rng.jitter(miss * _botAimErrorRad) +
-          ctx.rng.jitter(miss * _botFlinchRad);
-      if (wrapAngle(shooter.barrel.angle - (best + err)).abs() <= tol) {
-        return true;
-      }
+    final want = _botWantAngle(shooter, shellSpeed);
+    if (wrapAngle(shooter.barrel.angle - want).abs() <= _botFireCone) {
+      return true;
     }
     return ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance);
   }
@@ -1484,6 +1521,12 @@ class _Tank {
   double overcharge = 0; // seconds of airdrop double-damage buff remaining
   double downedAt = -1; // _animClock when destroyed (-1 = still alive); wreck age
   int shotsFired = 0; // shells actually loosed (reload-gated) — proves scarcity
+  // BOTS ONLY: a persistent aim error (radians) the bot COMMITS this shot — it
+  // steers the barrel onto (lead + this bias) and fires DOWN it, so a weaker bot
+  // genuinely shoots off the lead and misses. Re-rolled once per loaded aiming
+  // cycle (see [_rollBotAimBias]); [hasAimBias] guards the once-per-cycle roll.
+  double aimBias = 0;
+  bool hasAimBias = false;
 
   _Tank({
     required this.playerId,

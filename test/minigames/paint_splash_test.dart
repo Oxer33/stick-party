@@ -410,10 +410,11 @@ void main() {
 
   test('paint bots fill the board and resolve at both difficulties', () {
     // The skilled-vs-spam ordering (the design law) is proven by the human
-    // chainer-vs-masher tests above. Difficulty is session-wide (one BotProfile
-    // per game), so a head-to-head hard-vs-easy bot can't be staged inside one
-    // game; here we sanity-check that an all-bot board fills up and the round
-    // resolves at both ends of the dial.
+    // chainer-vs-masher tests above, and the skilled-human-vs-bot gradient by the
+    // COMPETITIVE test below. Difficulty is session-wide (one BotProfile per
+    // game), so a head-to-head hard-vs-easy BOT pairing can't be staged inside a
+    // single game; here we just sanity-check that an all-bot board fills up and
+    // the round resolves at both ends of the dial.
     for (final d in <BotDifficulty>[BotDifficulty.easy, BotDifficulty.hard]) {
       for (final s in <int>[1, 3, 5]) {
         final g = PaintSplash()..init(ctxFor(4, s, difficulty: d));
@@ -427,6 +428,150 @@ void main() {
             reason: 'bots painted something (d=$d seed=$s)');
       }
     }
+  });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ───────────────
+  //
+  // A SKILLED human-sim in seat 0 (the serpentine fresh-cell chainer from the
+  // spam-loses tests — steady ~0.33s cadence, always new ground, never breaks its
+  // own chain) faces BOTS in the other seats. We measure seat-0 win-rate per
+  // difficulty over a seed sweep. Territory is a multi-player contest, so the
+  // CLEANEST skilled-vs-bot read is 2 players (one human, one bot); 4p is recorded
+  // as a note (the human faces three ganging bots, so its win-rate is naturally
+  // lower — still gradient-ordered).
+  //
+  // Bands are robust supersets of the measured values (12-seed window 1..12,
+  // re-validated on the disjoint window 101..116 during tuning):
+  //     2p   easy ~0.94   medium ~0.31   hard ~0.25–0.31
+  // Tuned via the bot TAP-CADENCE dial (botTapIntervalMin/Max) + chain discipline;
+  // the core tap-to-splat chain mechanic is untouched, so the spam-loses / finish
+  // / no-throw invariants above all still hold.
+
+  /// SKILLED chainer for seat 0 — identical policy to [driveMeasuredChainer]
+  /// above (serpentine fresh-cell sweep over the whole shared board on a ~0.33s
+  /// cadence), just over a 9x9 lattice so it roams the full canvas to claim/steal.
+  void driveSkilledSeat0(PaintSplash g, int frame) {
+    const tapEvery = 20; // ~0.33s — above the ink floor, inside the chain window
+    if (frame % tapEvery != 0) return;
+    const cols = 9, rows = 9;
+    final cell = frame ~/ tapEvery;
+    final r = (cell ~/ cols) % rows;
+    var cx = cell % cols;
+    if (r.isOdd) cx = cols - 1 - cx; // serpentine → always adjacent-but-fresh
+    final gx = 0.06 + 0.88 * (cx / (cols - 1));
+    final gy = 0.06 + 0.88 * (r / (rows - 1));
+    g.onInput(
+        PlayerInput(playerId: 0, phase: InputPhase.down, normPos: Offset(gx, gy)));
+  }
+
+  /// One contest: skilled human in seat 0 vs bots elsewhere. Returns whether
+  /// seat 0 won (strictly the most cells) and its coverage margin over the best
+  /// bot (signed fraction of the whole board).
+  ({bool win, double margin}) runSkilledVsBots(
+      int n, int seed, BotDifficulty d) {
+    final g = PaintSplash()
+      ..init(MiniGameContext(
+        players: [
+          PlayerSlot.defaults(0),
+          for (var i = 1; i < n; i++) PlayerSlot.defaults(i, isBot: true),
+        ],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(n),
+        difficulty: d,
+      ));
+    var f = 0;
+    while (g.status != MiniGameStatus.finished && f++ < 60 * 120) {
+      g.update(1 / 60);
+      driveSkilledSeat0(g, f);
+    }
+    expect(g.status, MiniGameStatus.finished);
+    final total = g.scores.byPlayer.values.fold<num>(0, (a, b) => a + b);
+    final s0 = g.scores.of(0).toInt();
+    var top = 0;
+    for (var i = 1; i < n; i++) {
+      final v = g.scores.of(i).toInt();
+      if (v > top) top = v;
+    }
+    final margin = total == 0 ? 0.0 : (s0 - top) / total;
+    return (win: s0 > top, margin: margin);
+  }
+
+  ({double winRate, double avgMargin, double minMargin, double maxMargin})
+      sweepSkilled(int n, List<int> seeds, BotDifficulty d) {
+    var wins = 0;
+    var marginSum = 0.0, lo = 1e9, hi = -1e9;
+    for (final s in seeds) {
+      final r = runSkilledVsBots(n, s, d);
+      if (r.win) wins++;
+      marginSum += r.margin;
+      if (r.margin < lo) lo = r.margin;
+      if (r.margin > hi) hi = r.margin;
+    }
+    return (
+      winRate: wins / seeds.length,
+      avgMargin: marginSum / seeds.length,
+      minMargin: lo,
+      maxMargin: hi,
+    );
+  }
+
+  test('COMPETITIVE: skill gradient + beatable-but-tough hard bot (2p, 12 seeds)',
+      () {
+    final seeds = [for (var s = 1; s <= 12; s++) s];
+    final easy = sweepSkilled(2, seeds, BotDifficulty.easy);
+    final medium = sweepSkilled(2, seeds, BotDifficulty.medium);
+    final hard = sweepSkilled(2, seeds, BotDifficulty.hard);
+
+    final dbg = 'easy=${easy.winRate.toStringAsFixed(2)} '
+        'medium=${medium.winRate.toStringAsFixed(2)} '
+        'hard=${hard.winRate.toStringAsFixed(2)} '
+        '(easyMargin=${easy.avgMargin.toStringAsFixed(2)} '
+        'hardMargin=${hard.avgMargin.toStringAsFixed(2)})';
+
+    // EASY clearly beatable: a skilled human wins the large majority.
+    expect(easy.winRate, greaterThanOrEqualTo(0.70),
+        reason: 'easy bot should be clearly beatable — $dbg');
+
+    // HARD beatable-but-tough: a real wall would be 0 (human never wins); a
+    // pushover would be 1.0. It must sit strictly inside a tough-but-winnable
+    // band.
+    expect(hard.winRate, greaterThanOrEqualTo(0.15),
+        reason: 'hard bot must not be an unbeatable WALL — $dbg');
+    expect(hard.winRate, lessThanOrEqualTo(0.90),
+        reason: 'hard bot must not be a trivial PUSHOVER — $dbg');
+
+    // GRADIENT: harder bots win more (the human wins less). Monotone, with a
+    // tiny epsilon so cadence jitter on a 12-seed window can't flip an equal
+    // pair, plus a strict easy-beats-hard separation.
+    const eps = 0.001;
+    expect(easy.winRate, greaterThanOrEqualTo(medium.winRate - eps),
+        reason: 'winEasy >= winMedium — $dbg');
+    expect(medium.winRate, greaterThanOrEqualTo(hard.winRate - eps),
+        reason: 'winMedium >= winHard — $dbg');
+    expect(easy.winRate, greaterThan(hard.winRate),
+        reason: 'winEasy must strictly exceed winHard — $dbg');
+
+    // NOT luck-dominated: against the easy bot the skilled human wins reliably
+    // across the whole seed window (not a coin-flip).
+    expect(easy.winRate, greaterThanOrEqualTo(0.70),
+        reason: 'skilled play must beat easy reliably, not by luck — $dbg');
+
+    // NO runaway: territory can snowball, so prove outcomes VARY rather than one
+    // side always burying the other. Across the difficulty dial both the human
+    // and the bots take some rounds (a clean win AND a clean loss both occur),
+    // and the per-seed margins span a real spread (a comeback range exists), not
+    // a single pinned blowout.
+    final someHumanWins = easy.winRate > 0.0; // human wins somewhere
+    final someBotWins = hard.winRate < 1.0; // bot wins somewhere
+    expect(someHumanWins && someBotWins, isTrue,
+        reason: 'outcomes must vary across the dial (no universal blowout) — '
+            '$dbg');
+    expect(hard.maxMargin - hard.minMargin, greaterThan(0.10),
+        reason: 'vs-hard margins must vary across seeds (comeback range '
+            'exists), not a pinned runaway — '
+            'hard[min=${hard.minMargin.toStringAsFixed(2)} '
+            'max=${hard.maxMargin.toStringAsFixed(2)}]');
   });
 
   // ── Render never throws ─────────────────────────────────────────────────────

@@ -398,4 +398,171 @@ void main() {
         reason: 'a first-to-N race must outlast a single draw');
     expect(frames * dt, lessThanOrEqualTo(41.0));
   });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ────────────────
+  // The ANTI-SPAM / SHARP-READ tests above prove SKILL beats no-skill. This locks
+  // in BALANCE. A SKILLED human-sim (seat 0) plays a clean 1v1 against ONE bot on
+  // the BotProfile.forDifficulty gradient: it taps ONLY while the genuine GO is
+  // open (g.isGoOpen — false through every feint, so it NEVER false-starts) and
+  // only after a FIXED, fast-but-human reaction latency of [_humanLatencySec]
+  // (0.22s) measured from the GO edge. So the duel comes down to reaction speed:
+  // the hard bot (BotProfile reaction 0.16s) genuinely out-draws a 0.22s human on
+  // its faster rolls, but its bounded skill-scaled draw-lag means it sometimes
+  // draws a touch late and the sharp human banks the draw — beatable-but-tough.
+  //
+  // 1v1 is the clean head-to-head (a 4p win-rate measures "beat the FASTEST of
+  // three independent bots", which is a different, much harder test and muddies
+  // the gradient — see the separate 4p gradient check below).
+  //
+  // Measured over a fixed 12-seed sweep [1..12], reproduced on a DISJOINT window
+  // [101..112] so a one-seed wobble can't flake the bands:
+  //   1v1  easy 12/12 (1.00) | medium 12/12 (1.00) | hard 7/12 A, 6/12 B (.58/.50)
+  // The locked bands are robust supersets of BOTH windows.
+  const competitiveSeeds = <int>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
+  test(
+      'COMPETITIVE: skill gradient + beatable-but-tough hard bot — a sharp '
+      'human (fixed 0.22s reaction, never false-starts) crushes easy, and hard '
+      'is a genuine contest', () {
+    final easy = _skilledVsBot1v1(BotDifficulty.easy, competitiveSeeds);
+    final medium = _skilledVsBot1v1(BotDifficulty.medium, competitiveSeeds);
+    final hard = _skilledVsBot1v1(BotDifficulty.hard, competitiveSeeds);
+
+    final n = competitiveSeeds.length;
+    final winEasy = easy.wins / n;
+    final winMedium = medium.wins / n;
+    final winHard = hard.wins / n;
+
+    // EASY clearly beatable: the sharp human wins the large majority (measured
+    // 1.00; required >= 0.70).
+    expect(winEasy, greaterThanOrEqualTo(0.70),
+        reason: 'easy bot must be clearly beatable (win-rate $winEasy)');
+
+    // HARD beatable-but-tough: inside the design band [0.15, 0.90] — NOT a wall
+    // (the human wins some) and NOT a trivial pushover (the human loses some).
+    // Measured 0.58 (A) / 0.50 (B); the band is a flake-proof superset.
+    expect(winHard, greaterThanOrEqualTo(0.15),
+        reason: 'hard bot must not be an unwinnable wall (win-rate $winHard)');
+    expect(winHard, lessThanOrEqualTo(0.90),
+        reason: 'hard bot must not be a trivial pushover (win-rate $winHard)');
+    // Concretely: the human must WIN at least one seed AND LOSE at least one.
+    expect(hard.wins, greaterThan(0),
+        reason: 'a sharp human must steal at least one hard duel');
+    expect(hard.wins, lessThan(n),
+        reason: 'the hard bot must take at least one duel (not a pushover)');
+
+    // GRADIENT: difficulty must matter, monotonically, with a real spread.
+    expect(winEasy, greaterThanOrEqualTo(winMedium),
+        reason: 'easy ($winEasy) must be >= medium ($winMedium)');
+    expect(winMedium, greaterThanOrEqualTo(winHard),
+        reason: 'medium ($winMedium) must be >= hard ($winHard)');
+    expect(winEasy, greaterThan(winHard),
+        reason: 'difficulty must matter: easy ($winEasy) > hard ($winHard)');
+
+    // NOT luck-dominated: vs easy the sharp human wins EVERY seed (the
+    // false-start discipline + reaction edge are decisive, not a coin-flip).
+    expect(easy.wins, n,
+        reason: 'vs easy the sharp human must win reliably across all seeds '
+            '(${easy.wins}/$n)');
+
+    // NO runaway: HARD outcomes must SWING seed-to-seed — best-of-3 draws can go
+    // either way, so there must exist BOTH a seed the human sweeps and a seed the
+    // bot sweeps. (Margin = human draws won − bot draws won; +3 = a 3–0 human
+    // sweep, −3 = a 3–0 bot sweep.) Measured margins span [-3, +3].
+    expect(hard.margins.any((m) => m >= 2), isTrue,
+        reason: 'some hard seed must be a clear human win (margin >= +2)');
+    expect(hard.margins.any((m) => m <= -2), isTrue,
+        reason: 'some hard seed must be a clear human loss (margin <= -2)');
+  });
+
+  test('COMPETITIVE 4p: the gradient holds even out-numbered (3 bots gang up)',
+      () {
+    // 4p is the punishing config: the human must out-draw the FASTEST of three
+    // independent bots every draw, so the win-rate is naturally far lower than
+    // the 1v1 band — we assert the GRADIENT (easy still a walkover, hard strictly
+    // harder), not the [0.15, 0.90] duel band. (Measured: easy 1.00, hard 0.00.)
+    final easy = _skilledVsBot1v1(BotDifficulty.easy, competitiveSeeds, players: 4);
+    final hard = _skilledVsBot1v1(BotDifficulty.hard, competitiveSeeds, players: 4);
+
+    final n = competitiveSeeds.length;
+    expect(easy.wins / n, greaterThanOrEqualTo(0.70),
+        reason: 'a sharp human should still beat three easy bots reliably');
+    expect(hard.wins, lessThan(easy.wins),
+        reason: '4p gradient must hold: hard is strictly harder than easy');
+  });
+}
+
+/// Skilled human-sim for the COMPETITIVE sweep: taps ONLY on the real GO
+/// (g.isGoOpen — never on a feint, so it never false-starts) and only after a
+/// FIXED, fast-but-human reaction latency measured from the GO edge. Models a
+/// sharp duelist whose reaction speed (not luck) decides the contest.
+const double _humanLatencySec = 0.22;
+
+class _SkilledHuman {
+  double _goOpenFor = -1; // seconds the GO has been open this draw (-1 = closed)
+  bool _tappedThisGo = false;
+
+  /// Advance one frame; returns true if the human should tap now.
+  bool step(ReactionDuel g, double dt) {
+    if (!g.isGoOpen) {
+      _goOpenFor = -1;
+      _tappedThisGo = false;
+      return false;
+    }
+    _goOpenFor = _goOpenFor < 0 ? dt : _goOpenFor + dt;
+    if (!_tappedThisGo && _goOpenFor >= _humanLatencySec) {
+      _tappedThisGo = true;
+      return true;
+    }
+    return false;
+  }
+}
+
+/// Outcome of one difficulty sweep: matches the skilled human (seat 0) won, and
+/// the per-seed draw margin (human draws won − best bot draws won).
+class _SweepResult {
+  final int wins;
+  final List<int> margins;
+  const _SweepResult(this.wins, this.margins);
+}
+
+/// Run the skilled human (seat 0) against [players]-1 bots at [diff] over
+/// [seeds], one match per seed. Deterministic: the human is fixed-latency and
+/// every bot draw is seeded via ctx.rng(seed).
+_SweepResult _skilledVsBot1v1(
+  BotDifficulty diff,
+  List<int> seeds, {
+  int players = 2,
+}) {
+  var wins = 0;
+  final margins = <int>[];
+  for (final seed in seeds) {
+    final ctx = MiniGameContext(
+      players: [
+        PlayerSlot.defaults(0), // skilled human
+        for (var i = 1; i < players; i++) PlayerSlot.defaults(i, isBot: true),
+      ],
+      arena: const Size(800, 1200),
+      rng: SeededRng(seed),
+      zones: ZoneLayout.forPlayers(players),
+      difficulty: diff,
+    );
+    final g = ReactionDuel()..init(ctx);
+    final human = _SkilledHuman();
+
+    var frames = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+      if (human.step(g, 1 / 60)) g.onInput(PlayerInput.down(0));
+      g.update(1 / 60);
+    }
+    if (g.winResult!.ranking.first == 0) wins++;
+    final s0 = g.scores.of(0).floor();
+    var bestBot = 0;
+    for (var i = 1; i < players; i++) {
+      final si = g.scores.of(i).floor();
+      if (si > bestBot) bestBot = si;
+    }
+    margins.add(s0 - bestBot);
+  }
+  return _SweepResult(wins, margins);
 }

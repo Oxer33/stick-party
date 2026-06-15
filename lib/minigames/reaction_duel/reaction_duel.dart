@@ -115,6 +115,20 @@ class ReactionDuel extends MiniGameBase {
   static const double _flingSidewaysFactor = 0.5; // capped horizontal share
   static const double _decisiveRefSec = 0.35; // reaction at/under = max decisive
 
+  // ── Bot draw-lag (the competitive lever) ─────────────────────────────────────
+  // A bounded extra reaction added on top of the BotProfile jittered reaction so
+  // a bot's effective draw time STRADDLES a fast-but-human reaction instead of
+  // sitting an unbeatable hair under it. _botGoLagMax is the lag ceiling at the
+  // LEAST accurate bot; the per-bot share scales with (1 - accuracy) plus a floor
+  // so even a hard bot (accuracy 0.93) draws a touch late sometimes — making it
+  // beatable-but-tough, not an unbeatable wall. These two values are the only
+  // dial that decides the difficulty curve; they were tuned against a sharp
+  // human-sim at a fixed 0.22s reaction so a 1v1 hard duel lands ≈0.50–0.58 for
+  // the human (mid-band, robust on a disjoint seed window) while easy/medium stay
+  // clean walkovers — measured and LOCKED by the COMPETITIVE test.
+  static const double _botGoLagMax = 0.14; // lag ceiling (s) at lowest accuracy
+  static const double _botGoLagFloor = 0.80; // min lag share even at accuracy 1
+
   // ── Layout tuning (fractions of arena) ──────────────────────────────────────
   // Duelists stand in a row on the dueling ground (lower band), facing the
   // central signal that floats above them in the sky.
@@ -300,7 +314,27 @@ class ReactionDuel extends MiniGameBase {
         ..setLoco(LocoState.idle),
       clock: ReactionClock(ctx.botProfile, ctx.rng),
       jumpsTheGun: p.isBot && ctx.rng.chance(ctx.botProfile.errorRate),
+      goReaction: p.isBot ? _rollBotGoReaction() : 0,
     );
+  }
+
+  /// The effective post-GO reaction (seconds) a bot waits before it draws — the
+  /// single competitive lever for the duel. It is the [BotProfile] jittered
+  /// reaction PLUS a bounded "draw lag" so even the sharpest bot's draw time
+  /// STRADDLES a fast-but-human reaction instead of sitting an unbeatable hair
+  /// under it: a sharp human (~0.20s) out-draws the hard bot on its slower rolls
+  /// (beatable-but-tough) while still losing most exchanges. The lag is largest
+  /// for low-accuracy bots (so easy/medium stay clear walkovers) and smallest —
+  /// but never zero — for a hard bot, and it carries real per-draw variance so
+  /// the duel swings seed-to-seed (no fixed runaway). Tuned, not from the engine
+  /// profile, so balance lives in the game without touching shared bot stats.
+  double _rollBotGoReaction() {
+    final base = ctx.botProfile.jitteredReaction(ctx.rng);
+    // Skill-scaled lag: (1 - accuracy) is 0.07 (hard) … 0.45 (easy). Even a
+    // perfect bot keeps the floor share so its draw can land a touch late.
+    final lagScale = _botGoLagFloor + (1.0 - ctx.botProfile.accuracy);
+    final lag = ctx.rng.range(0, _botGoLagMax * lagScale);
+    return (base + lag).clamp(0.05, 2.0);
   }
 
   /// Foot-line anchors per player: a row of duelists across the dueling ground,
@@ -433,11 +467,12 @@ class ReactionDuel extends MiniGameBase {
   }
 
   /// Bots: gun-jumpers tap during the wait; honest bots draw after the signal
-  /// on their (jittered) reaction delay. Honest bots can also be BAITED by a
-  /// feint — on each fresh fake-GO flash they roll [BotProfile.errorRate] and,
-  /// if it lands, snap at the fake (a false start), so weak bots fall for feints
-  /// and strong bots hold. A stalled GO closes its own window (tightening per
-  /// draw) so a draw of all-false-starts still resolves.
+  /// on their effective reaction ([_Reactor.goReaction] = profile jitter + the
+  /// skill-scaled draw lag). Honest bots can also be BAITED by a feint — on each
+  /// fresh fake-GO flash they roll [BotProfile.errorRate] and, if it lands, snap
+  /// at the fake (a false start), so weak bots fall for feints and strong bots
+  /// hold. A stalled GO closes its own window (tightening per draw) so a draw of
+  /// all-false-starts still resolves.
   void _driveBots(double dt) {
     final inGo = _gate.phase == ReactionPhase.go;
     if (inGo) {
@@ -456,9 +491,16 @@ class ReactionDuel extends MiniGameBase {
         }
         continue;
       }
-      if (inGo && r.clock.tick(dt)) {
-        _handleTap(r.slot.id);
-        r.acted = true;
+      // After the real GO, the bot draws once its effective reaction elapses.
+      // goReaction = BotProfile jitter + a bounded skill-scaled draw lag, so even
+      // a hard bot's draw time straddles a fast-but-human reaction (the lever
+      // that keeps it beatable-but-tough). Accumulated from the GO edge.
+      if (inGo) {
+        r.goElapsed += dt;
+        if (r.goElapsed >= r.goReaction) {
+          _handleTap(r.slot.id);
+          r.acted = true;
+        }
       }
     }
   }
@@ -1059,12 +1101,18 @@ class _Reactor {
   final PlayerSlot slot;
   final Offset foot; // ground anchor (foot line) for this duelist
   final StickFigure figure;
-  final ReactionClock clock;
+  final ReactionClock clock; // gun-jump timing during WAIT (bots only)
   final bool jumpsTheGun; // bot decided to false-start this draw
+
+  /// Effective post-GO reaction (seconds) for a bot: the profile jittered
+  /// reaction plus a bounded skill-scaled draw lag. 0 for humans (test-driven).
+  /// The bot draws once [goElapsed] reaches this — the single competitive lever.
+  final double goReaction;
 
   bool acted = false;
   bool cheered = false; // fired the one-shot victory hold on a winning strike
   double tooSoon = 0; // 1 → 0 life of the "TOO SOON!" stamp
+  double goElapsed = 0; // seconds the real GO has been open (bot draw clock)
 
   _Reactor({
     required this.slot,
@@ -1072,5 +1120,6 @@ class _Reactor {
     required this.figure,
     required this.clock,
     required this.jumpsTheGun,
+    required this.goReaction,
   });
 }

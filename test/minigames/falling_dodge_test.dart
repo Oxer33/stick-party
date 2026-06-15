@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -444,5 +445,139 @@ void main() {
       g.render(canvas, size); // one more after finish (winner cinematic)
     }, returnsNormally);
     expect(g.status, MiniGameStatus.finished);
+  });
+
+  test('COMPETITIVE: skill gradient + beatable-but-tough hard bot', () {
+    // The balance proof, complementing the spam-loses laws above: the SAME
+    // skilled play (a HOT-window late-dodge reader piloting seat 0 via
+    // [debugSafeHopDir], driven faithfully through onInput) must SCALE against
+    // the bot difficulty tiers — easy is a walkover, hard is a real fight you can
+    // still win, and the win-rate falls monotonically in between. We measure the
+    // cleanest skilled-vs-bot read the game supports: a 1v1 (seat 0 human vs ONE
+    // bot at [difficulty]). The lone bot genuinely contests — in this scored run
+    // it banks its own grazes for the full timer and out-scores the human on a
+    // chunk of seeds (negative margins below) — so 1v1 is NOT degenerate.
+    //
+    // Bands are robust supersets of the measured win-rates, then validated on a
+    // DISJOINT seed window so they are not brittle to the exact seeds. Measured
+    // (seat-0 win-rate, 1v1 via debugSafeHopDir):
+    //   window 200-219 (chosen, N=20): easy 1.00, med 0.80, hard 0.65
+    //   window 220-239 (validation,N=20): easy 1.00, med 0.85, hard 0.75
+    //   six windows spanning seeds 1..915 (N=16..32): easy 0.94-1.00,
+    //     med 0.75-1.00, hard 0.56-0.94 — gradient holds in every one.
+    //
+    // 4p FFA was also measured as a secondary read (easy ~0.78, med ~0.53,
+    // hard ~0.25 — same monotonic gradient, hard still inside [0.15,0.90]); the
+    // 1v1 is the cleaner single-contestant read and is what this test locks.
+    //
+    // Pilot a 1v1 with seat 0 = skilled late-window reader, seat 1 = a bot at the
+    // given difficulty. Returns (seat0Won, seat0Score, bestBotScore).
+    ({bool won, double s0, double bot}) playDuel(
+        BotDifficulty diff, int seed) {
+      final players = [
+        PlayerSlot.defaults(0), // skilled human (HOT-window reader)
+        PlayerSlot.defaults(1, isBot: true), // the bot under test
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+        difficulty: diff,
+      );
+      final g = FallingDodge()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        // Seat 0 plays the EARNED dodge: hold for the HOT window, then step off
+        // in a safe direction — driven faithfully through onInput, no back door.
+        final dir = g.debugSafeHopDir(0);
+        if (dir != 0) g.onInput(PlayerInput.down(0, g.debugTouchForDir(dir)));
+        g.update(1 / 60);
+      }
+      final win = g.winResult!;
+      final s0 = (win.finalScores[0] ?? 0).toDouble();
+      final bot = (win.finalScores[1] ?? 0).toDouble();
+      return (won: win.ranking.indexOf(0) == 0, s0: s0, bot: bot);
+    }
+
+    ({double winRate, int comebacks, double bestMargin, double worstMargin})
+        sweep(BotDifficulty diff, List<int> seeds) {
+      var wins = 0;
+      var comebacks = 0; // seeds where the bot out-scored the skilled human
+      var best = double.negativeInfinity;
+      var worst = double.infinity;
+      for (final seed in seeds) {
+        final r = playDuel(diff, seed);
+        if (r.won) wins++;
+        if (r.bot >= r.s0) comebacks++;
+        final m = r.s0 - r.bot;
+        if (m > best) best = m;
+        if (m < worst) worst = m;
+      }
+      return (
+        winRate: wins / seeds.length,
+        comebacks: comebacks,
+        bestMargin: best,
+        worstMargin: worst,
+      );
+    }
+
+    // Primary band-setting window (20 seeds) and a DISJOINT validation window
+    // (20 seeds) — the asserted bands must hold on BOTH so they aren't brittle.
+    final chosen = [for (var s = 200; s < 220; s++) s];
+    final validation = [for (var s = 220; s < 240; s++) s];
+
+    for (final seeds in [chosen, validation]) {
+      final easy = sweep(BotDifficulty.easy, seeds);
+      final medium = sweep(BotDifficulty.medium, seeds);
+      final hard = sweep(BotDifficulty.hard, seeds);
+
+      final tag = identical(seeds, chosen) ? 'chosen' : 'validation';
+
+      // EASY clearly beatable (instruction floor 0.70; measured >= 0.94, here
+      // 1.00 on both windows — a comfortable superset).
+      expect(easy.winRate, greaterThanOrEqualTo(0.70),
+          reason: '[$tag] easy bot should be a walkover for a reader '
+              '(win=${easy.winRate})');
+
+      // NOT luck-dominated: vs easy the skilled sim wins reliably across seeds,
+      // not a coin-flip (measured 1.00 on both windows).
+      expect(easy.winRate, greaterThanOrEqualTo(0.90),
+          reason: '[$tag] vs easy the read should win reliably, not by luck '
+              '(win=${easy.winRate})');
+
+      // HARD beatable-but-tough: a real fight inside [0.15, 0.90] — NOT a wall
+      // (0) and NOT a trivial pushover (1.0). Measured 0.65 / 0.75.
+      expect(hard.winRate, inInclusiveRange(0.15, 0.90),
+          reason: '[$tag] hard must be beatable-but-tough, not a wall or a '
+              'pushover (win=${hard.winRate})');
+
+      // GRADIENT monotonic — difficulty must MATTER. easy >= medium >= hard,
+      // and strictly easy > hard so the tiers are genuinely separated.
+      expect(easy.winRate, greaterThanOrEqualTo(medium.winRate),
+          reason: '[$tag] gradient broke: easy(${easy.winRate}) < '
+              'medium(${medium.winRate})');
+      expect(medium.winRate, greaterThanOrEqualTo(hard.winRate),
+          reason: '[$tag] gradient broke: medium(${medium.winRate}) < '
+              'hard(${hard.winRate})');
+      expect(easy.winRate, greaterThan(hard.winRate),
+          reason: '[$tag] difficulty did not matter: '
+              'easy(${easy.winRate}) !> hard(${hard.winRate})');
+
+      // NO runaway: a comeback exists — on a chunk of seeds the hard bot out-
+      // scores even the skilled reader (it banks its own chains), so outcomes
+      // vary across seeds rather than being one fixed blowout.
+      expect(hard.comebacks, greaterThan(0),
+          reason: '[$tag] hard never staged a comeback — looks like a fixed '
+              'blowout, not a live contest');
+      // And the per-seed margin genuinely swings (a tight win on some boards, a
+      // loss on others) — not the same score gap every round.
+      expect(hard.worstMargin, lessThan(0.0),
+          reason: '[$tag] hard margins never went negative — no real loss '
+              'across seeds (worst=${hard.worstMargin})');
+      expect(hard.bestMargin, greaterThan(40.0),
+          reason: '[$tag] hard margins never opened up — outcomes do not vary '
+              '(best=${hard.bestMargin})');
+    }
   });
 }

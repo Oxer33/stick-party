@@ -23,7 +23,14 @@ class _Tuning {
   // ease so a drag reads as a fluid reposition between taps. The cursor NEVER
   // paints on its own — only a TAP lays a splat.
   static const double followPerSec = 18.0; // cursor → touch chase speed
-  static const double botMoveSpeed = 0.95; // bot cursor travel (units/sec)
+
+  // Bot cursor travel (norm units/sec). Fast enough to reach its next (near)
+  // target between taps so travel never bottlenecks the cadence; the actual
+  // tap-throughput governor is [botTapIntervalMin]/[botTapIntervalMax] below, NOT
+  // travel speed. (A previous build made travel the throughput knob, which let a
+  // brisk bot out-TAP the fixed-cadence human and bury it — the human couldn't
+  // win even on easy. Cadence is now explicit and difficulty-scaled.)
+  static const double botMoveSpeed = 3.0;
 
   // ── THE MECHANIC: tap-to-splat CHAIN COMBOS ───────────────────────────────
   // Every TAP (a down event) lays ONE big splat at the cursor. Splats CHAIN:
@@ -112,10 +119,36 @@ class _Tuning {
   static const double botRaidRefGap = 0.18; // coverage gap (frac) for full odds
   static const double botLeaderCellWeight = 1.5; // pull toward a leader's cell
 
-  // Bot ink discipline: a skilled bot paces taps so its can never empties; a
-  // sloppy bot taps through empty and sputters. Modeled by holding a tap until
-  // the can has at least [botInkTapFloor] for disciplined bots.
-  static const double botInkTapFloor = 0.2;
+  // Bot TAP CADENCE (the real difficulty dial). A bot may lay a tap only when
+  // its per-bot cooldown elapses, scaled by [BotProfile.accuracy] from
+  // [botTapIntervalMin] (hard, ~0.40s — a touch slower than a skilled human's
+  // ~0.33s) to [botTapIntervalMax] (easy, slow). Throughput is therefore explicit
+  // and capped: even a hard bot taps a hair slower than a good human, so a human
+  // who keeps a clean chain stays ahead of it; an easy bot taps lazily AND (being
+  // sloppy) breaks its own chains, so it is comfortably out-painted. This is what
+  // makes EASY clearly beatable and HARD tough-but-beatable (measured ~0.25 human
+  // win-rate, 12+ seeds) rather than a board-burying spammer.
+  static const double botTapIntervalMin = 0.40; // hard-bot gap between taps
+  static const double botTapIntervalMax = 0.62; // easy-bot gap between taps
+  // ±jitter fraction on the cadence so bots don't tick like metronomes (keeps
+  // outcomes varied across seeds; no two contests play identically).
+  static const double botTapIntervalJitter = 0.18;
+
+  // Bot ink discipline: a sloppy (easy) bot mashes through empty and sputters
+  // cold duds; a disciplined bot paces (via its cadence above) so its can stays
+  // above the sputter floor. We DON'T idle-wait a disciplined bot for ink (that
+  // starved it below a sloppy bot's output, inverting the dial).
+
+  // Bot target selection PROXIMITY bias. The bot taps on ARRIVAL, so to chain it
+  // must keep consecutive targets CLOSE (short hops land inside the chain window
+  // and keep the cursor on a tight, board-eating sweep). We pick the nearest
+  // high-value fresh/rival cell by scoring weight / (dist + [botTargetDistBias])
+  // — the SMALLER this bias, the more sharply the bot prefers near cells. (Was a
+  // weight * (0.4 + dist) bias that rewarded FAR cells, so the bot crossed the
+  // whole board between taps, never chained, and painted almost nothing.) A
+  // [chainMoveCells]-cell minimum hop is still enforced at tap time, so "nearest"
+  // never collapses to mashing one spot.
+  static const double botTargetDistBias = 0.06;
 
   // Visual stamp budget: only the most recent stamps are drawn crisply on top
   // of the baked coverage tint, which protects render cost in long games.
@@ -179,6 +212,7 @@ class _Cursor {
 
   double flash = 0; // recent-tap flash timer (visual)
   Offset _botGoal; // bot's current coverage goal (normalized)
+  double botTapCooldown = 0; // bot: seconds until it may lay its next tap
   Offset _prevPos; // last frame's position, to read motion for the mascot loco
   bool _facingRight = true; // mascot facing, flipped by horizontal travel
 
@@ -662,12 +696,24 @@ class PaintSplash extends MiniGameBase {
       final clock = c.clock;
       if (clock == null) continue;
       if (!engaged) continue;
+      if (c.botTapCooldown > 0) c.botTapCooldown -= dt;
       if (clock.tick(dt)) {
         clock.arm(ctx.botProfile, ctx.rng);
         _repickBotGoal(c);
       }
       _stepBotCursor(c, dt);
     }
+  }
+
+  /// Cadence-gated bot tap interval (seconds), scaled by accuracy from
+  /// [_Tuning.botTapIntervalMax] (easy, slow) to [botTapIntervalMin] (hard, ≈ a
+  /// skilled human). A small ±jitter keeps bots off a metronome so seeds vary.
+  double _botTapInterval() {
+    final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    final base = _Tuning.botTapIntervalMax +
+        (_Tuning.botTapIntervalMin - _Tuning.botTapIntervalMax) * acc;
+    final j = base * _Tuning.botTapIntervalJitter;
+    return (base + ctx.rng.jitter(j)).clamp(0.1, 1.2);
   }
 
   /// Choose a fresh coverage goal for a bot on the SHARED canvas. A DISCIPLINED
@@ -747,7 +793,10 @@ class PaintSplash extends MiniGameBase {
         if (raiding && owner == leaderId) weight *= _Tuning.botLeaderCellWeight;
         final cx = (col + 0.5) / _Tuning.cols;
         final dist = (Offset(cx, cy) - c.pos).distance;
-        final score = weight * (0.4 + dist);
+        // Prefer the NEAREST high-value cell (short hops keep the chain alive and
+        // the cursor on a tight board-eating sweep); raids still bias toward the
+        // leader's turf through [weight].
+        final score = weight / (dist + _Tuning.botTargetDistBias);
         if (score > bestScore) {
           bestScore = score;
           best = Offset(cx, cy);
@@ -780,32 +829,33 @@ class PaintSplash extends MiniGameBase {
     return gap < 0 ? 0 : gap;
   }
 
-  /// Move a bot's steering target toward its goal at a capped speed; when it
-  /// ARRIVES it TAPS once (if its can is ready) and re-picks a fresh goal so it
-  /// keeps hopping between fresh cells, building a chain.
+  /// Move a bot's steering target toward its goal; when it ARRIVES it TAPS (only
+  /// once its cadence cooldown has elapsed) and re-picks a fresh goal so it keeps
+  /// hopping between fresh cells, building a chain. While the cooldown is still
+  /// counting down it DWELLS on the arrived goal (no tap, no re-pick), so its tap
+  /// rate is capped by [_botTapInterval] — NOT by travel speed.
   void _stepBotCursor(_Cursor c, double dt) {
     final to = c.botGoal - c.target;
     final step = _Tuning.botMoveSpeed * dt;
-    if (to.distance <= step || to.distance < 1e-4) {
-      c.target = c.botGoal;
-      c.pos = c.botGoal; // snap so the tap lands exactly on the target cell
-      _botTap(c);
-      _repickBotGoal(c);
-    } else {
+    final arrived = to.distance <= step || to.distance < 1e-4;
+    if (!arrived) {
       c.target = c.clampToZone(c.target + to / to.distance * step);
+      return;
     }
+    c.target = c.botGoal;
+    c.pos = c.botGoal; // snap so the tap lands exactly on the target cell
+    if (c.botTapCooldown > 0) return; // cadence gate: dwell until the can is ready
+    _botTap(c);
+    c.botTapCooldown = _botTapInterval();
+    _repickBotGoal(c);
   }
 
-  /// A bot lays a tap when it arrives at a fresh target. A DISCIPLINED bot holds
-  /// the tap until its can has recovered past [_Tuning.botInkTapFloor] so it
-  /// never sputters; a SLOPPY bot taps regardless and sputters on empty.
-  void _botTap(_Cursor c) {
-    if (!_inGoldRush) {
-      final disciplined = ctx.botProfile.accuracy >= _Tuning.botChainAcc;
-      if (disciplined && c.ink < _Tuning.botInkTapFloor) return; // wait to refill
-    }
-    _tap(c);
-  }
+  /// A bot lays a tap on arrival once its cadence cooldown elapses. A SLOPPY
+  /// (easy) bot still picks home-turf targets that break its own chain and taps
+  /// lazily; a disciplined bot hops fresh and taps near a skilled human's cadence.
+  /// We do NOT idle-wait a disciplined bot for ink — that starved it below a
+  /// sloppy bot's output, inverting the difficulty dial.
+  void _botTap(_Cursor c) => _tap(c);
 
   /// Score = covered cell count, then rank highest-first.
   void _finish() {

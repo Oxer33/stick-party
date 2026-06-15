@@ -151,8 +151,15 @@ class ButtonMasher extends MiniGameBase {
   static const double _botBaseInterval = 0.34;
   static const double _botAccuracyBonus = 0.16; // faster steps at high accuracy
   static const double _botJitterBase = 0.12; // sloppier cadence at low accuracy
-  // Bots wait a beat at the gun so a human gets a fair head start.
-  static const double _botWarmupSec = 1.2;
+  // Bots wait a beat at the gun so a human gets a fair head start — but a SHARP
+  // bot is quicker off the line. The warmup is scaled down by accuracy so a hard
+  // bot (accuracy ~0.93) is almost ready at the gun and races the human's
+  // first-to-summit line, while a weak bot keeps most of the handicap. This is
+  // the difficulty lever that makes the hard bot a beatable-but-real threat
+  // without touching the rhythm itself (it can summit just under a frame-perfect
+  // human on a clean seed, and slips on others).
+  static const double _botWarmupSec = 1.2; // full handicap (weak bots)
+  static const double _botWarmupAccuracyCut = 1.15; // sec removed per unit accy
 
   late Juice _juice;
   late Size _size;
@@ -190,6 +197,7 @@ class ButtonMasher extends MiniGameBase {
         )..setLoco(LocoState.idle),
         botInterval: _botInterval(),
         botJitter: _botJitter(),
+        botWarmup: _botWarmup(),
       );
     }
     begin();
@@ -228,6 +236,17 @@ class ButtonMasher extends MiniGameBase {
     final prof = ctx.botProfile;
     return _botJitterBase * (1.0 - prof.accuracy.clamp(0.0, 1.0)) +
         _botJitterBase * 0.25;
+  }
+
+  /// Per-bot start handicap: the full warmup minus an accuracy-scaled cut. A
+  /// hard bot (accuracy ~0.93) is off the line almost at the gun (~0.13s) so it
+  /// genuinely races a frame-perfect human's first-to-summit line; a weak bot
+  /// keeps most of the head-start it gives the human. Clamped so even the
+  /// sharpest bot waits a beat (no instantaneous gun-jump) and the weakest still
+  /// has a finite handicap.
+  double _botWarmup() {
+    final accuracy = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    return (_botWarmupSec - _botWarmupAccuracyCut * accuracy).clamp(0.1, 1.2);
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -509,9 +528,9 @@ class ButtonMasher extends MiniGameBase {
   /// and, on an [errorRate] slip, steps into the live beat anyway. The guard
   /// caps catch-up steps for huge frame steps.
   void _driveBots(double dt) {
-    if (_elapsed < _botWarmupSec) return; // human head start
     for (final c in _climbers.values) {
       if (!c.slot.isBot) continue;
+      if (_elapsed < c.botWarmup) continue; // per-bot head start (sharp = quick)
       if (c.planted) continue;
       if (c.stun > 0) {
         c.botClock = 0; // re-time after the stun clears
@@ -894,6 +913,7 @@ class _Climber {
   final StickFigure figure;
   final double botInterval;
   final double botJitter;
+  final double botWarmup; // seconds this bot waits at the gun (accuracy-scaled)
 
   double rung = 0; // current rendered rung (eased)
   double targetRung = 0; // rung the climber is stepping toward
@@ -915,5 +935,6 @@ class _Climber {
     required this.figure,
     required this.botInterval,
     required this.botJitter,
+    required this.botWarmup,
   }) : nextStepAt = botInterval;
 }

@@ -584,4 +584,167 @@ void main() {
         reason: 'the lead onto a strafing foe should move as it slides '
             '(a0=$a0 a1=$a1)');
   });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ────────────────
+  //
+  // The spam-loses laws above prove the MECHANIC rewards aim over mashing. These
+  // prove the BOTS are tuned for a fair fight: a SKILLED human in seat 0 (drags
+  // its manual aim onto the solved moving-target lead via the debug seams and
+  // fires the instant the breech is loaded AND the barrel is lined up) must
+  // CLEARLY beat an easy bot, hold a real edge over medium, and find HARD a
+  // beatable-but-tough wall — never a 0% brick nor a 100% pushover. A clean
+  // EASY ≥ MEDIUM ≥ HARD gradient is the headline.
+  //
+  // 1v1 (GameMode.duel1v1) on a SQUARE arena is the clean read: one human vs one
+  // bot, symmetric edges, FFA scoring (first to 3 hits or most at the bell), so
+  // the only variable is the bot's skill tier — not seat geometry or a teammate.
+  //
+  // Bands are robust SUPERSETS of measured win-rates (≥16 seeds), validated on a
+  // DISJOINT seed window so they aren't fit to one lucky board. Measured (16
+  // seeds/diff) across four windows {0..15, 500..515, 1000..1015, 2000..2023}:
+  //   easy   0.875 – 0.938   (band ≥ 0.70)
+  //   medium 0.500 – 0.625
+  //   hard   0.250 – 0.458   (band [0.15, 0.90])
+
+  /// A 1v1 duel context: SKILLED human in seat 0 vs ONE bot of [difficulty] in
+  /// seat 1, [GameMode.duel1v1] (FFA scoring) on a square, symmetric arena.
+  MiniGameContext skillVsBotCtx(int seed, BotDifficulty difficulty) =>
+      MiniGameContext(
+        players: [
+          PlayerSlot.defaults(0), // skilled human (driven by the test)
+          PlayerSlot.defaults(1, isBot: true), // bot foe
+        ],
+        arena: const Size(800, 800),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+        difficulty: difficulty,
+        mode: GameMode.duel1v1,
+      );
+
+  /// One skilled-human (seat 0) vs bot (seat 1) duel. Seat 0 each frame DRAGS its
+  /// manual aim onto the solved lead of the strafing bot and fires only when the
+  /// breech is loaded AND the barrel is on that lead; the engine drives the bot.
+  /// Returns (seat-0 won, hit margin seat0−seat1) at finish.
+  ({bool won, int margin}) runSkillVsBot(int seed, BotDifficulty difficulty) {
+    final g = TankDuel()..init(skillVsBotCtx(seed, difficulty));
+    const aimTol = 0.06;
+    var n = 0;
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+      final want = g.debugBestAimAngle(0);
+      if (want != null) {
+        g.debugSetAim(0, want); // drag the barrel onto the moving foe's lead
+        if (g.debugIsLoaded(0) && (g.debugAimAngle(0) - want).abs() <= aimTol) {
+          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down));
+          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+        }
+      }
+      g.update(1 / 60);
+    }
+    expect(g.status, MiniGameStatus.finished,
+        reason: 'seed $seed did not resolve');
+    final r = g.winResult!;
+    final a = (r.finalScores[0] ?? 0).toInt();
+    final b = (r.finalScores[1] ?? 0).toInt();
+    return (won: r.ranking.first == 0, margin: a - b);
+  }
+
+  /// Win-rate of the skilled human over [seeds] vs a bot of [difficulty].
+  double skillWinRate(BotDifficulty difficulty, List<int> seeds) {
+    var wins = 0;
+    for (final seed in seeds) {
+      if (runSkillVsBot(seed, difficulty).won) wins++;
+    }
+    return wins / seeds.length;
+  }
+
+  // The primary measurement window the bands were tuned against.
+  final primarySeeds = [for (var s = 0; s < 16; s++) s];
+  // A DISJOINT window the bands are re-validated on (proves they aren't overfit).
+  final disjointSeeds = [for (var s = 1000; s < 1016; s++) s];
+
+  test('COMPETITIVE: EASY bot is clearly beatable by a skilled aimer (>=0.70)',
+      () {
+    // A skilled human should win the clear majority vs an easy bot — it under-
+    // leads the strafe and commits wide shots, so timed, led fire dominates it.
+    for (final seeds in [primarySeeds, disjointSeeds]) {
+      final wr = skillWinRate(BotDifficulty.easy, seeds);
+      expect(wr, greaterThanOrEqualTo(0.70),
+          reason: 'easy must be clearly beatable, got $wr on $seeds');
+    }
+  });
+
+  test('COMPETITIVE: HARD bot is beatable-but-tough (win-rate in [0.15, 0.90])',
+      () {
+    // Hard tracks the lead tightly and lands most of its scarce shells, so the
+    // skilled human wins only sometimes — but it is NEVER a 0% wall (the hard bot
+    // keeps a floored aim spread, so it sprays the odd wide shell and a sharp
+    // human can steal the race) nor a trivial 100% pushover.
+    for (final seeds in [primarySeeds, disjointSeeds]) {
+      final wr = skillWinRate(BotDifficulty.hard, seeds);
+      expect(wr, inInclusiveRange(0.15, 0.90),
+          reason: 'hard must be tough but beatable, got $wr on $seeds');
+    }
+  });
+
+  test('COMPETITIVE: a clean skill gradient — winEasy >= winMedium >= winHard '
+      'AND winEasy > winHard', () {
+    // The headline: harder bots win more, monotonically, on BOTH windows. The
+    // strict easy>hard gap proves the difficulty knob actually moves the duel.
+    for (final seeds in [primarySeeds, disjointSeeds]) {
+      final easy = skillWinRate(BotDifficulty.easy, seeds);
+      final medium = skillWinRate(BotDifficulty.medium, seeds);
+      final hard = skillWinRate(BotDifficulty.hard, seeds);
+      expect(easy, greaterThanOrEqualTo(medium),
+          reason: 'easy ($easy) should be at least as beatable as medium '
+              '($medium) on $seeds');
+      expect(medium, greaterThanOrEqualTo(hard),
+          reason: 'medium ($medium) should be at least as beatable as hard '
+              '($hard) on $seeds');
+      expect(easy, greaterThan(hard),
+          reason: 'the gradient must be real: easy ($easy) > hard ($hard) '
+              'on $seeds');
+    }
+  });
+
+  test('COMPETITIVE: not luck-dominated — vs EASY the skilled aimer wins most '
+      'individual seeds', () {
+    // Beating easy must be reliable, not a coin flip: across the primary window
+    // the skilled human wins the large majority of INDIVIDUAL boards (so the
+    // aggregate win-rate isn't carried by a couple of lucky strafes).
+    var wins = 0;
+    for (final seed in primarySeeds) {
+      if (runSkillVsBot(seed, BotDifficulty.easy).won) wins++;
+    }
+    expect(wins, greaterThanOrEqualTo(11),
+        reason: 'skilled aim should reliably beat easy across seeds, '
+            'won $wins/${primarySeeds.length}');
+  });
+
+  test('COMPETITIVE: NO runaway — duels are decided by close, varied margins '
+      'with comebacks both ways', () {
+    // A healthy duel swings: across the primary window vs medium the per-seed
+    // margins must VARY (not a fixed blowout) and BOTH sides must take seeds —
+    // the human wins some and the bot wins some, so no single outcome runs away.
+    final margins = <int>{};
+    var humanWins = 0, botWins = 0;
+    for (final seed in primarySeeds) {
+      final r = runSkillVsBot(seed, BotDifficulty.medium);
+      margins.add(r.margin);
+      if (r.won) {
+        humanWins++;
+      } else {
+        botWins++;
+      }
+    }
+    expect(margins.length, greaterThan(1),
+        reason: 'margins should vary across seeds, got $margins');
+    expect(humanWins, greaterThan(0), reason: 'the human must win some seeds');
+    expect(botWins, greaterThan(0),
+        reason: 'the bot must win some seeds (a comeback exists), not a sweep');
+    // Close fights: every duel is decided within a couple of hits, never a rout.
+    for (final m in margins) {
+      expect(m.abs(), lessThanOrEqualTo(3),
+          reason: 'a duel margin should stay close (<=3), got $m');
+    }
+  });
 }
