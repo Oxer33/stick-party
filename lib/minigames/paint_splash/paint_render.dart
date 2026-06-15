@@ -53,6 +53,13 @@ class PaintRenderer {
   static const double _mascotLift = 0.6; // pelvis perch above center / unit
   static const double _mascotFootDrop = 28; // contact-shadow drop (local px)
 
+  // Chain combo badge (rides above the cursor; the headline skill readout).
+  static const Color _chainCold = Color(0xFFFFFFFF); // x1 text
+  static const Color _chainHot = Color(0xFFFFD23D); // high-chain gold glow
+  static const Color _chainBreak = Color(0xFFFF4D5E); // dud / break red
+  static const double _chainLiftFactor = 3.4; // badge height above center / unit
+  static const double _chainFontFactor = 1.15; // badge font / unit
+
   // ── Background: studio wall + primed canvas + woven texture + frame ─────────
 
   /// The arena backdrop. Draws a dark studio wall, a primed-canvas panel with a
@@ -487,6 +494,155 @@ class PaintRenderer {
     );
     figure.render(canvas, Offset.zero);
     canvas.restore();
+  }
+
+  /// The UNMISSABLE chain-combo badge riding above the cursor — the headline
+  /// skill readout. While a chain is alive it shows a big `xN` in the player's
+  /// color over a soft glass pill that brightens toward gold as the chain grows
+  /// (and a ring of combo pips fills up), so escalating coverage is felt at a
+  /// glance. [pulse] in 0..1 (set when the chain just grew) pops the badge.
+  /// When [broke] is set (the player just snapped their own chain — mashed one
+  /// spot or re-coated owned turf) it flashes a red `▼ BREAK` dud instead, so a
+  /// masher gets immediate, legible "you killed your combo" feedback. [chain] 0
+  /// with no break draws nothing (a cold cursor is uncluttered).
+  static void drawChainBadge(
+    Canvas canvas,
+    Size size,
+    Offset center,
+    Color color, {
+    required int chain,
+    double pulse = 0,
+    bool broke = false,
+    int maxChain = 9,
+  }) {
+    if (!center.dx.isFinite || !center.dy.isFinite) return;
+    final unit = math.min(size.width, size.height) * _reticleRingFactor;
+    if (unit <= 0) return;
+    if (chain <= 0 && !broke) return; // cold + no recent break → nothing
+
+    final p = pulse.clamp(0.0, 1.0);
+    final anchor = center.translate(0, -unit * _chainLiftFactor);
+
+    // Broken chain → a red dud cue. Takes priority so a masher always sees it.
+    if (broke && chain <= 0) {
+      _drawChainPill(canvas, anchor, unit, _chainBreak, 0.0);
+      _drawCenteredText(
+          canvas, '▼ BREAK', anchor, unit * _chainFontFactor * 0.62,
+          _chainBreak, glow: 0.0);
+      return;
+    }
+
+    // Alive chain → gold-tinted `xN`. Heat ramps the color cold→gold with size.
+    final heat = (chain / maxChain).clamp(0.0, 1.0);
+    final tint = Color.lerp(_chainCold, _chainHot, heat) ?? _chainCold;
+    final accent = Color.lerp(color, _chainHot, heat * 0.7) ?? color;
+
+    _drawChainPill(canvas, anchor, unit, accent, heat);
+    _drawComboPips(canvas, anchor, unit, accent, chain, maxChain);
+
+    final fontSize = unit * _chainFontFactor * (1.0 + 0.4 * heat + 0.35 * p);
+    _drawCenteredText(canvas, 'x$chain', anchor, fontSize, tint,
+        glow: 0.4 + 0.6 * heat + 0.4 * p, glowColor: accent);
+  }
+
+  /// A soft glass pill behind the chain text (faint→hot fill, no blur).
+  static void _drawChainPill(
+      Canvas canvas, Offset anchor, double unit, Color color, double heat) {
+    final w = unit * (2.6 + 1.0 * heat);
+    final h = unit * 1.5;
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: anchor, width: w, height: h),
+      Radius.circular(h * 0.5),
+    );
+    // Wide faint halo (fakes a glow without a per-frame blur).
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: anchor, width: w * 1.18, height: h * 1.3),
+        Radius.circular(h * 0.7),
+      ),
+      Paint()..color = color.withValues(alpha: 0.14 + 0.22 * heat),
+    );
+    // Dark glass body.
+    canvas.drawRRect(rect, Paint()..color = _black.withValues(alpha: 0.5));
+    // Color rim, brighter with heat.
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, unit * (0.1 + 0.08 * heat))
+        ..color = color.withValues(alpha: 0.6 + 0.3 * heat),
+    );
+    // Top sheen.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+            center: anchor.translate(0, -h * 0.26), width: w * 0.86,
+            height: h * 0.36),
+        Radius.circular(h * 0.3),
+      ),
+      Paint()..color = _white.withValues(alpha: 0.16),
+    );
+  }
+
+  /// A little arc of pips above the pill that fills with the chain length, so
+  /// the combo's growth reads even before you parse the number.
+  static void _drawComboPips(Canvas canvas, Offset anchor, double unit,
+      Color color, int chain, int maxChain) {
+    final n = maxChain.clamp(1, 12);
+    final lit = chain.clamp(0, n);
+    final span = unit * 2.6;
+    final y = anchor.dy - unit * 1.15;
+    final pipR = math.max(1.2, unit * 0.13);
+    for (var i = 0; i < n; i++) {
+      final t = n == 1 ? 0.5 : i / (n - 1);
+      final x = anchor.dx - span * 0.5 + span * t;
+      final on = i < lit;
+      canvas.drawCircle(
+        Offset(x, y),
+        on ? pipR * 1.15 : pipR,
+        Paint()
+          ..color = on
+              ? color.withValues(alpha: 0.95)
+              : _white.withValues(alpha: 0.18),
+      );
+    }
+  }
+
+  /// Centered bold text with an optional colored glow halo (two stacked draws,
+  /// no blur). Used for the chain badge so the `xN` reads on any background.
+  static void _drawCenteredText(
+    Canvas canvas,
+    String text,
+    Offset center,
+    double fontSize,
+    Color color, {
+    double glow = 0,
+    Color glowColor = const Color(0xFFFFFFFF),
+  }) {
+    ParagraphBuilder build(Color c) => ParagraphBuilder(ParagraphStyle(
+          textAlign: TextAlign.center,
+          fontSize: fontSize,
+          fontWeight: FontWeight.w900,
+        ))
+      ..pushStyle(TextStyle(
+        color: c,
+        shadows: const [
+          Shadow(color: _black, blurRadius: 4, offset: Offset(0, 1)),
+        ],
+      ))
+      ..addText(text);
+    const boxW = 240.0;
+    if (glow > 0.02) {
+      final halo = (build(glowColor.withValues(alpha: 0.55 * glow.clamp(0.0, 1.0)))
+            .build())
+          ..layout(const ParagraphConstraints(width: boxW));
+      canvas.drawParagraph(
+          halo, Offset(center.dx - boxW / 2, center.dy - fontSize * 0.62));
+    }
+    final para = build(color).build()
+      ..layout(const ParagraphConstraints(width: boxW));
+    canvas.drawParagraph(
+        para, Offset(center.dx - boxW / 2, center.dy - fontSize * 0.6));
   }
 
   /// A soft puff of colored mist at the brush centre while it is actively

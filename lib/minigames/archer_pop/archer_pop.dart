@@ -14,47 +14,59 @@ import '../../engine/player_manager.dart';
 import 'archer_fx.dart';
 import 'archer_render.dart';
 
-/// Target Range — precision archery. (Keeps the legacy `archer_pop` id; the old
-/// "auto-sweep + tap to fire" balloon spam is gone.)
+/// Target Range — JUDGED lobs at moving, shrinking targets. (Keeps the legacy
+/// `archer_pop` id; the old "auto-sweep + tap to fire" balloon spam is gone, and
+/// so is the trace-the-dotted-line full-arc preview that made aiming trivial.)
 ///
-/// OBJECTIVE (obvious from the scene + HUD): score the MOST points by hitting
+/// OBJECTIVE (obvious from the scene + HUD): score the MOST points by popping
 /// TARGET balloons before your LIMITED QUIVER ([_quiver] arrows) runs dry or the
 /// round ends. Ammo + score + a "HIT TARGETS / AVOID BOMBS" objective sit over
 /// every player so the goal is unmistakable. Every arrow must count.
 ///
-/// CORE — one-touch, you AIM each shot (no auto-aim, no sweep):
+/// CORE — one-touch, you JUDGE each lob (no auto-aim, no landing reticle):
 ///  * **DRAG to aim, RELEASE to loose.** Press in your zone and drag BACK like a
 ///    slingshot: the pull *direction* sets the launch angle (you loose opposite
-///    the pull) and the pull *length* sets the power. A live trajectory + power
-///    gauge preview the arc while you hold. Release looses a gravity-arced arrow.
+///    the pull) and the pull *length* sets the power. The aim aid is only a SHORT
+///    STUB along the launch heading + a POWER GAUGE — NOT a full landing arc. You
+///    must JUDGE the lob (angle + power vs gravity + wind) and LEAD the target;
+///    the game will not draw the line onto the balloon for you.
 ///  * **A bare tap looses NOTHING.** A press-release with (almost) no drag is
 ///    below [_minPower] — the bow simply relaxes, no arrow spent. You cannot
 ///    clear a target by incidentally tapping; you must deliberately draw + aim.
 ///    And an arrow only scores by physically *colliding* with a target — nothing
 ///    is snapped onto a balloon for you.
 ///
-/// INTERPOSING DIFFICULTY (genuinely resists a spammer):
-///  * **Targets MOVE** — every balloon drifts + bobs, and a crosswind pushes
-///    arrows in flight (a top banner telegraphs it) so you must lead the shot.
-///  * **BARRIERS** — some targets sit behind a solid wall; a flat shot is eaten
-///    by the wall, you must ARC the arrow up and over.
-///  * **BOMB decoys (black)** — hitting one SUBTRACTS points, so loosing in a
-///    random direction is punished, not free.
-///  * **GOLD targets** — worth a burst of points but small + short-lived, so the
-///    big score goes to whoever aims fast + precisely.
-///  * **Calibrated ramp** — targets get faster + smaller and bombs more common
-///    as the quiver drains, so the back half is a real test.
+/// THE READ (what makes a measured shot beat a flailing one):
+///  * **Targets MOVE + ESCAPE** — every balloon drifts + bobs, then begins to
+///    SHRINK + drift faster late in its life (a clear shrinking timer ring tells
+///    you it is leaving), so you must LEAD it and COMMIT before it escapes.
+///  * **A crosswind pushes arrows in flight** (a top banner telegraphs it) — you
+///    read it into the lob, you don't trace it.
+///  * **BARRIERS** — some targets sit behind a solid wall; a flat shot is eaten,
+///    you must ARC up and over.
+///  * **BOMB decoys (black)** — hitting one SUBTRACTS points + breaks your combo,
+///    so loosing in a random direction is punished, not free.
+///  * **GOLD targets** — worth a burst of points but small + short-lived.
+///
+/// REWARDED PRECISION + RHYTHM (visible payoff):
+///  * **BULLSEYE** — an arrow that lands in a target's inner core pops a bonus
+///    ([_bullseyeBonus]) with a bright ring + a "BULLSEYE!" pop.
+///  * **COMBO** — consecutive hits stack an escalating multiplier (a glowing
+///    ▲x-badge); a miss or a bomb breaks it. A measured shooter banks bullseye
+///    combos; a flailing one keeps resetting to nothing.
 ///
 /// A blind spammer looses arrows in random directions: it burns the whole quiver
-/// fast, sails most shots wide, and splatters bombs for NEGATIVE points — it
-/// scores low/negative. A player who aims, prioritizes gold, avoids bombs and
-/// conserves ammo scores high. (Proven by a deterministic test.)
+/// fast, sails most shots wide (moving targets escape it), never banks a combo,
+/// and splatters bombs for NEGATIVE points — it scores low/negative. A player who
+/// JUDGES the lob, leads the target, chains bullseyes and conserves ammo scores
+/// high. (Proven by a deterministic test.)
 ///
-/// BOTS: aim by SOLVING a launch angle + power onto the best live target (gold
-/// first, never a bomb on purpose) then perturbing it by a [BotProfile] accuracy
-/// error — easy bots scatter wide, waste arrows and clip bombs; hard bots place
-/// arrows on gold. A real, beatable 1+CPU contest. Always finishes (ammo-out or
-/// the time limit) and never throws for 1..4 players.
+/// BOTS: judge the lob by SOLVING a launch angle + power onto the best live
+/// target (LEADING its drift; gold first, never a bomb on purpose) then
+/// perturbing BOTH by a [BotProfile] accuracy error — easy bots mis-lead moving
+/// targets, under-power, scatter wide and clip bombs; hard bots lead + bullseye.
+/// A real, beatable 1+CPU contest. Always finishes (ammo-out or the time limit)
+/// and never throws for 1..4 players.
 class ArcherPop extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -74,6 +86,12 @@ class ArcherPop extends MiniGameBase {
   static const int _plainPoints = 2; // points for a plain target
   static const int _goldPoints = 6; // points for the small/brief gold target
   static const int _bombPenalty = 3; // points SUBTRACTED for hitting a bomb
+  static const int _bullseyeBonus = 2; // extra points when the core is struck
+  // An arrow whose closest approach to a target's CENTER is within this fraction
+  // of its radius is a bullseye: a precision-rewarding inner core. A judged lead
+  // threads it (best approaches ≈0.3–0.5r); a glancing/lucky clip catches only
+  // the outer rim (≈0.8r+) and earns no bonus.
+  static const double _bullseyeFrac = 0.55;
   static const double _comboWindowSec = 2.2; // hits within this keep the combo
   static const int _maxCombo = 5; // multiplier cap
 
@@ -99,6 +117,11 @@ class ArcherPop extends MiniGameBase {
   // The anti-incidental-clear gate: a release whose power is below this is NOT a
   // shot — a bare tap / micro-drag relaxes the bow and spends no arrow.
   static const double _minPower = 0.16;
+  // The aim aid is a SHORT launch STUB, not a landing arc: only the first
+  // [_stubSeconds] of flight is previewed (a handful of fading dots showing the
+  // initial heading), so the player JUDGES the rest of the lob themselves.
+  static const double _stubSeconds = 0.22;
+  static const int _stubSamples = 6;
 
   // ── Target field tuning ─────────────────────────────────────────────────────
   static const double _spawnEvery = 0.85; // seconds between spawns
@@ -116,6 +139,16 @@ class ArcherPop extends MiniGameBase {
   static const double _radiusGold = 15; // gold = small + hard
   static const double _radiusBomb = 24;
   static const double _goldLifeSec = 3.4; // gold self-pops (brief) if not hit
+  // Plain targets also LEAVE: they live this long, then float off. A timer ring
+  // tells you the window so you must COMMIT to a moving target before it escapes
+  // (the core "read" — a flailing shooter dithers and it's gone).
+  static const double _plainLifeSec = 5.2;
+  // The last fraction of a target's life is its ESCAPE phase: it shrinks toward
+  // [_escapeShrink] of its radius and speeds up by [_escapeSpeedMul], so a late
+  // shot at a fleeing balloon is a genuinely harder lead.
+  static const double _escapeFrac = 0.42; // last 42% of life = escaping
+  static const double _escapeShrink = 0.55; // → 55% radius as it leaves
+  static const double _escapeSpeedMul = 1.9; // drift ×1.9 as it leaves
   static const double _bombChanceBase = 0.16; // bomb share early
   static const double _bombChanceMax = 0.34; // bomb share late (ramp)
   static const double _goldChanceBase = 0.10; // gold share early
@@ -149,9 +182,13 @@ class ArcherPop extends MiniGameBase {
   static const double _botAimErrorRad = 0.5; // steady angular error at acc 0
   static const double _botFlinchRad = 0.22; // fresh per-shot angular flinch
   static const double _botPowerError = 0.32; // power error at accuracy 0
+  static const double _botPowerUnderBias = 0.22; // weak bots lob short of a lead
   static const double _botArcCandidates = 13; // arc-solve angle samples
-  static const int _botArcSteps = 36; // arc-solve sim steps
-  static const double _botArcDt = 0.05; // arc-solve sim step
+  // The arc-solve integrates at the SAME step as the live arrow sim (1/60) so
+  // its predicted impact matches reality to the pixel — a center-aimed solve
+  // then actually threads the core (a bullseye), not the rim. ~1.8s of flight.
+  static const int _botArcSteps = 108; // arc-solve sim steps
+  static const double _botArcDt = 1 / 60; // arc-solve sim step (matches sim)
   static const double _botGoldBias = 0.55; // gold target distance discount
   // A low-accuracy bot sometimes loses track and aims at NOTHING (a wild loose),
   // and may even mistake a bomb for a target — both waste arrows like a human
@@ -510,6 +547,15 @@ class ArcherPop extends MiniGameBase {
       _TargetKind.bomb => _bombColor,
       _TargetKind.plain => Color(palette.colorArgb),
     };
+    // Every SCORING target now has a finite life and floats off when it's up —
+    // gold briefest, plain a bit longer. Bombs linger (infinite) so dodging one
+    // is a steady hazard, not a wait-it-out. A timer ring + an escape phase
+    // (shrink + speed-up) tell you the window so you must lead + COMMIT.
+    final life = switch (kind) {
+      _TargetKind.gold => _goldLifeSec,
+      _TargetKind.plain => _plainLifeSec,
+      _TargetKind.bomb => double.infinity,
+    };
     _targets.add(_Target(
       pos: Offset(x, y),
       vel: Offset(drift, rise),
@@ -518,7 +564,8 @@ class ArcherPop extends MiniGameBase {
       kind: kind,
       shielded: shielded,
       bob: ctx.rng.range(0, kTau),
-      ttl: kind == _TargetKind.gold ? _goldLifeSec : double.infinity,
+      ttl: life,
+      maxTtl: life,
     ));
   }
 
@@ -530,15 +577,19 @@ class ArcherPop extends MiniGameBase {
         if (t.popT > 0) survivors.add(t);
         continue;
       }
-      // Gold is brief: it self-pops (floats away) when its time is up.
+      // Every scoring target is brief: it self-pops (floats away) when its time
+      // is up. Bombs are immortal (infinite ttl) so they stay a steady hazard.
       if (t.ttl.isFinite) {
         t.ttl -= dt;
         if (t.ttl <= 0) continue;
       }
       t.bob += dt * _bobRate;
       final sway = math.sin(t.bob) * _bobSway * dt;
-      final dx = t.vel.dx + _windX * _windShareOnTarget;
-      var np = t.pos + Offset(dx, t.vel.dy) * dt + Offset(sway, 0);
+      // As a target enters its ESCAPE phase it drifts faster — a fleeing balloon
+      // is a harder lead, so dithering instead of committing costs the shot.
+      final escMul = lerpD(1.0, _escapeSpeedMul, t.escapeT);
+      final dx = (t.vel.dx + _windX * _windShareOnTarget) * escMul;
+      var np = t.pos + Offset(dx, t.vel.dy * escMul) * dt + Offset(sway, 0);
       // Bounce gently off the field band edges so targets stay on screen.
       final loX = t.radius * 1.5, hiX = _size.width - t.radius * 1.5;
       final loY = _size.height * _fieldTopFrac * 0.6;
@@ -615,8 +666,9 @@ class ArcherPop extends MiniGameBase {
 
   /// A bot picks the best live target (gold weighted closer; bombs avoided, but
   /// a careless/low-accuracy bot may MISTAKE one), solves a launch angle + power
-  /// that would hit it, then perturbs BOTH by an accuracy-scaled error so weak
-  /// bots scatter wide + clip bombs + waste arrows, and strong bots land gold.
+  /// whose arc LEADS the target's drift, then perturbs BOTH by an accuracy-scaled
+  /// error. A weak bot mis-leads the moving balloon, UNDER-powers (falls short),
+  /// scatters wide + clips bombs + wastes arrows; a strong bot leads + bullseyes.
   void _botShoot(_Archer a) {
     final accuracy = ctx.botProfile.accuracy.clamp(0.2, 1.0);
     final miss = 1 - accuracy;
@@ -637,9 +689,13 @@ class ArcherPop extends MiniGameBase {
       }
       return;
     }
-    final angErr =
-        ctx.rng.jitter(miss * _botAimErrorRad) + ctx.rng.jitter(miss * _botFlinchRad);
-    final powErr = ctx.rng.jitter(miss * _botPowerError);
+    // Symmetric aim scatter (mis-leads a mover) + a fresh per-shot flinch.
+    final angErr = ctx.rng.jitter(miss * _botAimErrorRad) +
+        ctx.rng.jitter(miss * _botFlinchRad);
+    // Power error is biased to UNDER-shoot for weak bots (a too-soft lob drops
+    // short of a led target), with a little symmetric noise on top.
+    final powErr =
+        -miss * _botPowerUnderBias + ctx.rng.jitter(miss * _botPowerError);
     final power = (solved.power + powErr).clamp(_minPower, 1.0);
     _loose(a.playerId, solved.angle + angErr, power);
   }
@@ -666,53 +722,114 @@ class ArcherPop extends MiniGameBase {
     return best;
   }
 
-  /// Solve a launch (angle, power) whose gravity+wind arc lands closest to
-  /// [target] from [a]'s muzzle. Samples a fan of angles × a few powers and
-  /// simulates each lightly. Returns null if nothing comes close (e.g. a wall
-  /// fully blocks every line at this range).
+  /// Solve a launch (angle, power) whose gravity+wind arc LEADS [target]'s drift
+  /// and lands closest to its CENTER from [a]'s muzzle. A coarse fan of angles ×
+  /// powers finds the neighborhood, then a finer local pass refines it so a
+  /// deliberate shot actually threads the core (a bullseye), not just the rim.
+  /// Returns null if nothing comes close (e.g. a wall blocks every line here).
   _Shot? _solveArc(_Archer a, _Target target) {
-    final origin = _muzzleOf(a);
     final inward = -a.side.outward;
     final center = math.atan2(inward.dy, inward.dx);
-    _Shot? best;
+    var bestAng = center;
+    var bestPow = 0.7;
     var bestMiss = double.infinity;
+
+    // Pass 1 — coarse fan to find the right neighborhood.
     final n = _botArcCandidates.toInt();
     for (var i = 0; i < n; i++) {
       final ang = center + lerpD(-1.1, 1.1, i / (n - 1));
-      for (final power in const [0.45, 0.65, 0.85, 1.0]) {
-        final miss = _simMiss(origin, ang, power, target);
+      for (final power in const [0.4, 0.55, 0.7, 0.85, 1.0]) {
+        final miss = _simMiss(_originFor(a, ang), ang, power, target);
         if (miss < bestMiss) {
           bestMiss = miss;
-          best = _Shot(ang, power);
+          bestAng = ang;
+          bestPow = power;
         }
       }
     }
-    // Reachable only if some arc gets within a forgiving margin of the target.
-    return bestMiss <= target.radius * 3 ? best : null;
+    if (bestMiss > target.liveRadius * 3) return null; // unreachable
+
+    // Pass 2 — refine locally (finer angle + power) so the arc centers the core.
+    var aStep = 0.09, pStep = 0.12;
+    for (var pass = 0; pass < 3; pass++) {
+      for (final da in [-aStep, 0.0, aStep]) {
+        for (final dp in [-pStep, 0.0, pStep]) {
+          final ang = bestAng + da;
+          final pow = (bestPow + dp).clamp(_minPower, 1.0);
+          final miss = _simMiss(_originFor(a, ang), ang, pow, target);
+          if (miss < bestMiss) {
+            bestMiss = miss;
+            bestAng = ang;
+            bestPow = pow;
+          }
+        }
+      }
+      aStep *= 0.5;
+      pStep *= 0.5;
+    }
+    return _Shot(bestAng, bestPow);
+  }
+
+  /// The muzzle the arrow will ACTUALLY spawn from for a given launch [angle] —
+  /// the bow points where you aim, so the spawn point rotates with the angle.
+  /// The solver must use this (not the rest-angle muzzle) or its lead is offset
+  /// by the muzzle reach and a center-aimed shot lands on the rim instead.
+  Offset _originFor(_Archer a, double angle) {
+    final view = ArcherView(
+      base: a.base,
+      color: a.color,
+      side: a.side,
+      facing: a.facing,
+      aimAngle: angle,
+      draw: 0,
+      combo: 0,
+      scale: _scale,
+    );
+    final dir = Offset(math.cos(angle), math.sin(angle));
+    return ArcherRenderer.bowAnchor(view) + dir * (_muzzleReach * _scale);
   }
 
   /// Lightly simulate an arc and return the closest approach distance to
   /// [target] (a big penalty if a barrier eats the arrow first). The target is
   /// LED along its own drift over the flight so a moving balloon is actually
-  /// solved for — the difference between a thoughtful shot and a hopeful one.
+  /// solved for. The miss is measured SEGMENT-to-point each step (not just at
+  /// the sample dots), so a fast arrow that threads the center between frames is
+  /// scored as the bullseye it is — letting a refined solve genuinely center.
   double _simMiss(Offset origin, double angle, double power, _Target target) {
     final dir = Offset(math.cos(angle), math.sin(angle));
     var pos = origin;
     var vel = dir * _speedFor(power);
-    // Track where the target will be, drifting as it does in _stepTargets.
+    // Predict the target with the SAME motion model as _stepTargets — drift +
+    // wind share + bob SWAY — so the lead matches where the balloon actually is
+    // when the arrow arrives (otherwise the bob alone offsets a core shot to the
+    // rim). Escape speed-up is folded in via escapeT (≈0 for a fresh target).
     var tpos = target.pos;
-    final tvel = target.vel + Offset(_windX * _windShareOnTarget, 0);
+    var tbob = target.bob;
+    final escMul = lerpD(1.0, _escapeSpeedMul, target.escapeT);
+    final tvel = Offset(
+      (target.vel.dx + _windX * _windShareOnTarget) * escMul,
+      target.vel.dy * escMul,
+    );
     final wall =
         target.shielded ? target.barrier ?? _barrierFor(target) : null;
     var closest = double.infinity;
     for (var s = 0; s < _botArcSteps; s++) {
+      final prev = pos;
       vel = vel + Offset(_windX * _botArcDt, _gravity * _botArcDt);
       pos = pos + vel * _botArcDt;
-      tpos = tpos + tvel * _botArcDt;
+      tbob += _botArcDt * _bobRate;
+      final sway = math.sin(tbob) * _bobSway * _botArcDt;
+      tpos = tpos + tvel * _botArcDt + Offset(sway, 0);
       // A wall between shooter and target eats a flat shot (forces an arc).
       if (wall != null && wall.contains(pos)) return 1e6;
-      final d = (pos - tpos).distance;
+      final d = _closestApproach(prev, pos, tpos);
       if (d < closest) closest = d;
+      // The arrow can only score on its FIRST crossing of the target — collision
+      // short-circuits the flight. So once the arc enters the radius, return the
+      // miss AT THAT crossing (what a hit actually rewards) instead of chasing a
+      // smaller approach later in the arc the arrow would never reach. This is
+      // what lets a centered solve land an actual bullseye.
+      if (d <= target.liveRadius) return closest;
       if (_outOfBounds(pos)) break;
     }
     return closest;
@@ -741,7 +858,14 @@ class ArcherPop extends MiniGameBase {
 
       final hit = _hitTarget(s.pos, pos);
       if (hit != null) {
-        _registerHit(s.ownerId, hit);
+        // How close to the CORE the arrow passed: a center strike is a bullseye.
+        final near = _closestApproach(s.pos, pos, hit.pos);
+        final ratio = near / hit.liveRadius;
+        if (ratio < (_debugMinRatio[s.ownerId] ?? 1e9)) {
+          _debugMinRatio[s.ownerId] = ratio;
+        }
+        final bullseye = near <= hit.liveRadius * _bullseyeFrac;
+        _registerHit(s.ownerId, hit, bullseye: bullseye);
         continue; // arrow consumed
       }
       if (life <= 0 || _outOfBounds(pos)) {
@@ -771,18 +895,20 @@ class ArcherPop extends MiniGameBase {
   }
 
   /// First live target the arrow's step segment intersects (segment vs circle),
-  /// so a fast arrow cannot tunnel through a small target between frames.
+  /// so a fast arrow cannot tunnel through a small target between frames. Uses
+  /// the LIVE (escape-shrunk) radius so what you see is what you can hit.
   _Target? _hitTarget(Offset from, Offset to) {
     for (final t in _targets) {
       if (t.popT > 0) continue;
-      if (_segHitsCircle(from, to, t.pos, t.radius)) return t;
+      if (_segHitsCircle(from, to, t.pos, t.liveRadius)) return t;
     }
     return null;
   }
 
-  /// Award (or subtract) for a hit: plain/gold add ×combo; a BOMB subtracts a
-  /// flat penalty and breaks the combo. Fires the burst + popup + charm.
-  void _registerHit(int shooterId, _Target target) {
+  /// Award (or subtract) for a hit: plain/gold add (unit + bullseye bonus) ×
+  /// combo; a BOMB subtracts a flat penalty and breaks the combo. Fires the
+  /// burst + popup + charm. [bullseye] is true when the arrow struck the core.
+  void _registerHit(int shooterId, _Target target, {bool bullseye = false}) {
     final archer = _archerOf(shooterId);
     if (archer == null) return;
     target.popT = 1.0;
@@ -819,36 +945,58 @@ class ArcherPop extends MiniGameBase {
     }
     archer.comboTimer = _comboWindowSec;
     archer.streak += 1;
+    if (archer.combo > archer.peakCombo) archer.peakCombo = archer.combo;
+    if (bullseye) {
+      archer.bullseyeFlash = 1.0;
+      archer.bullseyeHits += 1;
+    }
 
     final gold = target.kind == _TargetKind.gold;
     final unit = gold ? _goldPoints : _plainPoints;
-    final gained = unit * archer.combo;
+    // A core strike adds the bullseye bonus BEFORE the combo multiplies — so a
+    // precise, chained shot compounds (the visible reward for judging the lob).
+    final base = unit + (bullseye ? _bullseyeBonus : 0);
+    final gained = base * archer.combo;
     addScore(shooterId, gained);
 
-    if (archer.combo >= 3 || gold) archer.figure.special();
+    if (archer.combo >= 3 || gold || bullseye) archer.figure.special();
 
-    final popColor = gold ? _comboColor : archer.color;
+    final popColor = bullseye ? _comboColor : (gold ? _comboColor : archer.color);
     _juice.particles.burst(
       at: target.pos,
-      count: gold ? 20 : 12,
+      count: gold || bullseye ? 20 : 12,
       color: popColor,
-      speed: gold ? 320 : 240,
-      size: gold ? 7 : 5,
+      speed: gold || bullseye ? 320 : 240,
+      size: gold || bullseye ? 7 : 5,
       gravity: 420,
-      life: gold ? 0.6 : 0.45,
+      life: gold || bullseye ? 0.6 : 0.45,
     );
     if (gold) {
       _juice.bigMoment(target.pos, archer.color, banner: 'GOLD!');
+    } else if (bullseye) {
+      // A bright center-strike beat: extra ring + a punchy slow-mo dip, with a
+      // BULLSEYE banner once the shooter is chaining (combo ≥ 2).
+      _juice.flashScreen(_comboColor, strength: 0.18, dur: 0.12);
+      _juice.shake.medium();
+      _juice.hitStop.trigger(0.06, scale: 0.2);
+      if (archer.combo >= 2) {
+        _juice.popup(Offset(_size.width / 2, _size.height * 0.30), 'BULLSEYE!',
+            _comboColor,
+            size: 30);
+      }
     } else {
       _juice.shake.light();
       if (archer.combo >= 3) _juice.hitStop.trigger(0.05, scale: 0.2);
     }
-    final label = archer.combo >= 2 ? '+$gained  x${archer.combo}' : '+$gained';
+    // The floating pop reads the multiplier + a center-strike dot prefix.
+    final mark = bullseye ? '◎ ' : '';
+    final label =
+        archer.combo >= 2 ? '$mark+$gained  x${archer.combo}' : '$mark+$gained';
     _juice.popup(
-      target.pos.translate(0, -target.radius),
+      target.pos.translate(0, -target.liveRadius),
       label,
       popColor,
-      size: gold ? 30 : 24,
+      size: gold || bullseye ? 30 : 24,
     );
   }
 
@@ -963,8 +1111,12 @@ class ArcherPop extends MiniGameBase {
     _juice.renderOverlay(canvas, size);
   }
 
-  /// A short list of arc points previewing where the current draw would send an
-  /// arrow — only while the player is drawing with usable power.
+  /// A SHORT launch STUB previewing only the initial heading of the current draw
+  /// — NOT a full landing arc. It samples just the first slice of the gravity+
+  /// wind arc (≈[_stubSeconds]), so the dots show which way + how hard the lob
+  /// leaves the bow, then stop. The player must JUDGE the rest of the lob and
+  /// lead the target; the game never traces the line onto a balloon. Returns a
+  /// few points (empty when the draw is below the usable gate).
   List<Offset> _trajectoryFor(_Archer a) {
     if (!a.drawing || a.aimPower < _minPower) return const <Offset>[];
     final origin = _muzzleOf(a);
@@ -972,8 +1124,8 @@ class ArcherPop extends MiniGameBase {
     var pos = origin;
     var vel = dir * _speedFor(a.aimPower);
     final pts = <Offset>[origin];
-    const dt = 0.045;
-    for (var i = 0; i < 16; i++) {
+    const dt = _stubSeconds / _stubSamples;
+    for (var i = 0; i < _stubSamples; i++) {
       vel = vel + Offset(_windX * dt, _gravity * dt);
       pos = pos + vel * dt;
       if (_outOfBounds(pos)) break;
@@ -994,12 +1146,16 @@ class ArcherPop extends MiniGameBase {
         combo: a.combo,
         scale: _scale,
         loose: (a.loose / _looseFadeSec).clamp(0.0, 1.0),
+        // Recent center-strike glow + the live combo multiplier drive an
+        // escalating ▲-badge (the visible "you're chaining precision" reward).
+        bullseye: a.bullseyeFlash.clamp(0.0, 1.0),
       );
 
   TargetView _targetView(_Target t) => TargetView(
         pos: t.pos,
         color: t.color,
-        radius: t.radius,
+        // Draw the LIVE (escape-shrunk) radius so the visual matches the hitbox.
+        radius: t.liveRadius,
         bobPhase: t.bob,
         popT: t.popT.clamp(0.0, 1.0),
         kind: switch (t.kind) {
@@ -1008,8 +1164,14 @@ class ArcherPop extends MiniGameBase {
           _TargetKind.plain => TargetKind.plain,
         },
         sparklePhase: t.sparkle,
-        // Gold's brief life reads as a shrinking fuse ring (1 → 0).
-        fuse: t.ttl.isFinite ? (t.ttl / _goldLifeSec).clamp(0.0, 1.0) : 1.0,
+        // Every scoring target shows its remaining-life as a shrinking ring
+        // (1 → 0) so the escape window is unmistakable; bombs (immortal) = full.
+        fuse: t.lifeFrac,
+        // The bullseye CORE the player aims for: an inner ring drawn on scoring
+        // targets so the precision target is visible, not invisible.
+        coreFrac: t.kind == _TargetKind.bomb ? 0.0 : _bullseyeFrac,
+        // Late in life the balloon flashes "leaving" to push a commit.
+        escapeT: t.escapeT,
       );
 
   HudView _hudView(_Archer a) {
@@ -1040,6 +1202,17 @@ class ArcherPop extends MiniGameBase {
     t = t.clamp(0.0, 1.0);
     final closest = a + ab * t;
     return (closest - c).distance <= r;
+  }
+
+  /// Closest distance from segment a→b to point [c] (how near the arrow passed
+  /// the target's center — drives the bullseye core test).
+  static double _closestApproach(Offset a, Offset b, Offset c) {
+    final ab = b - a;
+    final lenSq = ab.distanceSquared;
+    if (lenSq < 1e-6) return (a - c).distance;
+    var t = ((c - a).dx * ab.dx + (c - a).dy * ab.dy) / lenSq;
+    t = t.clamp(0.0, 1.0);
+    return ((a + ab * t) - c).distance;
   }
 
   static bool _segHitsRect(Offset a, Offset b, Rect r) {
@@ -1076,6 +1249,20 @@ class ArcherPop extends MiniGameBase {
   @visibleForTesting
   int debugAmmo(int id) => _archerOf(id)?.ammo ?? 0;
 
+  /// Best combo multiplier a player reached this round (a measured shooter banks
+  /// chains; a flailing spammer keeps resetting to nothing). Test seam.
+  @visibleForTesting
+  int debugPeakCombo(int id) => _archerOf(id)?.peakCombo ?? 0;
+
+  /// Center-core (bullseye) strikes a player landed this round — the
+  /// precision-reward counter. Test seam.
+  @visibleForTesting
+  int debugBullseyes(int id) => _archerOf(id)?.bullseyeHits ?? 0;
+
+  final Map<int, double> _debugMinRatio = <int, double>{};
+  @visibleForTesting
+  double debugMinRatio(int id) => _debugMinRatio[id] ?? 9.9;
+
   /// Drive a full deliberate AIMED shot for [id] toward arena point [at] at the
   /// given [power], routed through the real input path (down→drag→up). Used by
   /// tests to model a skilled player. Returns true if an arrow was loosed.
@@ -1105,6 +1292,7 @@ class ArcherPop extends MiniGameBase {
       shielded: false,
       bob: 0,
       ttl: double.infinity,
+      maxTtl: double.infinity,
     );
     return _solveArc(a, t);
   }
@@ -1207,9 +1395,12 @@ class _Archer {
   Offset? dragNow; // arena px of the latest drag sample
 
   double loose = 0; // loose-flash timer
+  double bullseyeFlash = 0; // 1 → 0 recent center-strike glow on the badge
   int combo = 0;
   double comboTimer = 0;
   int streak = 0;
+  int peakCombo = 0; // best multiplier reached this round (test seam)
+  int bullseyeHits = 0; // center strikes landed this round (test seam)
 
   _Archer({
     required this.playerId,
@@ -1225,6 +1416,9 @@ class _Archer {
 
   void tickTimers(double dt, double looseFadeSec) {
     if (loose > 0) loose = (loose - dt).clamp(0, looseFadeSec);
+    if (bullseyeFlash > 0) {
+      bullseyeFlash = (bullseyeFlash - dt * 2.2).clamp(0.0, 1.0);
+    }
     if (comboTimer > 0) {
       comboTimer -= dt;
       if (comboTimer <= 0) {
@@ -1283,12 +1477,13 @@ class _Arrow {
 class _Target {
   Offset pos;
   Offset vel;
-  final double radius;
+  final double radius; // the FULL (spawn) radius
   final Color color;
   final _TargetKind kind;
   final bool shielded;
   double bob;
-  double ttl; // gold self-pops when this hits 0; infinity otherwise
+  double ttl; // scoring targets float off when this hits 0; bombs = infinity
+  final double maxTtl; // life at spawn (for the timer ring + escape curve)
   double sparkle = 0;
   double popT = 0; // 0 = whole, 1 → 0 while bursting
   Rect? barrier; // computed each step for shielded targets
@@ -1302,5 +1497,24 @@ class _Target {
     required this.shielded,
     required this.bob,
     required this.ttl,
+    required this.maxTtl,
   });
+
+  /// Remaining-life fraction 1 → 0 (1 for an immortal bomb).
+  double get lifeFrac =>
+      ttl.isFinite && maxTtl > 0 ? (ttl / maxTtl).clamp(0.0, 1.0) : 1.0;
+
+  /// 0 while fresh, ramping to 1 across the final [ArcherPop._escapeFrac] of
+  /// life — the "it's leaving" signal that drives the shrink + speed-up.
+  double get escapeT {
+    if (!ttl.isFinite) return 0;
+    final f = lifeFrac;
+    if (f >= ArcherPop._escapeFrac) return 0;
+    return (1 - f / ArcherPop._escapeFrac).clamp(0.0, 1.0);
+  }
+
+  /// The live (possibly escape-shrunk) radius used for drawing AND collision, so
+  /// what you see is what you can hit.
+  double get liveRadius =>
+      radius * lerpD(1.0, ArcherPop._escapeShrink, escapeT);
 }

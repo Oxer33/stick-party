@@ -194,14 +194,17 @@ void main() {
 
   test(
       'a BLIND SPAMMER (random-direction looses, quiver exhausted) scores '
-      'WORSE than a player who AIMS at targets', () {
+      'WORSE, banks NO combo and NO bullseye, vs a player who JUDGES the lob',
+      () {
     // Head-to-head, both HUMAN (so no bot auto-fire interferes and the test owns
     // every input). Determinism comes entirely from the seeds:
-    //  * P0 = AIMED player: only looses when a real (non-bomb) target exists, and
-    //    aims a solved arc straight at the nearest one — conserves ammo, hits.
+    //  * P0 = JUDGING player: only looses when a real (non-bomb) target exists,
+    //    and lobs a solved arc that LEADS the nearest mover's drift onto its core
+    //    — conserves ammo, lands bullseyes, chains a combo.
     //  * P1 = BLIND SPAMMER: looses in a RANDOM direction every cadence until the
     //    quiver is dry, ignoring targets entirely (the "just spam" archetype).
-    // The aimed player must win — and the spammer must burn its whole quiver.
+    // The judging player must clearly win, bank a combo + bullseyes; the spammer
+    // must burn its whole quiver and chain nothing.
     final spamRng = SeededRng(123456);
     for (final seed in const [1, 7, 13, 42, 99]) {
       final g = ArcherPop()..init(humanCtx(2, seed: seed));
@@ -239,9 +242,11 @@ void main() {
       final aimed = g.scores.of(0);
       final spammer = g.scores.of(1);
 
-      // The whole point: aiming + conserving beats blind spam.
-      expect(aimed, greaterThan(spammer),
-          reason: 'seed $seed: aimed ($aimed) must beat spammer ($spammer)');
+      // The whole point: judging the lob + conserving beats blind spam, and by a
+      // CLEAR margin (not a coin-flip) — a measured shooter is decisively ahead.
+      expect(aimed, greaterThan(spammer + 6),
+          reason: 'seed $seed: aimed ($aimed) must clearly beat spammer '
+              '($spammer)');
       // The aimed player actually scores (deliberate hits land).
       expect(aimed, greaterThan(0),
           reason: 'seed $seed: aimed player should score positive ($aimed)');
@@ -249,6 +254,26 @@ void main() {
       // conserving aimer.
       expect(g.debugAmmo(1), 0,
           reason: 'seed $seed: spammer should exhaust its quiver');
+
+      // THE NEW SKILL SIGNAL: a judging shooter who LEADS moving targets BANKS a
+      // combo (consecutive hits stack the multiplier). A blind sprayer cannot
+      // chain — its multiplier never leaves 1.
+      expect(g.debugPeakCombo(0), greaterThanOrEqualTo(2),
+          reason: 'seed $seed: aimed player should bank a combo '
+              '(peak ${g.debugPeakCombo(0)})');
+      // A blind sprayer can luck into a stray DOUBLE (two random hits in a row),
+      // but never SUSTAINS a chain — a 3+ combo requires actually leading the
+      // moving targets. (The decisive spam-loses proof is the score margin +
+      // bullseye gap above; the multiplier is the visible skill signal on top.)
+      expect(g.debugPeakCombo(1), lessThanOrEqualTo(2),
+          reason: 'seed $seed: blind spammer must never SUSTAIN a chain '
+              '(peak ${g.debugPeakCombo(1)})');
+      // …and lands center-core BULLSEYES the spammer never does.
+      expect(g.debugBullseyes(0), greaterThan(0),
+          reason: 'seed $seed: aimed player should land bullseyes');
+      expect(g.debugBullseyes(1), 0,
+          reason: 'seed $seed: blind spammer should land no bullseyes '
+              '(${g.debugBullseyes(1)})');
     }
   });
 

@@ -170,12 +170,25 @@ class ColorMemory extends MiniGameBase {
   // the light show clearly finishes before the first bot answer lands.
   static const double _botFirstAnswerDelaySec = 0.6;
 
+  // ── Confidence reward tuning (streak) ────────────────────────────────────────
+  // A streak adds at most [_streakBonusCap] to a player's FINAL score — a sub-
+  // integer flair (max < 1) so it breaks ties between equally-deep survivors and
+  // rewards a confident front-runner, but can NEVER round a shallow run up across
+  // a depth threshold (so blind spam can't ride a streak into the climax depths).
+  static const double _streakBonusPer = 0.04; // score flair per streak step
+  static const double _streakBonusCap = 0.36; // hard ceiling on the flair (<0.5)
+  static const int _hotStreak = 2; // streak at which the "HOT HAND" flair lights
+
   // ── Feel tuning ─────────────────────────────────────────────────────────────
   static const double _bloomDecayPerSec = 2.6; // pad afterglow fade rate
   static const double _flashHoldFrac = 0.6; // share of a step the orb stays lit
   static const double _koFlashSec = 0.5;
   static const double _oopsFlashSec = 0.45;
   static const double _bannerThrobHz = 2.4;
+  // Tension: the heartbeat/closing-vignette intensity ramps from the climax
+  // length up to the speed-up reference length, where it pegs at full.
+  static const double _heartbeatHz = 1.6; // base heartbeat pulse rate
+  static const double _heartbeatTensionHz = 1.8; // extra rate at full tension
 
   late Juice _juice;
   final List<int> _sequence = [];
@@ -199,6 +212,23 @@ class ColorMemory extends MiniGameBase {
   int? _appenderId; // who won this round (first to finish) → builds the pattern
   int? _appendedColor; // the color the winner chose for the next round (0..3)
   bool _appendBotChose = false; // latch so a bot winner only taps its choice once
+
+  // ── Confidence reward: the fast-recall STREAK ────────────────────────────────
+  // Consecutive rounds a player was FIRST to clear the whole pattern. A back-to-
+  // back front-runner builds a streak that crowns them on the race track and adds
+  // a tiny tie-break flair to their final score — an active edge for confident
+  // recall, WITHOUT abandoning memory (the streak only grows by winning the round,
+  // which still requires reproducing the pattern). Bounded + sub-integer so it can
+  // never lift a shallow run across a depth threshold.
+  final Map<int, int> _streak = <int, int>{}; // playerId → current win streak
+  int _bestStreak = 0; // deepest streak any player reached (finale flair)
+  int? _bestStreakId; // who holds the best streak (for the finale shout)
+
+  // ── Finale: the clutch LAST-TWO beat ─────────────────────────────────────────
+  // The instant the field narrows to exactly two survivors (in a 3+ starter
+  // match) we fire a one-shot slow-mo + flash + "FINAL TWO" banner so the table
+  // feels the showdown land. Latched so it only fires once per match.
+  bool _finalTwoFired = false;
 
   @override
   void init(MiniGameContext ctx) {
@@ -244,6 +274,47 @@ class ColorMemory extends MiniGameBase {
     if (len >= _genius3SeqLen) return 'UNREAL!';
     if (len >= _genius2SeqLen) return 'INCREDIBLE!';
     return 'GENIUS!';
+  }
+
+  /// Record a round win for the streak: the front-runner's streak grows, every
+  /// other player's resets to 0 (you only keep a HOT HAND by winning again).
+  /// Tracks the deepest streak + its holder for the finale shout.
+  void _registerStreakWin(int winnerId) {
+    for (final pad in _pads) {
+      if (pad.playerId == winnerId) {
+        _streak[pad.playerId] = (_streak[pad.playerId] ?? 0) + 1;
+      } else {
+        _streak[pad.playerId] = 0;
+      }
+    }
+    final s = _streak[winnerId] ?? 0;
+    if (s > _bestStreak) {
+      _bestStreak = s;
+      _bestStreakId = winnerId;
+    }
+  }
+
+  /// The sub-integer score flair earned by a player's current streak: bounded
+  /// well under 0.5 so it only ever breaks ties between equally-deep runs and
+  /// can never round a shallow score up across a depth threshold.
+  double _streakBonus(int playerId) =>
+      ((_streak[playerId] ?? 0) * _streakBonusPer).clamp(0.0, _streakBonusCap);
+
+  /// Mounting-tension level 0..1 for the round, derived from the pattern length:
+  /// 0 below the climax length, ramping to 1 by the speed-up reference length.
+  /// Drives the closing vignette + heartbeat (pure feel; never touches logic).
+  double get _tension {
+    final len = _sequence.length;
+    if (len <= _climaxSeqLen) return 0.0;
+    final span = (_speedUpRefLen - _climaxSeqLen).clamp(1, _maxSeqLen);
+    return ((len - _climaxSeqLen) / span).clamp(0.0, 1.0);
+  }
+
+  /// Heartbeat phase 0..1 (a quickening pulse as tension climbs). Pure function
+  /// of the real-time clock so it's deterministic and needs no extra Ticker.
+  double get _heartbeat {
+    final hz = _heartbeatHz + _heartbeatTensionHz * _tension;
+    return 0.5 + 0.5 * math.sin(_animClock * 2 * math.pi * hz);
   }
 
   /// Per-color flash duration for the CURRENT pattern: a long pattern is flashed
@@ -385,6 +456,7 @@ class ColorMemory extends MiniGameBase {
         final justWon = _appenderId == null;
         if (justWon) {
           _appenderId = pad.playerId;
+          _registerStreakWin(pad.playerId);
           // Signature clutch-recall cinematic: burst + shake + slow-mo + zoom
           // toward the winner's pad + flash + banner + haptic. Fired once per
           // round, and the WORDING escalates with how long a pattern was just
@@ -395,6 +467,16 @@ class ColorMemory extends MiniGameBase {
           // moment lands across the room.
           if (_sequence.length >= _climaxSeqLen) {
             _juice.flashScreen(pad.accent, strength: _clutchFlashStrength);
+          }
+          // A HOT HAND (back-to-back first-clears) earns a loud streak shout so
+          // a confident front-runner's edge reads to the table.
+          final s = _streak[pad.playerId] ?? 0;
+          if (s >= _hotStreak) {
+            _juice.popup(
+                _padCenter(pad.playerId).translate(0, -_blockSide() * 0.78),
+                'HOT x$s!',
+                _white,
+                size: 28);
           }
         } else {
           _juice.popup(
@@ -434,10 +516,25 @@ class ColorMemory extends MiniGameBase {
     if (!pad.alive) return;
     pad.alive = false;
     pad.koFlash = _koFlashSec;
+    _streak[pad.playerId] = 0; // a KO snaps any hot hand
     _outOrder.add(pad.playerId);
     _juice.ko(_padCenter(pad.playerId), pad.accent);
     // The mascot flinches as its player is knocked out.
     pad.figure.hurt();
+    _maybeFireFinalTwo();
+  }
+
+  /// The clutch showdown beat: the instant the field narrows to exactly TWO
+  /// survivors (in a 3+ starter match) fire a one-shot slow-mo + flash + banner
+  /// so the table feels the duel land. Latched to fire at most once per match.
+  void _maybeFireFinalTwo() {
+    if (_finalTwoFired || _pads.length < 3) return;
+    final alive = _pads.where((p) => p.alive).length;
+    if (alive != 2) return;
+    _finalTwoFired = true;
+    _juice.slowMo();
+    _juice.flashScreen(_white, strength: 0.4);
+    _juice.bigBanner('FINAL TWO', color: _white);
   }
 
   @override
@@ -675,12 +772,19 @@ class ColorMemory extends MiniGameBase {
   /// then eliminated players in reverse knock-out order. Every id appears once.
   void _finishNow() {
     if (status == MiniGameStatus.finished) return;
-    final survivors = _pads.where((p) => p.alive).toList()
-      ..sort((a, b) => b.progress.compareTo(a.progress));
     for (final pad in _pads) {
-      // Score = entries cleared; survivors get full sequence-length credit.
-      setScore(pad.playerId, pad.alive ? _sequence.length : pad.progress);
+      // Base score = entries cleared; survivors get full sequence-length credit.
+      // A confident front-runner's STREAK adds a sub-integer flair on top — it
+      // breaks ties between equally-deep survivors and rewards back-to-back
+      // first-clears, but is bounded under 0.5 so it can never round a shallow
+      // run up (blind spam can't ride a streak into the depth a memoriser earns).
+      final base = pad.alive ? _sequence.length : pad.progress;
+      setScore(pad.playerId, base + _streakBonus(pad.playerId));
     }
+    // Survivors rank by recall depth first, then by the streak flair (their
+    // current score already encodes both), so a tie is settled by the hot hand.
+    final survivors = _pads.where((p) => p.alive).toList()
+      ..sort((a, b) => scoreOf(b.playerId).compareTo(scoreOf(a.playerId)));
     final ordered = <int>[
       ...survivors.map((p) => p.playerId),
       ..._outOrder.reversed,
@@ -705,6 +809,18 @@ class ColorMemory extends MiniGameBase {
         _juice.bigBanner('CHAMPION!', color: champ.accent);
         _juice.confetti(_lastSize, colors: [champ.accent]);
         champ.figure.victory();
+        // Finale flair: the deepest pattern the table reached + (if anyone went
+        // on a tear) a HOT HAND callout, so the win celebrates BOTH the longest
+        // recall and the round-stealing streak.
+        _juice.popup(at.translate(0, -_blockSide() * 0.62),
+            'LONGEST ${_sequence.length}', _white, size: 26);
+        if (_bestStreak >= _hotStreak && _bestStreakId != null) {
+          final hp = _padOf(_bestStreakId!);
+          if (hp != null) {
+            _juice.popup(_padCenter(hp.playerId).translate(0, -_blockSide() * 0.9),
+                'HOT HAND x$_bestStreak', hp.accent, size: 24);
+          }
+        }
       }
     }
     finishByOrder(full);
@@ -730,6 +846,16 @@ class ColorMemory extends MiniGameBase {
 
     _juice.render(canvas);
     canvas.restore();
+
+    // Mounting-tension overlay (screen-space, under the cinematic layer): a warm
+    // closing vignette + heartbeat ring that tighten as the pattern grows, plus a
+    // SPEED ▲ chevron stack beside the race track once the show goes fast. Drawn
+    // before the flash/banner so a KO flash still reads on top.
+    final tn = _tension;
+    if (tn > 0.02) {
+      MemoryRenderer.drawTensionFrame(canvas, size, tn, _heartbeat);
+      MemoryRenderer.drawSpeedArrow(canvas, size, tn);
+    }
 
     // Screen-space cinematic overlays (flash + GENIUS! banner) after the world
     // transform is restored, so they are not shaken or zoomed.
@@ -757,8 +883,56 @@ class ColorMemory extends MiniGameBase {
       shownCount: _showIndex + 1,
       watching: watching,
     );
+    // The live RACE TRACK — the silo-breaker. During the input phase (and the
+    // winner's append beat) each player's progress slides along a shared rail so
+    // the table SEES who's ahead, who's sweating, and who just got knocked off.
+    // Hidden during the WATCH light show so the sequence stays the focus.
+    if (_phase != _Phase.showing) {
+      MemoryRenderer.drawRaceTrack(
+        canvas,
+        size,
+        _buildRunners(),
+        pulse: _heartbeat,
+        leaderId: _leaderId(),
+      );
+    }
     MemoryRenderer.drawFlashCore(
         canvas, size, _activeFlashColor(), _activeFlashStrength());
+  }
+
+  /// Snapshot every pad into a [RaceRunner] for the live track: progress as a
+  /// 0..1 fraction of the current pattern, alive/done/KO-flash carried through.
+  /// A cleared (done) runner is parked at the flag (t = 1).
+  List<RaceRunner> _buildRunners() {
+    final denom = _sequence.isEmpty ? 1 : _sequence.length;
+    return [
+      for (final pad in _pads)
+        RaceRunner(
+          playerId: pad.playerId,
+          number: pad.playerId + 1,
+          accent: pad.accent,
+          t: pad.done ? 1.0 : (pad.progress / denom).clamp(0.0, 1.0),
+          alive: pad.alive,
+          done: pad.done,
+          koFade:
+              pad.koFlash > 0 ? (pad.koFlash / _koFlashSec).clamp(0.0, 1.0) : 0.0,
+        ),
+    ];
+  }
+
+  /// The current front-runner among alive, not-yet-finished players (most
+  /// progress wins; -1 if nobody is still racing). Drives the leader crown.
+  int _leaderId() {
+    var bestId = -1;
+    var bestProgress = -1;
+    for (final pad in _pads) {
+      if (!pad.alive || pad.done) continue;
+      if (pad.progress > bestProgress) {
+        bestProgress = pad.progress;
+        bestId = pad.playerId;
+      }
+    }
+    return bestId;
   }
 
   /// Color of the orb currently flashing during the light show (null otherwise).

@@ -32,6 +32,7 @@ class ArcherView {
   final int combo; // current hit streak (0 = none)
   final double scale; // body scale factor
   final double loose; // 0..1 recent-loose flash (1 fresh → 0), kicks the bow
+  final double bullseye; // 0..1 recent center-strike glow on the combo badge
 
   const ArcherView({
     required this.base,
@@ -43,6 +44,7 @@ class ArcherView {
     required this.combo,
     required this.scale,
     this.loose = 0,
+    this.bullseye = 0,
   });
 }
 
@@ -50,12 +52,14 @@ class ArcherView {
 class TargetView {
   final Offset pos;
   final Color color;
-  final double radius;
+  final double radius; // the LIVE (escape-shrunk) radius == the hitbox
   final double bobPhase; // for the gentle squash/sway
   final double popT; // 0 = whole, >0 = popping (1 → 0 as it bursts)
   final TargetKind kind;
   final double sparklePhase; // animates the golden glint
-  final double fuse; // gold's remaining life 1→0 (a shrinking timer ring)
+  final double fuse; // remaining life 1→0 (a shrinking timer ring; 1 for bombs)
+  final double coreFrac; // bullseye inner-core radius fraction (0 = none drawn)
+  final double escapeT; // 0 fresh → 1 leaving (drives the "it's escaping" tell)
 
   const TargetView({
     required this.pos,
@@ -66,6 +70,8 @@ class TargetView {
     this.kind = TargetKind.plain,
     this.sparklePhase = 0,
     this.fuse = 1,
+    this.coreFrac = 0,
+    this.escapeT = 0,
   });
 }
 
@@ -412,10 +418,12 @@ class ArcherRenderer {
 
   // ── Target balloon ──────────────────────────────────────────────────────────
 
-  /// A bobbing target. Plain = a player-colored balloon; GOLD = small, metallic
-  /// + a shrinking fuse ring (it floats off soon); BOMB = a black orb with a lit
-  /// fuse + a danger ring (hitting it costs points). A popping target shows a
-  /// quick burst instead.
+  /// A bobbing target. Plain = a player-colored balloon; GOLD = small, metallic;
+  /// BOMB = a black orb with a lit fuse + a danger ring (hitting it costs
+  /// points). EVERY scoring target shows a shrinking TIMER RING (how long until
+  /// it floats off), a faint BULLSEYE CORE ring (the precision target), and —
+  /// late in life — an ESCAPE flare telling you it's leaving. A popping target
+  /// shows a quick burst instead.
   static void drawTarget(Canvas canvas, TargetView b) {
     final r = b.radius;
     if (r <= 0) return;
@@ -443,14 +451,31 @@ class ArcherRenderer {
     canvas.save();
     canvas.translate(center.dx, center.dy);
 
+    // ESCAPE flare: a quickening dashed halo as the balloon starts to leave, so
+    // "commit before it's gone" reads at a glance (additive, deterministic).
+    if (b.escapeT > 0.01) {
+      final e = b.escapeT.clamp(0.0, 1.0);
+      final flick = 0.5 + 0.5 * math.sin(b.bobPhase * (5 + 6 * e));
+      canvas.drawCircle(
+        Offset.zero,
+        r * (1.5 + 0.35 * flick),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, r * 0.1)
+          ..color = _windTint
+              .withValues(alpha: (0.25 + 0.4 * e * flick).clamp(0.0, 1.0)),
+      );
+    }
+
     if (golden) {
       canvas.drawCircle(Offset.zero, r * 1.7,
           Paint()..color = _gold.withValues(alpha: 0.12));
       canvas.drawCircle(Offset.zero, r * 1.34,
           Paint()..color = _gold.withValues(alpha: 0.2));
-      // Shrinking fuse ring: how long the prize is still catchable.
-      _drawTimerRing(canvas, r, b.fuse, _goldHi);
     }
+    // Shrinking timer ring on EVERY scoring target (gold = goldHi, plain = its
+    // own color) — the unmistakable "this window is closing" tell.
+    _drawTimerRing(canvas, r, b.fuse, golden ? _goldHi : b.color);
 
     // String tail with a small knot.
     final stringPaint = Paint()
@@ -497,6 +522,23 @@ class ArcherRenderer {
         ..strokeWidth = math.max(1.0, r * 0.07)
         ..color = _blend(baseColor, _black, 0.35).withValues(alpha: 0.8),
     );
+
+    // BULLSEYE CORE: a small concentric target ring + center dot so the precision
+    // reward (a center strike) has a visible mark to aim for — not invisible.
+    if (b.coreFrac > 0) {
+      final cr = r * b.coreFrac.clamp(0.05, 0.9);
+      final coreCol = golden ? _goldHi : _blend(baseColor, _white, 0.55);
+      canvas.drawCircle(
+        Offset.zero,
+        cr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, r * 0.06)
+          ..color = coreCol.withValues(alpha: 0.7),
+      );
+      canvas.drawCircle(
+          Offset.zero, math.max(1.0, cr * 0.28), Paint()..color = coreCol);
+    }
 
     canvas.drawOval(
       Rect.fromCenter(
@@ -643,37 +685,92 @@ class ArcherRenderer {
     canvas.restore();
   }
 
-  // ── Aim preview (the drag-aim trajectory + power) ────────────────────────────
+  // ── Aim aid (a SHORT launch STUB + power gauge — NOT a landing arc) ──────────
 
-  /// While a player is drawing, show a dotted ARC of where the arrow would land
-  /// (the gravity+wind path computed by the sim) fading along its length, with a
-  /// reticle at the end. An empty [trajectory] (no usable draw) draws nothing —
-  /// so a bare tap shows no shot. The dots brighten with [a.draw] (power).
-  static void drawAimPreview(
-      Canvas canvas, ArcherView a, List<Offset> trajectory) {
-    if (trajectory.length < 2) return;
+  /// While a player is drawing, show only a SHORT directional STUB of the launch
+  /// (a few dots along the initial heading, fading out within the first third of
+  /// flight) and a POWER GAUGE arc at the bow — NOT a full trajectory and NO
+  /// landing reticle. The player JUDGES the lob + leads the target themselves.
+  /// An empty [stub] (no usable draw) draws nothing — a bare tap shows nothing.
+  static void drawAimPreview(Canvas canvas, ArcherView a, List<Offset> stub) {
+    if (stub.length < 2) return;
     final ready = a.draw.clamp(0.0, 1.0);
+    final origin = stub.first;
+    final n = stub.length;
+
+    // The stub dots fade hard toward the end so they read as "launch heading",
+    // not "where it lands". The tail third is barely visible.
     final dot = Paint()..style = PaintingStyle.fill;
-    final n = trajectory.length;
     for (var i = 0; i < n; i++) {
       final f = i / (n - 1);
-      final fade = (1 - f) * (0.35 + 0.45 * ready);
+      // Cubic falloff → only the first third has real presence.
+      final taper = (1 - f) * (1 - f) * (1 - f);
+      final fade = taper * (0.45 + 0.45 * ready);
       dot.color = a.color.withValues(alpha: fade.clamp(0.0, 1.0));
-      final rad = (2.6 - 1.4 * f) * a.scale;
-      canvas.drawCircle(trajectory[i], math.max(1.0, rad), dot);
+      final rad = (3.0 - 1.8 * f) * a.scale;
+      canvas.drawCircle(stub[i], math.max(0.8, rad), dot);
     }
-    final end = trajectory.last;
-    canvas.drawCircle(
-      end,
-      7 * a.scale,
+
+    // A small arrowhead a short way along the heading shows the launch direction
+    // crisply (so the angle reads even as the dots fade).
+    final dir = (stub[1] - origin);
+    final dl = dir.distance;
+    if (dl > 1e-3) {
+      final u = dir / dl;
+      final perp = Offset(-u.dy, u.dx);
+      final tip = origin + u * (18 * a.scale);
+      final back = tip - u * (7 * a.scale);
+      final head = Path()
+        ..moveTo(tip.dx, tip.dy)
+        ..lineTo(back.dx + perp.dx * 3.2 * a.scale,
+            back.dy + perp.dy * 3.2 * a.scale)
+        ..lineTo(back.dx - perp.dx * 3.2 * a.scale,
+            back.dy - perp.dy * 3.2 * a.scale)
+        ..close();
+      canvas.drawPath(
+          head,
+          Paint()
+            ..color =
+                a.color.withValues(alpha: (0.5 + 0.4 * ready).clamp(0.0, 1.0)));
+    }
+
+    _drawPowerGauge(canvas, a, origin, ready);
+  }
+
+  /// A compact POWER GAUGE: an arc at the bow that fills 0..1 with the draw, so
+  /// the player reads HOW HARD they're lobbing without being told where it lands.
+  static void _drawPowerGauge(
+      Canvas canvas, ArcherView a, Offset origin, double power) {
+    final r = 16.0 * a.scale;
+    final rect = Rect.fromCircle(center: origin, radius: r);
+    // Faint full track.
+    canvas.drawArc(
+      rect,
+      -math.pi * 0.5 - math.pi * 0.7,
+      math.pi * 1.4,
+      false,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = a.color.withValues(alpha: (0.4 + 0.4 * ready).clamp(0.0, 1.0)),
+        ..strokeWidth = math.max(2.0, 2.6 * a.scale)
+        ..strokeCap = StrokeCap.round
+        ..color = _white.withValues(alpha: 0.18),
     );
-    // Small power pip at the reticle so the draw strength reads.
-    canvas.drawCircle(end, 7 * a.scale * ready,
-        Paint()..color = a.color.withValues(alpha: 0.5));
+    // Filled portion: green → gold → red as the draw approaches full power.
+    final fillCol = Color.lerp(
+        Color.lerp(const Color(0xFF54E08A), _gold, (power * 1.4).clamp(0.0, 1.0))!,
+        _fletch,
+        ((power - 0.7) / 0.3).clamp(0.0, 1.0))!;
+    canvas.drawArc(
+      rect,
+      -math.pi * 0.5 - math.pi * 0.7,
+      math.pi * 1.4 * power,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(2.5, 3.4 * a.scale)
+        ..strokeCap = StrokeCap.round
+        ..color = fillCol.withValues(alpha: 0.95),
+    );
   }
 
   static void drawArcherBody(Canvas canvas, StickFigure figure, Offset root) {
@@ -829,13 +926,53 @@ class ArcherRenderer {
     );
   }
 
-  /// A combo badge floating above an archer when its streak is hot (≥2).
+  /// A combo badge floating above an archer when its streak is hot (≥2). It
+  /// ESCALATES with the multiplier: rising ▲ chevrons, a brighter/larger pill at
+  /// higher combos, plus a bright flash-ring on a recent bullseye — the visible
+  /// "you're chaining precision" reward.
   static void drawComboBadge(Canvas canvas, ArcherView a) {
     if (a.combo < 2) return;
     final up = -a.side.outward;
     final at = a.base + up * (66 * a.scale);
-    final pulse = 1.0 + 0.12 * math.sin(a.combo.toDouble());
-    _drawBadgeText(canvas, at, 'x${a.combo}', 22 * a.scale * pulse, a.color);
+    final tier = (a.combo - 1).clamp(0, 8); // 1 chevron per step over 1
+    final pulse = 1.0 + 0.06 * tier + 0.1 * math.sin(a.combo.toDouble());
+    final fs = (20.0 + 2.0 * tier) * a.scale * pulse;
+    final hot = a.combo >= 4;
+    final badgeCol = hot ? _gold : a.color;
+
+    // A recent bullseye blooms a bright ring behind the badge.
+    final bf = a.bullseye.clamp(0.0, 1.0);
+    if (bf > 0.01) {
+      canvas.drawCircle(
+        at,
+        fs * (1.1 + 0.8 * (1 - bf)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, fs * 0.12)
+          ..color = _goldHi.withValues(alpha: (0.7 * bf).clamp(0.0, 1.0)),
+      );
+    }
+
+    // Rising chevrons above the pill — one per combo step, brighter as they go.
+    final chev = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.4, fs * 0.1)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    for (var i = 0; i < tier; i++) {
+      final cy = at.dy - fs * (0.95 + i * 0.34);
+      final wHalf = fs * 0.30;
+      final h = fs * 0.18;
+      final alpha = (0.45 + 0.55 * (i + 1) / tier).clamp(0.0, 1.0);
+      chev.color = badgeCol.withValues(alpha: alpha);
+      final p = Path()
+        ..moveTo(at.dx - wHalf, cy + h)
+        ..lineTo(at.dx, cy - h)
+        ..lineTo(at.dx + wHalf, cy + h);
+      canvas.drawPath(p, chev);
+    }
+
+    _drawBadgeText(canvas, at, 'x${a.combo}', fs, badgeCol);
   }
 
   // ── HUD: per-player ammo + score + objective (screen space) ─────────────────

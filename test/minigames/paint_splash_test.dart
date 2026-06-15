@@ -29,6 +29,8 @@ void main() {
     return n;
   }
 
+  // ── Invariants: finish / ranking / pacing for 1..4 players ──────────────────
+
   test('four bots finish with a full ranking', () {
     final g = PaintSplash()..init(ctxFor(4, 7));
     runToEnd(g);
@@ -57,7 +59,7 @@ void main() {
     }
   });
 
-  test('bots roam + spray on their own, covering ground over the round', () {
+  test('bots roam + tap on their own, covering ground over the round', () {
     final g = PaintSplash()..init(ctxFor(4, 7));
     runToEnd(g);
     // Each self-driving bot should own a meaningful chunk of the shared board.
@@ -66,13 +68,11 @@ void main() {
     }
   });
 
-  // ── Grid economy (the lever that makes blind spraying lose) ─────────────────
+  // ── Grid economy (the substrate the chain rides on) ─────────────────────────
 
   test('overpaint flips a cell to the new owner (grid steal mechanic)', () {
-    // The structural heart of the redesign: the canvas is shared and paint is
-    // last-writer-wins, so painting over a rival's cell STEALS it. Verified
-    // directly on the grid: player 1 owns a spot, then player 0 paints the same
-    // spot and the cell's owner flips to 0, while player 1's coverage drops.
+    // The structural heart: the canvas is shared and paint is last-writer-wins,
+    // so a splat over a rival's cell STEALS it. Verified directly on the grid.
     final grid = AreaFillGrid(cols: 30, rows: 38);
     const at = Offset(0.5, 0.5);
     const r = 0.06;
@@ -80,11 +80,9 @@ void main() {
     grid.paintCircle(1, at, r);
     final ownedByOneBefore = grid.coverageOf(1);
     expect(ownedByOneBefore, greaterThan(0));
-    // The exact center cell belongs to player 1.
     expect(grid.ownerAt(15, 19), 1);
 
     grid.paintCircle(0, at, r);
-    // The overlapping cells flipped from 1 to 0.
     expect(grid.ownerAt(15, 19), 0,
         reason: 'painting over a rival cell must transfer ownership');
     expect(grid.coverageOf(0), greaterThan(0));
@@ -93,11 +91,8 @@ void main() {
   });
 
   test('paintCircleDelta reports gained / stolen / wasted correctly', () {
-    // The ink economy is charged from this accounting, so it must be exact:
-    //  * First stroke on empty canvas: every cell is GAINED, none stolen/wasted.
-    //  * Re-coating the SAME spot: nothing gained, every cell WASTED (this is
-    //    what drains a parked brush's ink for no new ground).
-    //  * A rival painting over it: those cells are gained AND counted as stolen.
+    // The chain extension test (gained/touched) and the dud-on-waste behavior
+    // are charged from this accounting, so it must be exact.
     final grid = AreaFillGrid(cols: 30, rows: 38);
     const at = Offset(0.5, 0.5);
     const r = 0.06;
@@ -110,7 +105,7 @@ void main() {
     final recoat = grid.paintCircleDelta(0, at, r);
     expect(recoat.gained, 0, reason: 're-coating my own cells gains nothing');
     expect(recoat.wasted, greaterThan(0),
-        reason: 'parking on owned cells is pure waste');
+        reason: 'mashing owned cells is pure waste (breaks the chain)');
 
     final raid = grid.paintCircleDelta(1, at, r);
     expect(raid.gained, greaterThan(0));
@@ -118,32 +113,25 @@ void main() {
         reason: 'every gained cell here was taken from a rival');
   });
 
-  test('overpaint via paintCircle still works (back-compat delegation)', () {
-    // paintCircle now delegates to paintCircleDelta; its observable behavior
-    // (last-writer-wins ownership) must be unchanged.
-    final grid = AreaFillGrid(cols: 8, rows: 8);
-    grid.paintCircle(2, const Offset(0.5, 0.5), 1.0); // cover all
-    expect(grid.coverageOf(2), grid.totalCells);
-    grid.paintCircle(3, const Offset(0.5, 0.5), 1.0); // steal all
-    expect(grid.coverageOf(3), grid.totalCells);
-    expect(grid.coverageOf(2), 0);
-  });
-
-  test('a player paints over a rival on the shared canvas and steals turf', () {
+  test('a player taps over a rival on the shared canvas and steals turf', () {
     // Game-level proof of the steal on ONE shared canvas. Two humans, identical
     // setup. Final scores are each player's owned-cell count at the buzzer.
     //
-    //  * Control: player 1 holds the centre for ~1s and nobody contests it →
-    //    player 1 ends owning that whole patch (its uncontested coverage).
-    //  * Raided: player 1 holds the centre for ~1s, THEN player 0 holds the SAME
-    //    centre for ~1s, painting over it → player 0 ends owning the overlap and
-    //    player 1 ends owning strictly LESS than in the control run.
+    //  * Control: player 1 chain-taps the centre cluster; nobody contests it.
+    //  * Raided: player 1 does the same, THEN player 0 taps the SAME cluster,
+    //    painting over it → player 1 ends owning strictly LESS than in control.
     //
-    // Deterministic: fixed seed, fixed inputs, no bots, no other touches. Both
-    // ~1s holds stay above the ink sputter floor, so the steal is clean.
-    const center = Offset(0.5, 0.5);
-    const phaseA = 60; // ~1s: player 1 paints the centre
-    const phaseB = 120; // then ~1s: (optionally) player 0 overpaints it
+    // Deterministic: fixed seed, fixed inputs, no bots. Taps are spaced so the
+    // can never sputters, so the steal is clean.
+    const cluster = [
+      Offset(0.48, 0.48),
+      Offset(0.52, 0.50),
+      Offset(0.50, 0.53),
+      Offset(0.47, 0.52),
+    ];
+    const tapEvery = 20; // frames between taps (above the ink floor)
+    const phaseATaps = 6; // player 1 lays this many taps first
+    const phaseBStart = phaseATaps * tapEvery + 30;
 
     ({int p0, int p1}) runSteal({required bool rivalRaids}) {
       final g = PaintSplash()
@@ -156,18 +144,20 @@ void main() {
       var frames = 0;
       while (g.status != MiniGameStatus.finished && frames++ < 60 * 45) {
         g.update(1 / 60);
-        if (frames <= phaseA) {
-          g.onInput(frames == 1
-              ? const PlayerInput(
-                  playerId: 1, phase: InputPhase.down, normPos: center)
-              : const PlayerInput(
-                  playerId: 1, phase: InputPhase.holdTick, dt: 1 / 60));
-        } else if (rivalRaids && frames <= phaseB) {
-          g.onInput(frames == phaseA + 1
-              ? const PlayerInput(
-                  playerId: 0, phase: InputPhase.down, normPos: center)
-              : const PlayerInput(
-                  playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+        // Player 1 taps the cluster in phase A.
+        if (frames <= phaseATaps * tapEvery && frames % tapEvery == 0) {
+          final at = cluster[(frames ~/ tapEvery) % cluster.length];
+          g.onInput(
+              PlayerInput(playerId: 1, phase: InputPhase.down, normPos: at));
+        }
+        // Player 0 (optionally) raids the same cluster in phase B.
+        if (rivalRaids &&
+            frames > phaseBStart &&
+            frames <= phaseBStart + phaseATaps * tapEvery &&
+            frames % tapEvery == 0) {
+          final at = cluster[(frames ~/ tapEvery) % cluster.length];
+          g.onInput(
+              PlayerInput(playerId: 0, phase: InputPhase.down, normPos: at));
         }
       }
       expect(g.status, MiniGameStatus.finished);
@@ -185,30 +175,33 @@ void main() {
             '(control=${control.p1} raided=${raided.p1})');
   });
 
-  test('held spray accumulates coverage into the score', () {
-    final g = PaintSplash()..init(ctxFor(2, 9));
+  test('a tap accumulates coverage into the score', () {
+    // A solo human taps a few fresh spots; their score must reflect the paint.
+    final g = PaintSplash()
+      ..init(MiniGameContext(
+        players: [PlayerSlot.defaults(0)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(9),
+        zones: ZoneLayout.forPlayers(1),
+      ));
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
       g.update(1 / 60);
-      // Hold a touch for player 0: a down then per-frame held ticks keep the
-      // brush spraying (mirrors a finger held on the screen).
-      if (n == 1) {
-        g.onInput(const PlayerInput(
-            playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.75)));
-      } else {
-        g.onInput(const PlayerInput(
-            playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+      if (n % 20 == 0 && n < 60 * 10) {
+        final i = n ~/ 20;
+        final at = Offset(0.2 + 0.1 * (i % 6), 0.2 + 0.1 * ((i ~/ 6) % 6));
+        g.onInput(PlayerInput(playerId: 0, phase: InputPhase.down, normPos: at));
       }
     }
     expect(g.status, MiniGameStatus.finished);
     expect(g.scores.of(0), greaterThan(0));
   });
 
-  // ── THE LAW: blind hold-spray must LOSE to deliberate play ──────────────────
+  // ── THE LAW: a one-spot masher / random tapper LOSES to a measured chainer ──
 
   // A solo human (no bots → the final score is exactly this player's coverage,
-  // fully deterministic). [stopFrame], when set, lifts the finger at that frame
-  // so a comparison can be cut off before the free-flow finale.
+  // fully deterministic). [stopFrame], when set, stops all input at that frame
+  // so a comparison can be cut off before the free-flow GOLD RUSH finale.
   int runSolo(
     int seed, {
     required void Function(PaintSplash g, int frame) drive,
@@ -224,108 +217,177 @@ void main() {
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
       g.update(1 / 60);
-      if (stopFrame != null && n > stopFrame) {
-        g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
-        continue;
-      }
+      if (stopFrame != null && n > stopFrame) continue; // idle after cutoff
       drive(g, n);
     }
     expect(g.status, MiniGameStatus.finished);
     return g.scores.of(0).toInt();
   }
 
-  // BLIND: press down once at the centre and HOLD forever, never moving. The can
-  // drains and then SPUTTERS (dud splats that paint nothing), and every real
-  // splat re-coats cells it already owns (full waste surcharge) — so it stalls
-  // at one small patch.
-  void driveBlindHold(PaintSplash g, int frame) {
-    g.onInput(frame == 1
-        ? const PlayerInput(
-            playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5))
-        : const PlayerInput(playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+  // MASHER: tap the SAME spot as fast as possible (every frame). Each tap lands
+  // on the same grid cell → the chain BREAKS every time (never grows past 0),
+  // and the rapid tapping drains the ink can so most taps SPUTTER (dud radius,
+  // no grid paint). The board barely grows beyond one small patch.
+  void driveOneSpotMasher(PaintSplash g, int frame) {
+    g.onInput(const PlayerInput(
+        playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5)));
   }
 
-  // MANAGED: deliberate play. Real held BURSTS (down, then holdTicks so paint
-  // flows on the natural ~0.085s cadence) separated by long RELEASES so the can
-  // stays full and NEVER sputters, AND the brush hops to a FRESH grid cell on
-  // every burst (a serpentine sweep). 12 held + 24 released frames keeps ink
-  // net-positive (release ≫ the 1.54:1 ratio the recharge needs), so every
-  // splat lands ink-cheap on new ground. This is "manage ink + target fresh
-  // turf" by the book.
-  void driveManagedSweep(PaintSplash g, int frame) {
-    const burst = 12;
-    const rest = 24;
-    const cols = 6;
-    const rows = 6;
-    final phase = frame % (burst + rest);
-    if (phase >= burst) {
-      g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
-      return;
-    }
-    final cell = frame ~/ (burst + rest);
-    final gx = 0.1 + 0.8 * ((cell % cols) / (cols - 1));
-    final gy = 0.1 + 0.8 * (((cell ~/ cols) % rows) / (rows - 1));
-    final at = Offset(gx, gy);
-    // First frame of each burst: a fresh DOWN at the new cell (lays one splat
-    // immediately + steers there). Following burst frames: holdTicks keep it
-    // flowing at the spray cadence without re-snapping the splat timer.
-    g.onInput(phase == 0
-        ? PlayerInput(playerId: 0, phase: InputPhase.down, normPos: at)
-        : const PlayerInput(playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+  // CHAINER: deliberate play. Tap a FRESH grid cell on a steady ~0.33s cadence
+  // (20 frames) — slow enough that the ink can never empties, fast enough to
+  // stay inside the chain window — walking a serpentine sweep so every tap is on
+  // new ground. This BUILDS and sustains a long chain, so the splats swell and
+  // each lands ink-cheap on fresh turf. "Read where the fresh turf is + keep the
+  // combo alive" by the book.
+  void driveMeasuredChainer(PaintSplash g, int frame) {
+    const tapEvery = 20; // frames between taps (≈0.33s)
+    if (frame % tapEvery != 0) return;
+    const cols = 8;
+    const rows = 8;
+    final cell = frame ~/ tapEvery;
+    // Serpentine so consecutive cells are always adjacent-but-different (a real
+    // moving sweep), never re-tapping the same spot.
+    final r = (cell ~/ cols) % rows;
+    var cx = cell % cols;
+    if (r.isOdd) cx = cols - 1 - cx; // reverse every other row
+    final gx = 0.1 + 0.8 * (cx / (cols - 1));
+    final gy = 0.1 + 0.8 * (r / (rows - 1));
+    g.onInput(
+        PlayerInput(playerId: 0, phase: InputPhase.down, normPos: Offset(gx, gy)));
   }
 
-  test('a blind hold-sprayer ends with LESS coverage than a managed player', () {
-    // The headline invariant: no-skill holding cannot match deliberate ink + aim.
+  // RANDOM TAPPER: taps every frame at a pseudo-random spot. It moves around (so
+  // it isn't the masher) but has no cadence discipline — it drains the can and
+  // sputters, and its erratic hops frequently miss the chain window / re-hit
+  // owned turf, so it never builds a sustained chain.
+  void driveRandomTapper(PaintSplash g, int frame) {
+    // Cheap deterministic hash → a spot in [0.08, 0.92]^2.
+    final h = (frame * 2654435761) & 0x7fffffff;
+    final gx = 0.08 + 0.84 * ((h % 1000) / 1000.0);
+    final gy = 0.08 + 0.84 * (((h ~/ 1000) % 1000) / 1000.0);
+    g.onInput(
+        PlayerInput(playerId: 0, phase: InputPhase.down, normPos: Offset(gx, gy)));
+  }
+
+  test('a one-spot masher ends with FAR less coverage than a measured chainer',
+      () {
+    // The headline invariant: mashing one spot cannot match deliberate chaining.
     // Same seed for both so the only difference is the input policy.
-    final blind = runSolo(11, drive: driveBlindHold);
-    final managed = runSolo(11, drive: driveManagedSweep);
+    final masher = runSolo(11, drive: driveOneSpotMasher);
+    final chainer = runSolo(11, drive: driveMeasuredChainer);
 
-    expect(blind, greaterThan(0), reason: 'sanity: the blind brush paints SOME');
-    expect(managed, greaterThan(blind),
-        reason: 'managed ink + fresh-turf aim must beat blind holding '
-            '(blind=$blind managed=$managed)');
-    // And the gap must be decisive, not a coin-flip: a sweeper covers many times
-    // the footprint a single parked, sputtering brush can.
-    expect(managed, greaterThan(blind * 3),
-        reason: 'deliberate play should dominate, not edge out, blind holding '
-            '(blind=$blind managed=$managed)');
+    expect(masher, greaterThan(0), reason: 'sanity: the masher paints SOME');
+    expect(chainer, greaterThan(masher),
+        reason: 'a chainer must beat a one-spot masher '
+            '(masher=$masher chainer=$chainer)');
+    // And the gap must be decisive, not a coin-flip: chaining fresh turf covers
+    // many times the footprint a single mashed, sputtering spot can.
+    expect(chainer, greaterThan(masher * 3),
+        reason: 'deliberate chaining should dominate, not edge out, mashing '
+            '(masher=$masher chainer=$chainer)');
   });
 
-  test('the ink economy alone (no finale) already punishes blind holding', () {
-    // Tighter version of the law that EXCLUDES the DOUBLE INK finale, proving
-    // the ink economy ALONE — not the free-flow climax — is what defeats blind
-    // holding. Both runs lift the finger at 22s (before the 24s..30s free-flow
-    // window) and stay idle after, so the finale paints nothing for EITHER run;
-    // the whole difference comes from the first 22s of input policy.
+  test('a random tapper also loses decisively to a measured chainer', () {
+    // Even an input that moves around the board (so it isn't trivially the
+    // one-spot masher) loses badly without cadence + chain discipline: frantic
+    // tapping drains the can so it self-throttles to a few COLD dots. Cut at 22s
+    // (pre-finale) so the deliberately spam-friendly free-flow GOLD RUSH climax
+    // — designed to let a trailing kid mash back into it — isn't what's measured.
     const cutoffFrame = 22 * 60;
-    final blind = runSolo(21, drive: driveBlindHold, stopFrame: cutoffFrame);
-    final managed =
-        runSolo(21, drive: driveManagedSweep, stopFrame: cutoffFrame);
-    expect(managed, greaterThan(blind),
-        reason: 'paced ink + fresh-turf sweep beats blind holding pre-finale '
-            '(blind=$blind managed=$managed)');
+    final random = runSolo(15, drive: driveRandomTapper, stopFrame: cutoffFrame);
+    final chainer =
+        runSolo(15, drive: driveMeasuredChainer, stopFrame: cutoffFrame);
+    expect(random, greaterThan(0),
+        reason: 'sanity: the random tapper paints SOME');
+    expect(chainer, greaterThan(random * 2),
+        reason: 'a measured chainer must clearly out-cover a spam tapper '
+            '(random=$random chainer=$chainer)');
   });
 
-  test('DOUBLE INK: a single splat covers more in the finale than early', () {
-    // CLIMAX mechanic. One quick tap (a single splat) at the same spot covers
-    // strictly MORE cells during the DOUBLE INK finale than the same tap early
-    // in the round, because the finale fattens the splat radius. Solo human so
-    // the score is exactly that one player's coverage.
+  test('the chain economy alone (no finale) already punishes mashing', () {
+    // Tighter version that EXCLUDES the GOLD RUSH finale, proving the chain +
+    // ink economy ALONE — not the free-flow climax — is what defeats mashing.
+    // Both runs stop input at 22s (before the 24s..30s free-flow window) and
+    // stay idle, so the finale paints nothing for EITHER run.
+    const cutoffFrame = 22 * 60;
+    final masher =
+        runSolo(21, drive: driveOneSpotMasher, stopFrame: cutoffFrame);
+    final chainer =
+        runSolo(21, drive: driveMeasuredChainer, stopFrame: cutoffFrame);
+    expect(chainer, greaterThan(masher),
+        reason: 'chaining fresh turf beats mashing pre-finale '
+            '(masher=$masher chainer=$chainer)');
+    expect(chainer, greaterThan(masher * 3),
+        reason: 'the pre-finale gap must be decisive '
+            '(masher=$masher chainer=$chainer)');
+  });
+
+  test('chaining a sweep covers far more than tapping one spot the same number '
+      'of times', () {
+    // Direct mechanic proof, finale excluded. Both lay the SAME number of taps
+    // on the SAME cadence (so ink + tap-count are equal); the ONLY difference is
+    // WHERE: a fresh-cell sweep (builds a chain → fat splats) vs re-tapping a
+    // single cell (chain stays 0 → base/dud splats). Solo human, one seed.
+    const tapEvery = 20;
+    const taps = 24; // ends ~8s in, well before the 24s finale
+    const cutoff = taps * tapEvery + 5;
+
+    int coverageFor({required bool sweep}) {
+      final g = PaintSplash()
+        ..init(MiniGameContext(
+          players: [PlayerSlot.defaults(0)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(30),
+          zones: ZoneLayout.forPlayers(1),
+        ));
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+        g.update(1 / 60);
+        if (n > cutoff || n % tapEvery != 0) continue;
+        final i = n ~/ tapEvery;
+        if (i >= taps) continue;
+        late Offset at;
+        if (sweep) {
+          const cols = 6;
+          final r = (i ~/ cols) % cols;
+          var cx = i % cols;
+          if (r.isOdd) cx = cols - 1 - cx;
+          at = Offset(0.12 + 0.76 * (cx / (cols - 1)),
+              0.12 + 0.76 * (r / (cols - 1)));
+        } else {
+          at = const Offset(0.5, 0.5); // always the same cell
+        }
+        g.onInput(PlayerInput(playerId: 0, phase: InputPhase.down, normPos: at));
+      }
+      expect(g.status, MiniGameStatus.finished);
+      return g.scores.of(0).toInt();
+    }
+
+    final oneSpot = coverageFor(sweep: false);
+    final swept = coverageFor(sweep: true);
+    expect(swept, greaterThan(oneSpot * 3),
+        reason: 'same taps, same cadence: a fresh-cell chain must dwarf '
+            're-tapping one spot (oneSpot=$oneSpot swept=$swept)');
+  });
+
+  test('GOLD RUSH: a single tap covers more in the finale than early', () {
+    // CLIMAX mechanic. One quick tap at the same spot covers strictly MORE cells
+    // during the GOLD RUSH finale than the same tap early in the round, because
+    // the finale fattens the splat radius. Solo human so the score is exactly
+    // that one player's coverage.
     int coverageForSingleTapAt(double warmupSeconds) {
-      final ctx = MiniGameContext(
-        players: [PlayerSlot.defaults(0)], // lone human
-        arena: const Size(800, 1200),
-        rng: SeededRng(9),
-        zones: ZoneLayout.forPlayers(1),
-      );
-      final g = PaintSplash()..init(ctx);
+      final g = PaintSplash()
+        ..init(MiniGameContext(
+          players: [PlayerSlot.defaults(0)],
+          arena: const Size(800, 1200),
+          rng: SeededRng(9),
+          zones: ZoneLayout.forPlayers(1),
+        ));
       var n = 0;
       var tapped = false;
       while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
         g.update(1 / 60);
         if (!tapped && n / 60.0 >= warmupSeconds) {
-          // A single down splat at the zone center; do not hold (no follow-up
-          // ticks) so exactly one splat lands and we measure its footprint.
           g.onInput(const PlayerInput(
               playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5)));
           tapped = true;
@@ -335,67 +397,23 @@ void main() {
       return g.scores.of(0).toInt();
     }
 
-    // Early single tap (~1s in, normal radius) vs a tap inside the last ~6s
-    // DOUBLE INK window of the 30s round (~27s in, fattened radius).
+    // Early single tap (~1s in, base radius) vs a tap inside the last ~6s GOLD
+    // RUSH window of the 30s round (~27s in, fattened radius).
     final early = coverageForSingleTapAt(1.0);
     final finale = coverageForSingleTapAt(27.0);
     expect(finale, greaterThan(early),
-        reason: 'a DOUBLE INK splat must paint a bigger footprint '
+        reason: 'a GOLD RUSH tap must paint a bigger footprint '
             '(early=$early finale=$finale)');
-  });
-
-  test('finale ink is free: a hold through DOUBLE INK out-covers a dry early '
-      'hold', () {
-    // During the last 6s the can is topped off every frame, so a held brush in
-    // the finale keeps laying full (fattened) splats with no dud sputter. A 5s
-    // hold spanning the finale must out-cover a 5s early hold that runs the can
-    // dry — the free-flow finale lifts the ink ceiling for the climax.
-    int coverageForHoldStartingAt(double startSeconds) {
-      final g = PaintSplash()
-        ..init(MiniGameContext(
-          players: [PlayerSlot.defaults(0)],
-          arena: const Size(800, 1200),
-          rng: SeededRng(33),
-          zones: ZoneLayout.forPlayers(1),
-        ));
-      var n = 0;
-      var started = false;
-      final startFrame = (startSeconds * 60).round();
-      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
-        g.update(1 / 60);
-        if (n >= startFrame && n < startFrame + 60 * 5) {
-          g.onInput(!started
-              ? const PlayerInput(
-                  playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5))
-              : const PlayerInput(
-                  playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
-          started = true;
-        } else if (started) {
-          g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
-        }
-      }
-      expect(g.status, MiniGameStatus.finished);
-      return g.scores.of(0).toInt();
-    }
-
-    // A 5s hold at one spot early (~2s, runs dry → sputters) vs a 5s hold that
-    // runs through the finale (~25s.. → free flow, fattened, no sputter).
-    final earlyHold = coverageForHoldStartingAt(2.0);
-    final finaleHold = coverageForHoldStartingAt(25.0);
-    expect(finaleHold, greaterThan(earlyHold),
-        reason: 'the free-flow + fattened finale must out-cover an early dry '
-            'hold (early=$earlyHold finale=$finaleHold)');
   });
 
   // ── Bots scale with difficulty (managed bots beat sloppy ones) ──────────────
 
   test('paint bots fill the board and resolve at both difficulties', () {
     // The skilled-vs-spam ordering (the design law) is proven by the human
-    // managed-vs-blind ink-economy tests above. Difficulty is session-wide (one
-    // BotProfile per game), so a head-to-head hard-vs-easy bot can't be staged
-    // inside one game; here we just sanity-check that an all-bot board fills up
-    // and the round resolves at both ends of the dial. (Bot ink-discipline feel
-    // is a tuning pass, not a correctness invariant.)
+    // chainer-vs-masher tests above. Difficulty is session-wide (one BotProfile
+    // per game), so a head-to-head hard-vs-easy bot can't be staged inside one
+    // game; here we sanity-check that an all-bot board fills up and the round
+    // resolves at both ends of the dial.
     for (final d in <BotDifficulty>[BotDifficulty.easy, BotDifficulty.hard]) {
       for (final s in <int>[1, 3, 5]) {
         final g = PaintSplash()..init(ctxFor(4, s, difficulty: d));
@@ -411,6 +429,8 @@ void main() {
     }
   });
 
+  // ── Render never throws ─────────────────────────────────────────────────────
+
   test('render does not throw', () {
     final g = PaintSplash()..init(ctxFor(4, 3));
     final canvas = Canvas(PictureRecorder());
@@ -421,19 +441,25 @@ void main() {
     expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
   });
 
-  test('render does not throw across the whole round (incl. finale cues)', () {
-    // Drives a full round with a held human so the DOUBLE INK banner, lead-flip
-    // slow-mo and final WINNER bigMoment all fire, rendering each frame.
+  test('render does not throw across the whole round (incl. finale cues + chain '
+      'badge + break dud)', () {
+    // Drives a full round with a human who BOTH chains (fresh taps) and breaks
+    // (re-tapping one spot) so the chain badge, the ▼ BREAK dud, the GOLD RUSH
+    // banner, the lead-flip slow-mo and the final WINNER bigMoment all render.
     final g = PaintSplash()..init(ctxFor(3, 8));
     final canvas = Canvas(PictureRecorder());
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
       g.update(1 / 60);
-      g.onInput(n == 1
-          ? const PlayerInput(
-              playerId: 0, phase: InputPhase.down, normPos: Offset(0.4, 0.4))
-          : const PlayerInput(
-              playerId: 0, phase: InputPhase.holdTick, dt: 1 / 60));
+      if (n % 14 == 0) {
+        // Alternate: chain to a fresh cell, then mash the centre to break it.
+        final isChain = (n ~/ 14).isEven;
+        final at = isChain
+            ? Offset(0.15 + 0.7 * (((n ~/ 14) % 6) / 5.0),
+                0.15 + 0.7 * (((n ~/ 14) % 4) / 3.0))
+            : const Offset(0.5, 0.5);
+        g.onInput(PlayerInput(playerId: 0, phase: InputPhase.down, normPos: at));
+      }
       expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
     }
     // One more render on the finished frame (winner banner + confetti).

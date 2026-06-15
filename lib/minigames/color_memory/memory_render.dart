@@ -3,6 +3,28 @@ import 'dart:ui';
 
 import '../../art/stick/stick_figure.dart';
 
+/// Immutable per-player snapshot for the live race track. The game builds these
+/// each frame from its pad state; the renderer never mutates them.
+class RaceRunner {
+  final int playerId;
+  final int number; // 1-based seat label drawn on the marker
+  final Color accent;
+  final double t; // 0..1 progress through this round's pattern
+  final bool alive;
+  final bool done; // cleared the whole pattern this round
+  final double koFade; // 0..1 fresh-elimination flash
+
+  const RaceRunner({
+    required this.playerId,
+    required this.number,
+    required this.accent,
+    required this.t,
+    required this.alive,
+    required this.done,
+    this.koFade = 0,
+  });
+}
+
 /// Pure-Canvas rendering for `ColorMemory` — a glowing arcade Simon stage.
 ///
 /// Holds NO game state and never mutates the simulation: callers pass plain
@@ -32,6 +54,10 @@ class MemoryRenderer {
   static const Color _watchBanner = Color(0xFF6FA8FF); // calm "WATCH" blue
   static const Color _turnBanner = Color(0xFF54E08A); // active "YOUR TURN" green
   static const Color _pipDim = Color(0x33FFFFFF);
+  static const Color _trackInk = Color(0xFF0A1222); // race-track rail fill
+  static const Color _trackEdge = Color(0x3372A6FF); // race-track rail rim
+  static const Color _crown = Color(0xFFFFD24A); // leader crown gold
+  static const Color _koRed = Color(0xFFE5484D); // knocked-out marker red
 
   /// The four Simon pad colors. Index 0..3 maps to a pad slot. Exposed so the
   /// game module references one source of truth for both logic and drawing.
@@ -63,6 +89,16 @@ class MemoryRenderer {
   static const double _pipRadiusFactor = 0.010; // progress pip radius / blockW
   static const double _bannerFontFrac = 0.052; // phase banner font / width
   static const double _roundFontFrac = 0.030; // round counter font / width
+
+  // ── Live race track (the silo-breaker) ─────────────────────────────────────
+  static const double _trackTopFrac = 0.235; // race rail vertical position
+  static const double _trackLeftFrac = 0.14; // rail start / width
+  static const double _trackRightFrac = 0.86; // rail end / width
+  static const double _trackHeightFrac = 0.020; // rail thickness / height
+  static const double _runnerRadiusFrac = 0.016; // racer head radius / width
+  static const double _laneStepFrac = 0.026; // vertical gap between lanes / height
+  static const double _tensionVignFrac = 0.55; // closing-vignette inner radius scale
+  static const Color _vignTension = Color(0xFF0A0008); // tension vignette ink (warm dark)
 
   // Player mascot standing beside a cluster (reacts to the round).
   static const double _mascotSkeletonH = 52; // approx hero skeleton height (px)
@@ -763,6 +799,220 @@ class MemoryRenderer {
     // Root the pelvis above the foot line so the figure stands on the floor.
     figure.render(canvas, const Offset(0, -_mascotPelvisRise));
     canvas.restore();
+  }
+
+  // ── Live race track (each player's progress, side by side) ─────────────────
+
+  /// One racer on the shared progress track. [t] is 0..1 progress through the
+  /// pattern this round; [done] marks a cleared runner (parked at the flag);
+  /// [koFade] 0..1 is a fresh-elimination flash (a runner knocked off the rail).
+  static void drawRaceTrack(
+    Canvas canvas,
+    Size size,
+    List<RaceRunner> runners, {
+    required double pulse,
+    int leaderId = -1,
+  }) {
+    if (runners.isEmpty || size.width <= 2) return;
+    final left = size.width * _trackLeftFrac;
+    final right = size.width * _trackRightFrac;
+    final baseY = size.height * _trackTopFrac;
+    final railH = math.max(3.0, size.height * _trackHeightFrac);
+    final laneStep = size.height * _laneStepFrac;
+    final r = math.max(4.0, size.width * _runnerRadiusFrac);
+    final p = pulse.clamp(0.0, 1.0);
+
+    // Stack lanes centered on baseY so 1..4 runners read tidily.
+    final startY = baseY - (runners.length - 1) * laneStep / 2;
+
+    // Finish flag post on the right — the goal every runner races toward.
+    _drawFinishPost(canvas, right, startY - laneStep * 0.6,
+        startY + (runners.length - 1) * laneStep + laneStep * 0.6);
+
+    for (var i = 0; i < runners.length; i++) {
+      final run = runners[i];
+      final y = startY + i * laneStep;
+      final rail = Rect.fromLTRB(left, y - railH / 2, right, y + railH / 2);
+      final rr = RRect.fromRectAndRadius(rail, Radius.circular(railH / 2));
+
+      // Rail: dark groove + faint rim. A cleared/alive runner's travelled
+      // portion is tinted in their accent so the lead reads at a glance.
+      canvas.drawRRect(rr, Paint()..color = _trackInk.withValues(alpha: 0.85));
+      final t = run.t.clamp(0.0, 1.0);
+      if (run.alive && t > 0) {
+        final filled = Rect.fromLTRB(left, rail.top, left + (right - left) * t, rail.bottom);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(filled, Radius.circular(railH / 2)),
+          Paint()..color = run.accent.withValues(alpha: run.done ? 0.55 : 0.34),
+        );
+      }
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0
+          ..color = _trackEdge,
+      );
+
+      // Runner marker. Alive → bright accent head sliding along the rail; a
+      // knocked-out runner flashes red and sinks just below the rail so the
+      // table sees the elimination land on the shared track.
+      final x = left + (right - left) * t;
+      final koFade = run.koFade.clamp(0.0, 1.0);
+      final isDead = !run.alive;
+      final markY = isDead ? y + railH * 0.5 + r * 0.9 * koFade : y;
+      final markColor = isDead
+          ? Color.lerp(_koRed, _trackInk, 1 - koFade) ?? _koRed
+          : run.accent;
+
+      if (run.alive) {
+        // Soft glow halo (breathes with the shared pulse so the race feels live).
+        canvas.drawCircle(Offset(x, markY), r * (1.9 + 0.3 * p),
+            Paint()..color = run.accent.withValues(alpha: 0.18 + 0.10 * p));
+      } else if (koFade > 0.02) {
+        // Fresh KO pop on the rail.
+        canvas.drawCircle(Offset(x, markY), r * 2.2 * koFade,
+            Paint()..color = _koRed.withValues(alpha: 0.30 * koFade));
+      }
+      canvas.drawCircle(Offset(x, markY), r,
+          Paint()..color = markColor.withValues(alpha: isDead ? 0.5 + 0.5 * koFade : 1.0));
+      canvas.drawCircle(
+        Offset(x, markY),
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, r * 0.18)
+          ..color = _white.withValues(alpha: isDead ? 0.4 : 0.9),
+      );
+      // Player number on the head so the table maps marker → seat.
+      _drawText(canvas, '${run.number}', Offset(x, markY), r * 1.2,
+          isDead ? _white.withValues(alpha: 0.6) : _readableText(markColor),
+          weight: FontWeight.w900);
+
+      // Leader crown — a tiny gold wedge over the front-runner, so "who's ahead"
+      // is unmistakable across the room.
+      if (run.alive && run.playerId == leaderId && !run.done) {
+        _drawCrown(canvas, Offset(x, markY - r * 1.7), r * 0.7);
+      }
+      // A cleared runner gets a small check tick at the flag end.
+      if (run.alive && run.done) {
+        _drawCheck(canvas, Offset(x, markY), r * 0.55, run.accent);
+      }
+      // A freshly knocked-out runner shows a comic "OUT" puff.
+      if (isDead && koFade > 0.35) {
+        _drawText(canvas, 'OUT', Offset(x, markY - r * 1.9), r * 1.0,
+            _koRed.withValues(alpha: koFade), weight: FontWeight.w900);
+      }
+    }
+  }
+
+  static void _drawFinishPost(Canvas canvas, double x, double top, double bottom) {
+    final paint = Paint()
+      ..strokeWidth = 2.0
+      ..color = _white.withValues(alpha: 0.35);
+    canvas.drawLine(Offset(x, top), Offset(x, bottom), paint);
+    // A little checkered pennant at the top of the post.
+    final flag = Rect.fromLTWH(x, top, 14, 9);
+    canvas.drawRect(flag, Paint()..color = _white.withValues(alpha: 0.5));
+    canvas.drawRect(
+        Rect.fromLTWH(x, top, 7, 4.5), Paint()..color = _black.withValues(alpha: 0.45));
+    canvas.drawRect(Rect.fromLTWH(x + 7, top + 4.5, 7, 4.5),
+        Paint()..color = _black.withValues(alpha: 0.45));
+  }
+
+  static void _drawCrown(Canvas canvas, Offset c, double r) {
+    final path = Path()
+      ..moveTo(c.dx - r, c.dy + r * 0.6)
+      ..lineTo(c.dx - r, c.dy - r * 0.6)
+      ..lineTo(c.dx - r * 0.45, c.dy)
+      ..lineTo(c.dx, c.dy - r * 0.9)
+      ..lineTo(c.dx + r * 0.45, c.dy)
+      ..lineTo(c.dx + r, c.dy - r * 0.6)
+      ..lineTo(c.dx + r, c.dy + r * 0.6)
+      ..close();
+    canvas.drawPath(path, Paint()..color = _crown);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = _black.withValues(alpha: 0.4),
+    );
+  }
+
+  static void _drawCheck(Canvas canvas, Offset c, double r, Color accent) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.5, r * 0.5)
+      ..color = _white;
+    canvas.drawLine(c.translate(-r * 0.6, 0), c.translate(-r * 0.1, r * 0.5), paint);
+    canvas.drawLine(c.translate(-r * 0.1, r * 0.5), c.translate(r * 0.7, -r * 0.6), paint);
+  }
+
+  /// Mounting-tension overlay: a warm closing vignette whose darkness +
+  /// tightness grow with [tension] 0..1 (the pattern length), plus a faint
+  /// heartbeat ring breathing around the central orb. Screen-space; drawn under
+  /// the cinematic flash/banner. [beat] 0..1 is the heartbeat phase (pulse).
+  static void drawTensionFrame(
+    Canvas canvas,
+    Size size,
+    double tension,
+    double beat,
+  ) {
+    final tn = tension.clamp(0.0, 1.0);
+    if (tn <= 0.02) return;
+    final b = beat.clamp(0.0, 1.0);
+    final diag = math.sqrt(size.width * size.width + size.height * size.height);
+    final outer = diag * 0.72;
+    // Inner radius shrinks as tension rises → the frame closes in.
+    final innerFrac = _tensionVignFrac - 0.22 * tn;
+    final inner = diag * innerFrac;
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = Gradient.radial(
+          Offset(size.width / 2, size.height * 0.5),
+          outer,
+          [const Color(0x00000000), _vignTension.withValues(alpha: 0.30 + 0.45 * tn)],
+          [(inner / outer).clamp(0.0, 0.98), 1.0],
+        ),
+    );
+    // Heartbeat ring around the central orb — pulses harder as tension climbs.
+    final center = Offset(size.width / 2, size.height / 2);
+    final r = math.min(size.width, size.height) * (0.16 + 0.05 * b);
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(2.0, r * 0.04 * (0.6 + b))
+        ..color = _koRed.withValues(alpha: (0.05 + 0.22 * tn) * (0.4 + 0.6 * b)),
+    );
+  }
+
+  /// A one-glance "speed up" chevron stack near the track during fast (long)
+  /// patterns — the ▲ that tells the kids the recall just got harder. [heat]
+  /// 0..1 scales how many chevrons light and how hot they glow.
+  static void drawSpeedArrow(Canvas canvas, Size size, double heat) {
+    final h = heat.clamp(0.0, 1.0);
+    if (h <= 0.02) return;
+    final x = size.width * (_trackRightFrac + 0.05);
+    final baseY = size.height * _trackTopFrac;
+    final s = math.max(5.0, size.width * 0.013);
+    const count = 3;
+    for (var i = 0; i < count; i++) {
+      final lit = h >= (i + 0.5) / count;
+      final cy = baseY + (i - 1) * s * 1.5;
+      final a = lit ? (0.5 + 0.5 * h) : 0.12;
+      final path = Path()
+        ..moveTo(x, cy - s * 0.6)
+        ..lineTo(x - s * 0.8, cy + s * 0.4)
+        ..lineTo(x + s * 0.8, cy + s * 0.4)
+        ..close();
+      canvas.drawPath(
+          path, Paint()..color = _crown.withValues(alpha: a.clamp(0.0, 1.0)));
+    }
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────

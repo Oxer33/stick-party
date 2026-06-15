@@ -336,4 +336,113 @@ void main() {
         reason: 'the reproducing bot should win the overwhelming majority '
             '($botWins/${seeds.length})');
   });
+
+  // ── CONFIDENCE REWARD: the fast-recall STREAK ────────────────────────────────
+  //
+  // Winning a round (first to reproduce the whole pattern) builds a streak that
+  // adds a SUB-INTEGER flair to the final score. It must (a) actually reward a
+  // repeat front-runner with a fraction on top of recall depth, (b) be bounded
+  // well under 0.5 so it can NEVER round a score up across a depth threshold
+  // (otherwise blind spam could ride a streak into the climax range), and (c)
+  // leave the integer recall depth — what every depth/spam assertion reads via
+  // .round() — completely unchanged.
+
+  test('a surviving round-winner earns a sub-integer streak bonus on top of '
+      'depth (and the flair never rounds the depth up)', () {
+    // In an all-bot match the LAST player standing is a repeat round-winner who
+    // never got KO'd, so its streak survives to the finish and adds a fractional
+    // flair on top of its recall depth. A KO snaps a streak (so a knocked-out
+    // player shows none) — hence we scan the field and require the bonus to show
+    // for at least one finisher across the seed sweep. Every score's integer part
+    // (what the depth/spam tests read via .round()) must be left untouched.
+    var sawBonus = false;
+    for (final seed in [1, 2, 3, 7, 13, 42]) {
+      final g = ColorMemory()..init(ctxFor(4, seed));
+      runToEnd(g);
+      expect(g.status, MiniGameStatus.finished);
+      for (final id in g.winResult!.ranking) {
+        final raw = g.scores.of(id).toDouble();
+        final frac = raw - raw.floor();
+        // The bonus is bounded under 0.5 (it can never tip .round() up a depth).
+        expect(frac, lessThan(0.5),
+            reason: 'seed=$seed p$id streak flair $frac must stay below 0.5');
+        // The integer recall depth (what spam/depth tests read) is unaffected.
+        expect(raw.round(), raw.floor(),
+            reason: 'seed=$seed p$id flair must not round the depth up');
+        if (frac > 0) sawBonus = true;
+      }
+    }
+    expect(sawBonus, isTrue,
+        reason: 'a surviving repeat round-winner should carry a streak bonus');
+  });
+
+  test('STREAK SAFETY: the bonus never lifts a shallow run across the climax',
+      () {
+    // The spam-safety guarantee for the NEW scoring: even with the streak flair
+    // folded in, a blind spammer's RAW score (not just its .round()) can never
+    // reach the climax depth. A growing pattern cannot be guessed, and the
+    // bounded sub-integer streak bonus cannot bridge the gap.
+    const climaxLen = 5; // mirrors ColorMemory._climaxSeqLen
+    var deepestRawSpam = 0.0;
+    for (final seed in [1, 2, 3, 4, 5, 7, 11, 13, 42, 99, 123, 777]) {
+      final g = ColorMemory()..init(soloCtx(seed));
+      final tapRng = SeededRng(seed * 131 + 17);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+        g.update(1 / 60);
+        if (n % 3 == 0) {
+          g.onInput(PlayerInput.down(0, soloQuads[tapRng.intRange(0, 4)]));
+        }
+      }
+      expect(g.status, MiniGameStatus.finished);
+      final raw = g.scores.of(0).toDouble();
+      if (raw > deepestRawSpam) deepestRawSpam = raw;
+    }
+    expect(deepestRawSpam, lessThan(climaxLen.toDouble()),
+        reason: 'a blind spammer reached raw depth $deepestRawSpam — even with '
+            'the streak bonus it must stay short of the climax ($climaxLen)');
+  });
+
+  test('the streak crowns ONE player: a head-to-head winner out-scores the '
+      'spammer by more than a lone streak flair', () {
+    // The streak is competitive, not a participation trophy: a KO snaps it, and
+    // only the round-winner keeps it. Head-to-head (blind spammer P0 vs HARD bot
+    // P1), the bot both out-recalls the spammer AND banks the streak — so its
+    // margin is wider than any sub-integer flair alone, proving recall (not the
+    // bonus) decides the match while the streak is a real edge on top.
+    const p0Quads = <Offset>[
+      // 2p layout, player 0 plate (no render → _lastSize 1x1) center (0.5,0.74).
+      Offset(0.40, 0.64), // red
+      Offset(0.60, 0.64), // blue
+      Offset(0.40, 0.84), // green
+      Offset(0.60, 0.84), // yellow
+    ];
+    var botAheadEverywhere = true;
+    for (final seed in [1, 2, 3, 5, 7, 13, 42]) {
+      final ctx = MiniGameContext(
+        players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1, isBot: true)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+        difficulty: BotDifficulty.hard,
+      );
+      final g = ColorMemory()..init(ctx);
+      final tapRng = SeededRng(seed * 977 + 3);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+        g.update(1 / 60);
+        if (n % 3 == 0) {
+          g.onInput(PlayerInput.down(0, p0Quads[tapRng.intRange(0, 4)]));
+        }
+      }
+      expect(g.status, MiniGameStatus.finished);
+      final spam = g.scores.of(0).toDouble();
+      final bot = g.scores.of(1).toDouble();
+      // The margin exceeds 1 full point — i.e. it is a recall-depth gap, not a
+      // mere fractional streak flair edging the result.
+      if (bot - spam <= 1.0) botAheadEverywhere = false;
+    }
+    expect(botAheadEverywhere, isTrue,
+        reason: 'the memoriser must lead by a full recall point, not a flair');
+  });
 }
