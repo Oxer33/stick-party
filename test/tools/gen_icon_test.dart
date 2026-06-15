@@ -1,102 +1,186 @@
-// Procedural app-icon generator (run as a test): renders the stickman painter
-// to PNGs under assets/icon/ for flutter_launcher_icons. No external art assets.
+// Procedural app-icon generator (run as a test so the icon stays reproducible
+// AND can never silently drift — it regenerates identical deterministic bytes):
+// renders the "Sumo shove" launcher icon to assets/icon/ for
+// flutter_launcher_icons. No external art assets.
 //
 //   flutter test test/tools/gen_icon_test.dart
 //
+// Two stick wrestlers (flame vs cyan) locked head-to-head in a grapple, a clash
+// starburst between them, on a glowing dohyo ring over brand indigo. Full icon
+// = app_icon.png; figures-only-on-transparent = app_icon_foreground.png (the
+// Android adaptive foreground, kept inside the safe circle).
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:stick_party/art/stick/stick_pose.dart';
-import 'package:stick_party/art/stick/stick_skeleton.dart';
-import 'package:stick_party/art/stick/stick_style.dart';
-import 'package:stick_party/art/stick/stickman_painter.dart';
-import 'package:stick_party/art/stick/weapon_visual.dart';
-import 'package:stick_party/core/constants.dart';
-import 'package:stick_party/core/math2.dart';
 
 const int _size = 1024;
 
-/// A celebratory "arms up" V pose (world-space radians, y-down: up = -pi/2).
-StickPose _cheerPose() => StickPose(
-      spine: rad(-90),
-      neck: rad(-90),
-      armBackUpper: rad(-124),
-      armBackFore: rad(-134),
-      armFrontUpper: rad(-56),
-      armFrontFore: rad(-46),
-      legBackThigh: rad(110),
-      legBackShin: rad(98),
-      legFrontThigh: rad(70),
-      legFrontShin: rad(86),
-    );
+const _flame = Color(0xFFFB7234);
+const _cyan = Color(0xFF22D3EE);
+const _dark = Color(0xFF0C0A18);
+const _white = Color(0xFFFFFFFF);
 
-Future<ui.Image> _render({
-  required bool withBackground,
-  required double figureScale,
-  required double rootYFactor,
-}) async {
-  final rec = ui.PictureRecorder();
-  final side = _size.toDouble();
-  final canvas = Canvas(rec, Rect.fromLTWH(0, 0, side, side));
-  final size = Size(side, side);
+Paint _strokePaint(double w, Color col) => Paint()
+  ..style = PaintingStyle.stroke
+  ..strokeWidth = w
+  ..color = col
+  ..strokeCap = StrokeCap.round
+  ..strokeJoin = StrokeJoin.round;
 
-  if (withBackground) {
-    final bg = Paint()
-      ..shader = ui.Gradient.linear(
-        Offset.zero,
-        Offset(side, side),
-        const [Color(0xFF211A3A), Color(0xFF5B1F9E), Color(0xFFC2228A)],
-        const [0.0, 0.55, 1.0],
-      );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(180)),
-      bg,
+void _wrestler(Canvas c, double px, double py, double s, double mirror, Color glow) {
+  c.save();
+  c.translate(px, py);
+  c.scale(mirror * s, s);
+  final body = Path()
+    ..moveTo(10, -48)
+    ..lineTo(-8, -14) // torso (heavy forward lean)
+    ..moveTo(10, -46)
+    ..lineTo(32, -34) // upper grappling arm
+    ..moveTo(8, -42)
+    ..lineTo(32, -22) // lower grappling arm
+    ..moveTo(-8, -14)
+    ..lineTo(14, 6)
+    ..lineTo(28, 28) // front planted leg
+    ..moveTo(-8, -14)
+    ..lineTo(-26, 4)
+    ..lineTo(-40, 28); // wide back leg
+  c.drawPath(body, _strokePaint(10, glow.withValues(alpha: 0.22))); // neon halo
+  c.drawPath(body, _strokePaint(4.6, glow)); // core
+  c.drawPath(body, _strokePaint(1.7, Color.lerp(glow, _white, 0.6)!.withValues(alpha: 0.9)));
+  // Mawashi belt nub.
+  final belt = Path()
+    ..moveTo(2, -20)
+    ..lineTo(-12, -12);
+  c.drawPath(belt, _strokePaint(6, const Color(0xFFF3ECFF)));
+  c.drawPath(belt, _strokePaint(2.4, glow.withValues(alpha: 0.9)));
+  // Head: halo ring -> dark fill -> neon ring -> inner highlight.
+  const hc = Offset(16, -56);
+  const hr = 15.0;
+  c.drawCircle(hc, hr, _strokePaint(9, glow.withValues(alpha: 0.22)));
+  c.drawCircle(hc, hr, Paint()..color = _dark);
+  c.drawCircle(hc, hr, _strokePaint(3.6, glow));
+  c.drawCircle(hc, hr - 2.4, _strokePaint(1.4, Color.lerp(glow, _white, 0.7)!.withValues(alpha: 0.85)));
+  c.restore();
+}
+
+void _clashHalo(Canvas c) {
+  c.drawCircle(
+    const Offset(512, 432),
+    112,
+    Paint()
+      ..shader = ui.Gradient.radial(const Offset(512, 432), 112,
+          const <Color>[Color(0x42FFFFFF), Color(0x00FFFFFF)]),
+  );
+  c.drawCircle(const Offset(512, 432), 64, Paint()..color = const Color(0x40FBBF24));
+  c.drawCircle(const Offset(512, 432), 36, Paint()..color = const Color(0x4DFB7234));
+}
+
+void _clashCore(Canvas c) {
+  const ctr = Offset(512, 432);
+  final rayLong = _strokePaint(6, const Color(0xFFFFE9B8));
+  final rayShort = _strokePaint(3.4, const Color(0xFFFFF6DE));
+  for (var i = 0; i < 12; i++) {
+    final a = i * math.pi / 6;
+    final long = i.isEven;
+    final r1 = long ? 18.0 : 14.0;
+    final r2 = long ? 58.0 : 36.0;
+    c.drawLine(
+      Offset(ctr.dx + math.cos(a) * r1, ctr.dy + math.sin(a) * r1),
+      Offset(ctr.dx + math.cos(a) * r2, ctr.dy + math.sin(a) * r2),
+      long ? rayLong : rayShort,
     );
-    // Soft spotlight behind the figure.
-    canvas.drawCircle(
-      Offset(side / 2, side * 0.52),
-      side * 0.46,
-      Paint()
-        ..shader = ui.Gradient.radial(
-          Offset(side / 2, side * 0.52),
-          side * 0.46,
-          const [Color(0x55FFFFFF), Color(0x00FFFFFF)],
-        ),
-    );
-    // Confetti in player colors.
-    const spots = [
-      Offset(0.16, 0.20), Offset(0.84, 0.18), Offset(0.26, 0.84),
-      Offset(0.78, 0.82), Offset(0.50, 0.10), Offset(0.10, 0.54),
-      Offset(0.90, 0.50),
-    ];
-    for (var i = 0; i < spots.length; i++) {
-      canvas.drawCircle(
-        Offset(spots[i].dx * side, spots[i].dy * side),
-        side * 0.021,
-        Paint()..color = Color(PlayerPalette.argb[i % PlayerPalette.argb.length]),
-      );
-    }
   }
+  c.drawCircle(ctr, 18, Paint()..color = const Color(0xFFFBBF24));
+  c.drawCircle(ctr, 11, Paint()..color = _white);
+}
 
-  final proportions = StickProportions.hero.scaled(figureScale);
-  final frame = StickSkeleton(proportions).resolve(
-    _cheerPose(),
-    Offset(side / 2, side * rootYFactor),
-    1,
-  );
-  const style = StickStyle(
-    fill: Color(0xFFFFD23C),
-    outline: Color(0xFF1A1030),
-    glowSigma: 6,
-    lineWidth: 2.6,
-    rimAlpha: 0.0,
-    shadowAlpha: 0.0,
-    gradientBottom: 0.25,
-  );
-  StickmanPainter.paint(canvas, frame, style, weapon: WeaponVisual.none);
+void _footShadows(Canvas c, double a) {
+  void sh(double x, double y, double w) => c.drawOval(
+        Rect.fromCenter(center: Offset(x, y), width: w, height: w * 0.26),
+        Paint()..color = const Color(0xFF000000).withValues(alpha: a),
+      );
+  sh(253, 662, 150);
+  sh(771, 662, 150);
+  sh(500, 664, 120);
+  sh(524, 664, 120);
+}
 
+void _dust(Canvas c) {
+  const d = Color(0xFFC9C4DA);
+  void puff(double x, double y, double w, double op) => c.drawOval(
+        Rect.fromCenter(center: Offset(x, y), width: w, height: w * 0.42),
+        Paint()..color = d.withValues(alpha: op),
+      );
+  puff(240, 650, 90, 0.16);
+  puff(784, 650, 90, 0.16);
+  puff(300, 664, 60, 0.12);
+  puff(724, 664, 60, 0.12);
+  final sp = Paint()..color = d.withValues(alpha: 0.22);
+  for (final o in const <Offset>[Offset(232, 612), Offset(792, 612), Offset(262, 628), Offset(762, 628)]) {
+    c.drawCircle(o, 5, sp);
+  }
+}
+
+void _dohyo(Canvas c) {
+  const ctr = Offset(512, 656);
+  Rect e(double rx, double ry) => Rect.fromCenter(center: ctr, width: rx * 2, height: ry * 2);
+  Paint ring(double w, Color col) => Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = w
+    ..color = col;
+  c.drawOval(e(270, 62), Paint()..color = const Color(0x14FBBF24)); // clay platform
+  c.drawOval(e(270, 62), ring(16, const Color(0x2EFBBF24))); // outer halo
+  c.drawOval(e(270, 62), ring(6, const Color(0x80FBBF24))); // mid ring
+  c.drawOval(e(270, 62), ring(2.6, const Color(0xCCFFE6B0))); // bright rim
+  c.drawOval(e(202, 46), ring(3, const Color(0x40FB7234))); // inner raked ring
+}
+
+void _bg(Canvas c) {
+  const r = Rect.fromLTWH(0, 0, 1024, 1024);
+  c.drawRRect(
+    RRect.fromRectAndRadius(r, const Radius.circular(180)),
+    Paint()
+      ..shader = ui.Gradient.linear(const Offset(0, 0), const Offset(0, 1024),
+          const <Color>[Color(0xFF1C1430), Color(0xFF0A0816)]),
+  );
+  c.drawRect(
+    r,
+    Paint()
+      ..shader = ui.Gradient.radial(const Offset(512, 470), 440,
+          const <Color>[Color(0x338B5CF6), Color(0x008B5CF6)]),
+  );
+  c.drawOval(
+    Rect.fromCenter(center: const Offset(512, 656), width: 620, height: 130),
+    Paint()..color = const Color(0x1AFB7234),
+  );
+  c.drawRect(
+    const Rect.fromLTWH(0, 0, 1024, 380),
+    Paint()
+      ..shader = ui.Gradient.linear(const Offset(0, 0), const Offset(0, 380),
+          const <Color>[Color(0x14FFFFFF), Color(0x00FFFFFF)]),
+  );
+  c.drawRect(
+    r,
+    Paint()
+      ..shader = ui.Gradient.radial(const Offset(512, 512), 780,
+          const <Color>[Color(0x00000000), Color(0x66000000)], const <double>[0.6, 1.0]),
+  );
+}
+
+Future<ui.Image> _render({required bool withBackground}) async {
+  final rec = ui.PictureRecorder();
+  final canvas = Canvas(rec, const Rect.fromLTWH(0, 0, 1024, 1024));
+  if (withBackground) _bg(canvas);
+  _dohyo(canvas);
+  _clashHalo(canvas);
+  _footShadows(canvas, withBackground ? 0.30 : 0.22);
+  _wrestler(canvas, 397, 554, 3.6, 1, _flame);
+  _wrestler(canvas, 627, 554, 3.6, -1, _cyan);
+  _dust(canvas);
+  _clashCore(canvas);
   return rec.endRecording().toImage(_size, _size);
 }
 
@@ -108,14 +192,8 @@ Future<void> _writePng(ui.Image image, String path) async {
 
 void main() {
   test('generate app icons', () async {
-    final full = await _render(
-        withBackground: true, figureScale: 9.5, rootYFactor: 0.82);
-    await _writePng(full, 'assets/icon/app_icon.png');
-
-    final foreground = await _render(
-        withBackground: false, figureScale: 7.5, rootYFactor: 0.76);
-    await _writePng(foreground, 'assets/icon/app_icon_foreground.png');
-
+    await _writePng(await _render(withBackground: true), 'assets/icon/app_icon.png');
+    await _writePng(await _render(withBackground: false), 'assets/icon/app_icon_foreground.png');
     expect(File('assets/icon/app_icon.png').existsSync(), isTrue);
     expect(File('assets/icon/app_icon_foreground.png').existsSync(), isTrue);
   });
