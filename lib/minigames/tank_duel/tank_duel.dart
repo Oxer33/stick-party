@@ -10,37 +10,47 @@ import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../core/math2.dart';
 import '../../engine/bots.dart';
-import '../../engine/helpers/aim_sweep.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
+import 'manual_aim.dart';
 import 'tank_fx.dart';
 import 'tank_render.dart';
 
 /// Tank Duel — every player owns a tank mounted on a screen edge with a turret
-/// that auto-sweeps a firing arc. One tap FIRES a gravity-arced shell down the
-/// barrel.
+/// the player AIMS by hand. One touch DRAGS the barrel onto the lead, CHARGES a
+/// power/arc, and FIRES a gravity-arced shell the instant the finger lifts.
 ///
-/// CONTROL (the heart of it — a real per-shot DECISION, still one touch):
-///  * The turret AIM sweeps a firing arc continuously and at a learnable speed.
-///  * Quick TAP → an instant, FLAT, fast SNAP shot at base speed — great for a
-///    foe out in the open, but it sails straight so cover stops it.
-///  * HOLD → CHARGE the shot: a power gauge fills (and the sweep eases off so
-///    you can fine-tune), then the shell looses the instant you RELEASE. A LOW
-///    charge lobs a slow, high ARC that drops over a near crate onto a guarded
-///    foe; a FULL charge is a flat long-range SNIPE. So every shell is an
-///    arc-vs-direct choice — and charging keeps your finger down while enemies
-///    keep firing, so a big lob EXPOSES you. (A one-frame down→up still fires a
-///    snap shot, so tap-to-fire is intact.)
+/// CONTROL (the heart of it — a real lead-the-target DECISION, still one touch):
+///  * MANUAL AIM: a DRAG points the barrel anywhere inside the tank's firing
+///    band (clamped to [_sweepHalfBand] either side of the inward normal) and it
+///    STAYS where you leave it between shots — no auto-sweep doing the aiming
+///    for you. You must put the barrel on the lead yourself.
+///  * MOVING TARGETS: every tank auto-STRAFES back and forth along its edge at a
+///    steady, learnable speed (reversing at the ends of a travel band). Because
+///    BOTH you and your foe are sliding, a shell fired at where the enemy IS will
+///    miss — you have to LEAD where it's GOING. That's the restored skill: read
+///    the strafe, drag onto the lead, time the loaded breech.
+///  * Quick TAP (no drag) → an instant, FLAT, fast SNAP shot at base speed down
+///    the current aim — great for a foe caught crossing your line.
+///  * HOLD → CHARGE the shot: a power gauge fills (and you can keep fine-tuning
+///    the drag), then the shell looses the instant you RELEASE. A LOW charge lobs
+///    a slow, high ARC that drops over a near crate onto a guarded foe; a FULL
+///    charge is a flat long-range SNIPE. So every shell is a lead + arc-vs-direct
+///    choice — and charging keeps your finger down while a moving enemy lines up
+///    its own shot, so a big lob EXPOSES you. (A one-frame down→up still fires a
+///    snap shot at the current aim, so tap-to-fire is intact.)
 ///
 /// WHY FIRE-RATE CAN'T WIN (the design law): every shot drops the breech into a
 /// RELOAD — the barrel is dead for [_reloadSec] and no new shot (or charge) can
 /// begin until the shell is rammed home. So you get only a handful of shells a
 /// round and EACH ONE MUST COUNT. A blind tapper who mashes every frame just
-/// bounces off the reload and looses each scarce shell at whatever random angle
-/// the sweep happens to sit on — it sprays and mostly misses. A player who waits
-/// out the reload, then RELEASES on the sweep's line-up (and charges to arc over
-/// a crate) lands far more of the same few shells. Timing the scarce shot beats
-/// mashing it: spamming the trigger can never out-damage aimed fire.
+/// bounces off the reload and looses each scarce shell down whatever STALE aim
+/// the barrel was last left on — against a strafing foe that simply slides out of
+/// the way, so it sprays and mostly misses. A player who waits out the reload,
+/// drags the barrel onto the moving foe's LEAD (charging to arc over a crate) and
+/// releases on the line-up lands far more of the same few shells. Aiming the
+/// scarce shot at a moving target beats mashing it: fire-rate can never
+/// out-damage led, aimed fire.
 ///
 /// Feel / depth:
 ///  * Each tank has 3 HP with on-tank health pips, a white hit-flash and a
@@ -54,15 +64,16 @@ import 'tank_render.dart';
 ///    limit. A round never ends before a short floor so it always plays out, and
 ///    the time limit always resolves it.
 ///
-/// FAIR BOTS: they LEAD the arc — solving (by a cheap arc search) the launch
-/// angle that drops a shell onto the nearest reachable ENEMY (a teammate is
-/// never a target) — but only after a warm-up grace, and with a [BotProfile]
-/// accuracy error plus a per-shot flinch so easy bots genuinely MISS often and
-/// are beatable, not snipers. Each shot a bot also picks a CHARGE: it usually
-/// snap-fires flat at base speed, but a stronger (more accurate) bot will
-/// sometimes wind up a charged shot — and it solves the arc at the SAME charged
-/// speed it will fire at, so a charged bot shell still lands instead of
-/// overshooting.
+/// FAIR BOTS: they drive their MANUAL aim toward the lead — each frame steering
+/// the barrel (at a bounded turn speed) toward the launch angle a cheap arc
+/// search says would drop a shell onto the nearest reachable ENEMY's PREDICTED
+/// strafe position (a teammate is never a target). Easy bots mis-lead a moving
+/// foe and miss often; hard bots track it. Aim is corrupted by a [BotProfile]
+/// accuracy error plus a per-shot flinch, and bots only start after a warm-up
+/// grace, so they are beatable, not snipers. Each shot a bot also picks a CHARGE:
+/// it usually snap-fires flat at base speed, but a stronger (more accurate) bot
+/// will sometimes wind up a charged shot — and it solves the arc at the SAME
+/// charged speed it will fire at, so a charged bot shell still lands.
 ///
 /// MODES — every shell carries its owner's TEAM, and damage/scoring resolve by
 /// team so a 2v2 plays as two squads, not four loners:
@@ -85,7 +96,7 @@ class TankDuel extends MiniGameBase {
         minPlayers: 1,
         maxPlayers: 4,
         modes: [GameMode.ffa, GameMode.duel1v1, GameMode.team2v2],
-        inputHint: 'TAP',
+        inputHint: 'DRAG',
       );
 
   // ── Round / scoring tuning ──────────────────────────────────────────────────
@@ -116,9 +127,22 @@ class TankDuel extends MiniGameBase {
   static const double _barrelLen = 1.9; // barrel length / radius
   static const double _hitRadius = 0.95; // body hit radius / radius
   static const double _edgeInsetFactor = 0.085; // edge inset / min(arena side)
-  static const double _sweepHalfBand = 0.62; // half sweep arc (radians)
-  static const double _sweepSpeed = 1.35; // sweep angular speed (rad/s) — learnable
-  static const double _holdAimScale = 0.4; // sweep eases to this while charging
+  // The MANUAL aim is clamped to this half-band either side of the inward normal
+  // (kept at the old sweep half-band so the firing arc feels the same), but the
+  // angle inside it is now set by the player's DRAG, not an auto-sweep.
+  static const double _sweepHalfBand = 0.62; // half firing arc (radians)
+
+  // ── Strafe (moving targets — the heart of the lead-the-target skill) ────────
+  // Each tank slides back and forth along its edge inside a travel band centered
+  // on its spawn anchor, reversing at the ends. The band is a fraction of the
+  // edge length (kept off the corners) and a full one-way traverse takes
+  // [_strafeTraverseSec], so the motion is steady + learnable: read it, lead it.
+  static const double _strafeBandFactor = 0.34; // travel band / usable edge span
+  static const double _strafeTraverseSec = 3.0; // seconds for one end-to-end pass
+  static const double _strafeEdgeMargin = 0.14; // keep the band off the corners
+  // Each tank starts at a deterministic phase so they don't all slide in lockstep
+  // (spread across the cycle by seat) — varied from the first frame.
+  static const double _strafePhaseSpread = 0.37;
 
   // ── Charge tuning (the per-shot power/range decision) ───────────────────────
   // While the finger is down, holdPower ramps 0→1 over [_chargeFullSec]. A
@@ -166,6 +190,16 @@ class TankDuel extends MiniGameBase {
   static const int _botArcSteps = 26; // integration steps per probed arc
   static const double _botArcDt = 0.05; // arc-probe timestep (seconds)
   static const double _botWildChance = 0.4; // share of errorRate → wild shots
+  // A bot DRIVES its manual aim toward the (lead-corrupted) wanted angle at this
+  // turn speed, scaled up by accuracy — so a hard bot snaps onto a moving foe's
+  // lead while an easy bot drifts there slowly and lags a fast strafe. It's the
+  // same manual barrel a human steers, just steered by the solver.
+  static const double _botTurnBaseRad = 2.2; // base aim turn speed (rad/s)
+  static const double _botTurnAccGain = 3.4; // ×accuracy added to the turn speed
+  // The bot LEADS a moving target: it projects the enemy this many seconds along
+  // its current strafe velocity before solving the arc, so it aims where the foe
+  // is GOING. Scaled by accuracy (easy bots under-lead and miss the slide).
+  static const double _botLeadSec = 0.45; // full-accuracy lead time (seconds)
   // A bot picks a charge per shot: mostly a flat snap (zero charge), but a more
   // accurate bot sometimes winds up. It then solves the arc at the SAME charged
   // speed it will fire at, so the charged shell still lands.
@@ -283,19 +317,23 @@ class TankDuel extends MiniGameBase {
     for (var i = 0; i < count; i++) {
       final p = ctx.players[i];
       final edge = _edgeFor(i, count);
-      final base = _basePos(edge);
-      // Sweep band is centered on the inward normal so the barrel always aims
-      // into the playfield, regardless of which edge the tank sits on.
+      final anchor = _basePos(edge);
+      // The firing band is centered on the inward normal so the barrel always
+      // aims into the playfield, regardless of which edge the tank sits on. The
+      // angle starts at rest (the inward normal) and the player DRAGS it from
+      // there — it no longer sweeps on its own.
       final inward = -edge.outward;
       final center = math.atan2(inward.dy, inward.dx);
-      final barrel = AimSweep(
+      final barrel = ManualAim(
         minAngle: center - _sweepHalfBand,
         maxAngle: center + _sweepHalfBand,
-        speed: _sweepSpeed,
-        angle: center + ctx.rng.jitter(_sweepHalfBand * 0.6),
+        angle: center,
       );
       final color = Color(p.colorArgb);
       final team = _teamMode ? _teamOf(p) : Team.none;
+      // Half-extent the tank may slide along its edge from the anchor: the travel
+      // band, kept off the corners, halved (it swings ±this around the anchor).
+      final strafeAmp = _strafeAmpFor(edge);
       _tanks.add(_Tank(
         playerId: p.id,
         color: color,
@@ -303,9 +341,12 @@ class TankDuel extends MiniGameBase {
         // The tracer reads SQUAD-colored in team mode (so two tanks on one team
         // share a shell color) but stays the player's own color in FFA.
         tracer: _teamMode ? _teamTint(team) : color,
-        base: base,
+        anchor: anchor,
         edge: edge,
         barrel: barrel,
+        strafeAmp: strafeAmp,
+        // Spread seats across the strafe cycle so they don't slide in lockstep.
+        strafePhase: (i * _strafePhaseSpread) % 1.0,
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       ));
       // A small player-colored stick gunner rides the turret; it faces inward so
@@ -363,7 +404,8 @@ class TankDuel extends MiniGameBase {
     }
   }
 
-  /// Turret-base anchor: inset from the assigned edge, centered along it.
+  /// Turret-base ANCHOR (the center of the strafe band): inset from the assigned
+  /// edge, centered along it. The live base slides ±[_strafeAmpFor] around this.
   Offset _basePos(TankEdge edge) {
     final w = _size.width, h = _size.height;
     final inset = math.min(w, h) * _edgeInsetFactor + _baseR * _scale;
@@ -374,6 +416,26 @@ class TankDuel extends MiniGameBase {
       TankEdge.right => Offset(w - inset, h * 0.58),
     };
   }
+
+  /// Half the distance a tank may strafe along its edge from the anchor. The
+  /// usable span is the edge length minus a corner margin and the tank's own
+  /// width; [_strafeBandFactor] of that becomes the full travel band, halved so
+  /// the tank swings symmetrically ±this around its spawn anchor. Clamped to 0 so
+  /// a tiny arena just parks the tank instead of sliding it off-screen.
+  double _strafeAmpFor(TankEdge edge) {
+    final w = _size.width, h = _size.height;
+    // The axis the tank travels along: horizontal for top/bottom, vertical for
+    // the sides.
+    final span = (edge == TankEdge.bottom || edge == TankEdge.top) ? w : h;
+    final margin = span * _strafeEdgeMargin + _baseR * _scale * _hullHalf;
+    final usable = span - margin * 2;
+    if (usable <= 0) return 0;
+    return usable * _strafeBandFactor * 0.5;
+  }
+
+  /// Tank hull half-width (in base radii) — used to keep the strafe band off the
+  /// corners by the hull's own footprint. Mirrors the renderer's hull width.
+  static const double _hullHalf = 1.25; // ≈ _hullW (2.5) / 2 in TankRenderer
 
   /// A short row of destructible crates across the mid-field, biased toward the
   /// vertical center so they actually intercept fire between opposing tanks.
@@ -412,18 +474,32 @@ class TankDuel extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
+        // A press/drag always AIMS (sticky manual aim): point the barrel toward
+        // the touch, clamped into the firing band. A touch ON the tank (or the
+        // zero/default sentinel) leaves the aim where it was, so a pure tap fires
+        // down the current aim instead of yanking the barrel to a corner.
+        _aimAtTouch(tank, input.normPos);
         // The breech must be LOADED to even begin a shot. A press while
         // reloading is dead — it neither fires nor starts a charge — so a blind
         // every-frame mash can't "pre-charge" through the cooldown; it simply
         // bounces off until the barrel is ready, then looses one scarce shell.
         if (!tank.loaded) break;
-        // Begin a hold: power starts charging and the sweep eases so the player
-        // can fine-tune. A quick release snap-fires flat; a longer hold looses a
-        // charged shell whose speed (and thus arc) scales with the charge.
+        // Begin a hold: power starts charging while the finger stays down. A
+        // quick release snap-fires flat; a longer hold looses a charged shell
+        // whose speed (and thus arc) scales with the charge.
         tank.holding = true;
         tank.holdSec = 0;
         tank.holdPower = 0;
+      case InputPhase.holdTick:
+        // A DRAG while held keeps re-aiming the barrel onto the moving touch, so
+        // you can track a strafing foe and fine-tune the lead as the charge
+        // fills. (Charge time itself accrues in update() for frame-rate
+        // independence.)
+        _aimAtTouch(tank, input.normPos);
       case InputPhase.up:
+        // Lifting also takes a final aim from the release point (so a flick-then-
+        // lift lands on the latest drag position), then looses the shell.
+        _aimAtTouch(tank, input.normPos);
         if (tank.holding) {
           final power = tank.holdSec <= _tapMaxSec ? 0.0 : tank.holdPower;
           tank.holding = false;
@@ -434,9 +510,20 @@ class TankDuel extends MiniGameBase {
           // can't sneak a shot out mid-reload either.)
           _fire(input.playerId, power);
         }
-      case InputPhase.holdTick:
-        break; // hold time accrues in update() for frame-rate independence
     }
+  }
+
+  /// Steer [tank]'s manual aim toward the full-screen touch [norm] (0..1),
+  /// clamped into its firing band. A zero/default touch (a tap with no position,
+  /// or a touch on the turret pivot) is IGNORED so the aim stays sticky — only a
+  /// real drag onto the field moves the barrel.
+  void _aimAtTouch(_Tank tank, Offset norm) {
+    if (norm == Offset.zero) return; // sentinel / "no position" → keep aim
+    final target = Offset(norm.dx * _size.width, norm.dy * _size.height);
+    final pivot = _turretPivotOf(tank);
+    // A touch essentially on the pivot would be ambiguous; ignore it.
+    if ((target - pivot).distanceSquared < 1) return;
+    tank.barrel.aimToward(pivot, target);
   }
 
   /// Launch speed for a shot of the given [power] (0..1). A pure tap (power 0)
@@ -518,9 +605,12 @@ class TankDuel extends MiniGameBase {
     _juice.update(dt);
 
     for (final t in _tanks) {
-      // Holding eases the sweep for fine-tuning AND charges power; release fires.
-      final aimDt = t.holding ? sdt * _holdAimScale : sdt;
-      t.barrel.update(aimDt);
+      // Tanks STRAFE along their edge at a steady, learnable speed (so both
+      // shooter and target move and shots must lead). The phase advances on the
+      // sim-scaled clock so a hit-stop slows the slide with everything else.
+      if (t.hp > 0) t.strafePhase += sdt / (_strafeTraverseSec * 2);
+      // Holding charges power; the aim itself is steered only by the player's
+      // drag (onInput), never on its own.
       if (t.holding) {
         t.holdSec += dt;
         t.holdPower = (t.holdPower + dt / _chargeFullSec).clamp(0.0, 1.0);
@@ -622,7 +712,7 @@ class TankDuel extends MiniGameBase {
     }
   }
 
-  // ── Bots: lead the arc, then fire on cadence ────────────────────────────────
+  // ── Bots: drive the manual aim onto a moving foe's lead, then fire ──────────
 
   void _driveBots(double dt) {
     if (_elapsed < _botWarmupSec) return; // grace so the human gets first move
@@ -633,6 +723,11 @@ class TankDuel extends MiniGameBase {
       final clock = t.clock;
       if (clock == null) continue;
       if (t.hp <= 0) continue; // a downed tank stops shooting
+      // EVERY frame a bot STEERS its manual aim toward the lead (the same barrel
+      // a human drags), at a bounded turn speed scaled by accuracy. So a hard bot
+      // tracks a strafing foe while an easy bot lags it — and a bot can only fire
+      // once its own aim has actually reached the line-up, exactly like a player.
+      _steerBotAim(t, dt);
       // A bot lives under the SAME reload economy as the player: while the breech
       // is hot its reaction clock simply waits (no wasted tick), so a bot also
       // gets only the scarce, reload-paced shells — its edge is timing/aim, not
@@ -648,6 +743,19 @@ class TankDuel extends MiniGameBase {
     }
   }
 
+  /// Turn [shooter]'s manual aim a step toward the angle that would land a snap
+  /// shot on the nearest enemy's PREDICTED (led) strafe position. The turn is
+  /// capped per frame (accuracy-scaled) so the barrel physically tracks rather
+  /// than teleporting; with no reachable foe it eases back to the band center so
+  /// it never freezes pointed at a wall.
+  void _steerBotAim(_Tank shooter, double dt) {
+    final want = _bestLaunchAngle(shooter, _shellSpeed) ?? shooter.barrel.center;
+    final accuracy = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    final turn = (_botTurnBaseRad + _botTurnAccGain * accuracy) * dt;
+    final delta = wrapAngle(want - shooter.barrel.angle);
+    shooter.barrel.nudge(delta.abs() <= turn ? delta : turn * delta.sign);
+  }
+
   /// The charge a bot commits to this shot. Accuracy gates how often it bothers
   /// to wind up (weaker bots almost always snap-fire flat); when it does charge
   /// it picks a random power in the usable band. Deterministic via [ctx.rng].
@@ -657,19 +765,22 @@ class TankDuel extends MiniGameBase {
     return ctx.rng.range(_botChargeMin, _botChargeMax);
   }
 
-  /// A bot fires when its live sweep angle is within an accuracy-scaled cone of
-  /// the launch angle that would land a shell — fired at [shellSpeed] — on the
-  /// nearest reachable target.
+  /// A bot fires when its live MANUAL aim angle is within an accuracy-scaled cone
+  /// of the launch angle that would land a shell — fired at [shellSpeed] — on the
+  /// nearest reachable enemy's LED strafe position.
   ///
-  /// Fairness: the "wanted" angle is corrupted by a steady accuracy error PLUS a
-  /// fresh per-shot flinch. At low accuracy these are large versus the firing
-  /// cone, so an easy bot commits the trigger while badly off-aim — it fires
-  /// and *misses* often rather than waiting for a perfect line-up. A small
-  /// chance of an extra wild shot keeps it from ever stalling.
+  /// Fairness on TWO axes now. (1) The wanted angle is the LEAD: it's solved onto
+  /// where the foe will be after an accuracy-scaled lead time, so an easy bot
+  /// under-leads and its shell trails a strafing target. (2) The wanted angle is
+  /// then corrupted by a steady accuracy error PLUS a fresh per-shot flinch. At
+  /// low accuracy these are large versus the firing cone, so an easy bot commits
+  /// the trigger while badly off the lead — it fires and *misses* often rather
+  /// than waiting for a perfect line-up. A small chance of an extra wild shot
+  /// keeps it from ever stalling.
   bool _botShouldFire(_Tank shooter, double shellSpeed) {
     final accuracy = ctx.botProfile.accuracy.clamp(0.2, 1.0);
     final tol = _botBaseTolerance / accuracy;
-    final best = _bestLaunchAngle(shooter, shellSpeed);
+    final best = _bestLaunchAngle(shooter, shellSpeed, leadSec: _botLeadFor());
     if (best != null) {
       final miss = 1 - accuracy;
       // Steady bias + a fresh flinch each shot; both shrink as accuracy rises.
@@ -682,19 +793,29 @@ class TankDuel extends MiniGameBase {
     return ctx.rng.chance(ctx.botProfile.errorRate * _botWildChance);
   }
 
-  /// Best lead angle for [shooter] firing at [shellSpeed] (see
-  /// [TankFx.bestLaunchAngle]); builds the live opponent-pivot list and
-  /// delegates the arc search. A faster (charged) shell flies flatter, so the
-  /// solved angle differs — keeping a charged bot shot honest.
-  double? _bestLaunchAngle(_Tank shooter, double shellSpeed) {
+  /// The lead time a bot aims ahead of a moving foe this shot: the full lead
+  /// scaled by accuracy, so a hard bot leads correctly while an easy bot
+  /// under-leads (aims closer to where the foe IS) and trails the strafe.
+  double _botLeadFor() =>
+      _botLeadSec * ctx.botProfile.accuracy.clamp(0.0, 1.0);
+
+  /// Best launch angle for [shooter] firing at [shellSpeed] onto the nearest
+  /// reachable enemy, LEADING each foe by [leadSec] along its strafe velocity
+  /// (predict pivot + vel·leadSec) so the solved arc lands where the target is
+  /// GOING. Builds the live, led opponent-position list and delegates the arc
+  /// search ([TankFx.bestLaunchAngle]). A faster (charged) shell flies flatter,
+  /// so the solved angle differs — keeping a charged bot shot honest.
+  double? _bestLaunchAngle(_Tank shooter, double shellSpeed,
+      {double leadSec = 0}) {
     // Bots aim at ENEMIES only: a teammate (team mode) is never targeted, and a
-    // downed tank is skipped so the bot keeps hunting a live foe.
+    // downed tank is skipped so the bot keeps hunting a live foe. Each foe is
+    // projected forward along its current strafe so the shot leads the slide.
     final targets = <Offset>[
       for (final t in _tanks)
         if (t.playerId != shooter.playerId &&
             t.hp > 0 &&
             !_areAllies(shooter, t))
-          _turretPivotOf(t),
+          _turretPivotOf(t) + _strafeVelOf(t) * leadSec,
     ];
     return TankFx.bestLaunchAngle(
       lo: shooter.barrel.minAngle,
@@ -1025,13 +1146,68 @@ class TankDuel extends MiniGameBase {
 
   // ── Geometry helpers (mirror TankRenderer) ──────────────────────────────────
 
+  /// A triangle wave in [-1, 1] from a 0..1 [phase]: rises 0→1 over the first
+  /// half, falls 1→0 over the second, so a tank slides edge-to-edge at CONSTANT
+  /// speed and snaps its direction at each end (a steady, readable strafe).
+  static double _triWave(double phase) {
+    final p = phase % 1.0;
+    final x = p < 0 ? p + 1.0 : p; // normalize negatives
+    return x < 0.5 ? (x * 4 - 1) : (3 - x * 4);
+  }
+
+  /// The tank's LIVE base this frame: its spawn anchor slid along the edge by the
+  /// current strafe offset. All geometry (pivot, muzzle, hit-test, render) reads
+  /// THIS, so the whole tank moves together.
+  Offset _liveBaseOf(_Tank t) =>
+      t.anchor + t.edge.along * (t.strafeAmp * _triWave(t.strafePhase));
+
+  /// The tank's strafe VELOCITY (px/s) along its edge this frame — used to LEAD a
+  /// moving target. Magnitude is the band traversed over a one-way pass; sign is
+  /// the current triangle-wave direction (flips at the band ends).
+  Offset _strafeVelOf(_Tank t) {
+    if (t.strafeAmp <= 0 || t.hp <= 0) return Offset.zero;
+    final p = t.strafePhase % 1.0;
+    final x = p < 0 ? p + 1.0 : p;
+    final dir = x < 0.5 ? 1.0 : -1.0; // matches _triWave's slope sign
+    final speed = (2 * t.strafeAmp) / _strafeTraverseSec; // band per pass
+    return t.edge.along * (dir * speed);
+  }
+
   Offset _turretPivotOf(_Tank t) =>
-      t.base + t.edge.outward * (_baseR * _scale * _turretPivotOut);
+      _liveBaseOf(t) + t.edge.outward * (_baseR * _scale * _turretPivotOut);
 
   Offset _muzzleOf(_Tank t) {
     final dir = t.barrel.direction;
     return _turretPivotOf(t) + dir * (_baseR * _scale * _barrelLen);
   }
+
+  /// The shell's PREDICTED gravity arc for [t]'s current aim + [power], as a
+  /// muzzle→landing polyline so the player SEES where the drag+charge will drop
+  /// the shell. Integrated with the SAME gravity/speed the real shot uses, so the
+  /// preview is honest; it stops at a crate, a wall, the ground edge, or a step
+  /// cap. Pure (reads geometry only); deterministic; returns a small list.
+  List<Offset> _predictArc(_Tank t, double power) {
+    final speed = _launchSpeedFor(power);
+    var pos = _muzzleOf(t);
+    var vel = t.barrel.direction * speed;
+    final pts = <Offset>[pos];
+    const dt = _arcPreviewDt;
+    for (var i = 0; i < _arcPreviewSteps; i++) {
+      vel = vel + Offset(0, _gravity * dt);
+      pos = pos + vel * dt;
+      pts.add(pos);
+      // Stop the preview where the real shell would end: out of bounds or into a
+      // standing crate (so the trail visibly stops AT the cover it can't clear).
+      if (_outOfBounds(pos)) break;
+      if (_hitCrate(pos) != null) break;
+    }
+    return pts;
+  }
+
+  // Arc preview is short + coarse (it's a hint, not the sim): ~28 steps at a
+  // chunky dt give a smooth-enough parabola without flooding the trail.
+  static const int _arcPreviewSteps = 30;
+  static const double _arcPreviewDt = 0.045;
 
   _Tank? _tankOf(int id) {
     for (final t in _tanks) {
@@ -1041,16 +1217,18 @@ class TankDuel extends MiniGameBase {
   }
 
   // ── Debug hooks (tests only) ─────────────────────────────────────────────────
-  // Let a deterministic test drive a SKILLED shooter: it can read the breech
-  // state + the current sweep angle + the solved lead angle onto the nearest
-  // enemy, so it fires only when the barrel is both loaded AND lined up — the
-  // earned, timed shot the design rewards. Read-only; mutate nothing.
+  // Let a deterministic test drive a SKILLED shooter under MANUAL aim: it reads
+  // the breech state + the current barrel angle + the solved lead angle onto the
+  // nearest MOVING enemy, DRIVES the manual aim onto that lead ([debugSetAim]),
+  // and fires only when the barrel is both loaded AND lined up — the earned,
+  // led, timed shot the design rewards. The reads mutate nothing; [debugSetAim]
+  // is the one writer (it just sets the manual barrel the player would drag).
 
   /// True when [id]'s breech is loaded (a press would actually loose a shell).
   @visibleForTesting
   bool debugIsLoaded(int id) => _tankOf(id)?.loaded ?? false;
 
-  /// [id]'s live turret sweep angle (radians).
+  /// [id]'s live MANUAL barrel angle (radians) — where the player has aimed it.
   @visibleForTesting
   double debugAimAngle(int id) => _tankOf(id)?.barrel.angle ?? 0;
 
@@ -1059,15 +1237,29 @@ class TankDuel extends MiniGameBase {
   @visibleForTesting
   int debugShotsFired(int id) => _tankOf(id)?.shotsFired ?? 0;
 
-  /// The lead angle that would land a snap shot from [id] on the nearest
-  /// reachable enemy (null when none is lined up yet) — the target the sweep
-  /// must reach. A test fires when [debugAimAngle] is within [tol] of this.
+  /// Drive [id]'s MANUAL aim to [angle] (clamped into its firing band), standing
+  /// in for the player's drag. A skilled-aimer test calls this each frame with
+  /// [debugBestAimAngle] to keep the barrel on the moving foe's lead.
   @visibleForTesting
-  double? debugBestAimAngle(int id, {double speedScale = 1.0}) {
+  void debugSetAim(int id, double angle) => _tankOf(id)?.barrel.setAngle(angle);
+
+  /// The lead angle that would land a shot from [id] on the nearest reachable
+  /// enemy's PREDICTED strafe position (null when none is reachable) — the angle
+  /// the manual aim must reach. Leads the foe by [lead] seconds (default a
+  /// sensible cross-time so a test that drives the aim here actually connects on
+  /// a moving target); [speedScale] solves for a charged shell's flatter arc.
+  @visibleForTesting
+  double? debugBestAimAngle(int id,
+      {double speedScale = 1.0, double lead = _debugLeadSec}) {
     final t = _tankOf(id);
     if (t == null) return null;
-    return _bestLaunchAngle(t, _shellSpeed * speedScale);
+    return _bestLaunchAngle(t, _shellSpeed * speedScale, leadSec: lead);
   }
+
+  /// Default lead time the [debugBestAimAngle] seam aims ahead of a strafing foe
+  /// — a touch above the bot's full lead so a test driving the manual aim onto it
+  /// connects on the moving target.
+  static const double _debugLeadSec = 0.5;
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -1145,7 +1337,7 @@ class TankDuel extends MiniGameBase {
   void _drawTeamRing(Canvas canvas, _Tank t) {
     final r = _baseR * _scale;
     final tint = _teamTint(t.team);
-    final at = t.base + t.edge.outward * (r * _shadowDrop);
+    final at = _liveBaseOf(t) + t.edge.outward * (r * _shadowDrop);
     canvas.drawCircle(
       at,
       r * 1.7,
@@ -1207,8 +1399,19 @@ class TankDuel extends MiniGameBase {
     // quick snap tap stays clean; [charge] then drives a power gauge + a reticle
     // that creeps out along the barrel toward the predicted range.
     final charging = t.holding && t.holdSec > _tapMaxSec;
+    // Signed strafe direction along the edge's "along" axis (−1/0/+1), so the
+    // renderer can lean the tracks / kick dust in the slide direction.
+    final vel = _strafeVelOf(t);
+    final strafeDir =
+        vel == Offset.zero ? 0.0 : (vel.dx + vel.dy).sign; // along is axis-aligned
+    // Predicted-arc preview: shown while the breech is LOADED (there's a real
+    // next shot to preview) at the held charge (or a snap arc when idle), and
+    // hidden mid-reload so the dead breech reads as "no shot ready".
+    final previewArc = t.loaded
+        ? _predictArc(t, charging ? t.holdPower : 0.0)
+        : const <Offset>[];
     return TankView(
-      base: t.base,
+      base: _liveBaseOf(t),
       color: t.color,
       edge: t.edge,
       aimAngle: t.barrel.angle,
@@ -1226,6 +1429,8 @@ class TankDuel extends MiniGameBase {
       // for the breech before the next shell. Hidden once loaded.
       reload: t.reloadFrac,
       victory: _isWinner(t) ? 1.0 : 0.0,
+      strafeDir: strafeDir,
+      aimArc: previewArc,
     );
   }
 
@@ -1243,7 +1448,7 @@ class TankDuel extends MiniGameBase {
   WreckView _wreckOf(_Tank t) {
     final age = t.downedAt < 0 ? 0.0 : math.max(0.0, _animClock - t.downedAt);
     return WreckView(
-      base: t.base,
+      base: _liveBaseOf(t),
       color: t.color,
       edge: t.edge,
       aimAngle: t.barrel.angle,
@@ -1260,9 +1465,10 @@ class _Tank {
   final Color color; // the player's own color (hull/turret tint)
   final Team team; // squad in team mode; [Team.none] in FFA
   final Color tracer; // shell tracer color: squad-tinted in team mode, else own
-  final Offset base; // turret-base anchor in arena px
+  final Offset anchor; // CENTER of the strafe band in arena px (spawn point)
   final TankEdge edge;
-  final AimSweep barrel;
+  final ManualAim barrel; // player-driven aim, clamped to the firing band
+  final double strafeAmp; // half the distance the tank may slide along its edge
   final ReactionClock? clock; // null for human seats
   int hp = TankDuel._maxHp;
   double flash = 0; // hit-flash timer
@@ -1271,7 +1477,8 @@ class _Tank {
   double invuln = 0; // invulnerability timer
   double reload = 0; // dead-barrel time remaining; >0 = can't fire or charge
   double reloadFull = 0; // the reload's full duration (drives the gauge fill)
-  bool holding = false; // finger down → charging power + sweep eased
+  double strafePhase = 0; // 0..1 position in the back-and-forth strafe cycle
+  bool holding = false; // finger down → charging power
   double holdSec = 0; // how long the current hold has lasted
   double holdPower = 0; // 0..1 charge accrued while holding (scales launch speed)
   double overcharge = 0; // seconds of airdrop double-damage buff remaining
@@ -1283,9 +1490,11 @@ class _Tank {
     required this.color,
     required this.team,
     required this.tracer,
-    required this.base,
+    required this.anchor,
     required this.edge,
     required this.barrel,
+    required this.strafeAmp,
+    required this.strafePhase,
     this.clock,
   });
 

@@ -731,92 +731,134 @@ class BumperRenderer {
     );
   }
 
-  /// The player's control made visible while CHARGING only (there is no idle
-  /// arrow): a player-colored telegraph pointing the way the player is dragging
-  /// — where the bump will fire — that grows with [charge], plus a charge
-  /// ground-arc that fills as the hold deepens. [aim] is the heading in radians
-  /// (set by the drag), [charge] 0..1. Cheap layered solid strokes (no blur).
-  static void drawAim(
+  /// The SLINGSHOT made visible while the player is pulling back. Like pool /
+  /// Angry-Birds: an elastic BAND from the ball back to the finger (where it was
+  /// pulled), a forward AIM line + arrowhead showing the launch vector (opposite
+  /// the pull), a dotted/dashed TRAJECTORY preview along that vector, and a power
+  /// gauge ground-arc that fills with [power]. [aim] is the launch heading in
+  /// radians, [power] 0..1 the pull fraction, [pullBack] the finger offset from
+  /// the ball (screen px) for the band. Cheap layered solids + dashes (no blur).
+  static void drawSlingshot(
     Canvas canvas,
     Offset center,
     double ballR,
     Color color, {
     required double aim,
-    required double charge,
+    required double power,
+    required Offset pullBack,
+    required double maxPreviewLen,
   }) {
     if (ballR <= 0) return;
-    final c = charge.clamp(0.0, 1.0);
-    final dir = Offset(math.cos(aim), math.sin(aim));
-    final base = ballR * 1.0;
-    // A faint short stub at rest (the idle "you'll fire THIS way" preview) that
-    // grows long + bright as the charge fills — so the bump direction is always
-    // on screen and a tap never fires in a surprise direction.
-    final len = ballR * (1.2 + 2.7 * c);
-    final a = 0.4 + 0.55 * c; // overall opacity: dim idle → bold charged
-    final start = center + dir * base;
-    final end = center + dir * (base + len);
-    final w = ballR * (0.22 + 0.26 * c);
+    final p = power.clamp(0.0, 1.0);
+    final dir = Offset(math.cos(aim), math.sin(aim)); // launch direction
+    final hot = _blend(color, _white, 0.35 + 0.4 * p);
 
-    // Layered solid shaft: a wide soft-tinted base, a crisp colored core, then a
-    // white inner line so it pops over the neon floor — all blur-free.
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = color.withValues(alpha: 0.45 * a)
-        ..strokeWidth = w * 1.8
-        ..strokeCap = StrokeCap.round,
-    );
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = color.withValues(alpha: 0.95 * a)
-        ..strokeWidth = w
-        ..strokeCap = StrokeCap.round,
-    );
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = _white.withValues(alpha: 0.6 * a)
-        ..strokeWidth = w * 0.4
-        ..strokeCap = StrokeCap.round,
-    );
+    // ── Elastic pull-back band: ball → finger, the "loaded" rubber. ──
+    final finger = center + pullBack;
+    if (pullBack.distance > ballR * 0.2) {
+      // A wide soft band + a crisp bright core read as a stretched rubber band.
+      canvas.drawLine(
+        center,
+        finger,
+        Paint()
+          ..color = color.withValues(alpha: 0.30 + 0.25 * p)
+          ..strokeWidth = ballR * (0.5 + 0.35 * p)
+          ..strokeCap = StrokeCap.round,
+      );
+      canvas.drawLine(
+        center,
+        finger,
+        Paint()
+          ..color = _white.withValues(alpha: 0.45 + 0.3 * p)
+          ..strokeWidth = ballR * 0.18
+          ..strokeCap = StrokeCap.round,
+      );
+      // A nub at the finger so the grip point is obvious.
+      canvas.drawCircle(
+        finger,
+        ballR * 0.34,
+        Paint()..color = hot.withValues(alpha: 0.85),
+      );
+    }
 
-    // Arrowhead (color fill + white outline).
-    final perp = Offset(-dir.dy, dir.dx);
-    final head = ballR * (0.6 + 0.34 * c);
-    final tip = end + dir * head;
-    final left = end + perp * head * 0.66;
-    final right = end - perp * head * 0.66;
-    final headPath = Path()
-      ..moveTo(tip.dx, tip.dy)
-      ..lineTo(left.dx, left.dy)
-      ..lineTo(right.dx, right.dy)
-      ..close();
-    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: 0.95 * a));
-    canvas.drawPath(
-      headPath,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, ballR * 0.08)
-        ..color = _white.withValues(alpha: 0.7 * a),
-    );
+    // ── Forward launch aim + dotted trajectory preview. ──
+    final previewLen = maxPreviewLen * p;
+    if (previewLen > ballR * 0.4) {
+      final start = center + dir * (ballR * 1.05);
+      final end = center + dir * (ballR * 1.05 + previewLen);
 
-    // Charge ground-arc beneath the ball — only once a hold is building.
-    if (c > 0.01) {
+      // Dashed trajectory dots fading along the flight path.
+      const dots = 9;
+      for (var i = 1; i <= dots; i++) {
+        final f = i / dots;
+        final at = Offset.lerp(start, end, f)!;
+        final fade = (1.0 - f) * (0.5 + 0.5 * p);
+        canvas.drawCircle(
+          at,
+          ballR * (0.18 + 0.10 * (1.0 - f)),
+          Paint()..color = hot.withValues(alpha: (0.65 * fade).clamp(0.0, 1.0)),
+        );
+      }
+
+      // Crisp aim shaft hint near the ball so the heading is unmistakable.
+      canvas.drawLine(
+        start,
+        Offset.lerp(start, end, 0.45)!,
+        Paint()
+          ..color = color.withValues(alpha: 0.55 + 0.4 * p)
+          ..strokeWidth = ballR * (0.16 + 0.16 * p)
+          ..strokeCap = StrokeCap.round,
+      );
+
+      // Arrowhead at the projected landing tip.
+      final perp = Offset(-dir.dy, dir.dx);
+      final head = ballR * (0.5 + 0.4 * p);
+      final tip = end + dir * head;
+      final left = end + perp * head * 0.66;
+      final right = end - perp * head * 0.66;
+      final headPath = Path()
+        ..moveTo(tip.dx, tip.dy)
+        ..lineTo(left.dx, left.dy)
+        ..lineTo(right.dx, right.dy)
+        ..close();
+      canvas.drawPath(
+        headPath,
+        Paint()..color = hot.withValues(alpha: 0.85),
+      );
+      canvas.drawPath(
+        headPath,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, ballR * 0.08)
+          ..color = _white.withValues(alpha: 0.7),
+      );
+    }
+
+    // ── Power gauge: a ground-arc beneath the ball that fills with the pull. ──
+    if (p > 0.01) {
       final groundCenter = center.translate(0, ballR);
+      // Track.
       canvas.drawArc(
-        Rect.fromCircle(center: groundCenter, radius: ballR * 1.25),
+        Rect.fromCircle(center: groundCenter, radius: ballR * 1.3),
         -math.pi / 2,
-        math.pi * 2 * c,
+        math.pi * 2,
         false,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = ballR * 0.18
+          ..strokeWidth = ballR * 0.12
+          ..color = _white.withValues(alpha: 0.12),
+      );
+      // Fill — turns toward white/hot as it nears a full-power rocket.
+      canvas.drawArc(
+        Rect.fromCircle(center: groundCenter, radius: ballR * 1.3),
+        -math.pi / 2,
+        math.pi * 2 * p,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = ballR * 0.2
           ..strokeCap = StrokeCap.round
-          ..color = _blend(color, _white, c).withValues(alpha: 0.9),
+          ..color = _blend(color, _white, p).withValues(alpha: 0.92),
       );
     }
   }

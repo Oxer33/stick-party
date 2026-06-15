@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
@@ -7,6 +8,7 @@ import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
+import 'package:stick_party/minigames/tank_duel/manual_aim.dart';
 import 'package:stick_party/minigames/tank_duel/tank_duel.dart';
 import 'package:stick_party/minigames/tank_duel/tank_fx.dart';
 
@@ -37,7 +39,8 @@ void main() {
   }
 
   /// Render one frame into a throwaway canvas so render-path asserts can prove
-  /// "never throws" (the gunner mascot + team tints draw here).
+  /// "never throws" (the manual reticle + predicted arc + strafe dust + gunner
+  /// mascot + team tints all draw here).
   void renderOnce(TankDuel g, {ui.Size size = const ui.Size(800, 1200)}) {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder, ui.Offset.zero & size);
@@ -87,7 +90,7 @@ void main() {
     });
   }
 
-  test('human tap fires without throwing', () {
+  test('human drag-fire (down, drag, up) fires without throwing', () {
     final players = [
       PlayerSlot.defaults(0),
       PlayerSlot.defaults(1, isBot: true),
@@ -99,18 +102,28 @@ void main() {
       zones: ZoneLayout.forPlayers(2),
     );
     final g = TankDuel()..init(ctx);
-    g.onInput(PlayerInput.down(0, const Offset(0.5, 0.9)));
+    // A drag aims the barrel up-field, then a release fires.
+    g.onInput(const PlayerInput(
+        playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.6)));
+    g.onInput(const PlayerInput(
+        playerId: 0, phase: InputPhase.up, normPos: Offset(0.5, 0.55)));
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
       g.update(1 / 60);
-      if (n % 30 == 0) g.onInput(PlayerInput.down(0));
+      if (n % 30 == 0) {
+        g.onInput(const PlayerInput(
+            playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.6)));
+        g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+      }
     }
     expect(g.status, MiniGameStatus.finished);
   });
 
-  test('a pure tap (down then immediate up) still fires; round resolves', () {
-    // Tap-to-fire must survive the hold-to-slow-aim addition: a down+up in the
-    // same frame is a snap shot (release always looses).
+  test('a pure tap (down then immediate up, no drag) still fires; round resolves',
+      () {
+    // Tap-to-fire must survive the manual-aim rework: a down+up with no position
+    // is a snap shot down the CURRENT (sticky) aim — release always looses, and
+    // the zero-position sentinel leaves the aim untouched.
     final players = [
       PlayerSlot.defaults(0),
       PlayerSlot.defaults(1, isBot: true),
@@ -138,8 +151,8 @@ void main() {
   test('a full charge (down, long hold, release) fires a charged shell; '
       'round resolves', () {
     // A long hold (well past the ~0.9s full-charge time) must accrue power and
-    // still loose a shell on release without throwing — exercising the new
-    // charge ramp + the charged-speed launch path. ~70 frames ≈ 1.17s hold.
+    // still loose a shell on release without throwing — exercising the charge
+    // ramp + the charged-speed launch path. ~70 frames ≈ 1.17s hold.
     final players = [
       PlayerSlot.defaults(0),
       PlayerSlot.defaults(1, isBot: true),
@@ -171,8 +184,8 @@ void main() {
     // Hard bots wind up a charged shot a good share of the time. A charged shell
     // is solved at the SAME (faster) speed it launches at, so it must still
     // connect rather than sail away. Across several hard-bot rounds the games
-    // resolve and hits land in aggregate (score accrues from landed shells) —
-    // and crucially nothing throws while charged shells are in flight.
+    // resolve and hits land in aggregate — and crucially nothing throws while
+    // charged shells are in flight or while bots steer their manual aim.
     var totalHits = 0.0;
     for (var seed = 0; seed < 6; seed++) {
       final g = TankDuel()
@@ -188,8 +201,58 @@ void main() {
         totalHits += v.toDouble();
       }
     }
-    // Shells (tap + charged) reach their targets, so hits accumulate overall.
+    // Led shells (tap + charged) reach their moving targets, so hits accumulate.
     expect(totalHits, greaterThan(0));
+  });
+
+  // ── ManualAim helper (the drag-aim primitive) ──────────────────────────────
+
+  group('ManualAim (drag-aim, clamped to the firing band)', () {
+    test('aimToward clamps a heading past the band edge onto the limit', () {
+      // A band centered straight up-screen (-pi/2) ±0.5 rad.
+      const center = -math.pi / 2;
+      final aim = ManualAim(minAngle: center - 0.5, maxAngle: center + 0.5);
+      // Drag far to the right of the pivot → wants to point right (~0 rad), but
+      // that's outside the band, so it must rest on the nearest edge.
+      aim.aimToward(const Offset(0, 0), const Offset(1000, -1));
+      expect(aim.angle, closeTo(center + 0.5, 1e-6));
+      expect(aim.angle, greaterThanOrEqualTo(aim.minAngle));
+      expect(aim.angle, lessThanOrEqualTo(aim.maxAngle));
+    });
+
+    test('setAngle is sticky + clamped; a target behind folds to an edge', () {
+      const center = math.pi / 2; // straight down-screen
+      final aim = ManualAim(minAngle: center - 0.4, maxAngle: center + 0.4);
+      aim.setAngle(center + 0.2);
+      expect(aim.angle, closeTo(center + 0.2, 1e-6)); // holds where set
+      // An angle well outside (pointing up, behind a down-facing tank) clamps to
+      // the nearest band edge instead of wrapping to the far side.
+      aim.setAngle(-math.pi / 2);
+      expect(aim.angle,
+          anyOf(closeTo(aim.minAngle, 1e-6), closeTo(aim.maxAngle, 1e-6)));
+    });
+
+    test('nudge steers within the band and saturates at the near edge', () {
+      final aim = ManualAim(minAngle: -0.5, maxAngle: 0.5, angle: 0);
+      aim.nudge(0.2);
+      expect(aim.angle, closeTo(0.2, 1e-6));
+      // Several small steps (as a bot's bounded turn would take) walk it to the
+      // near edge and saturate there — the manual aim never leaves the band.
+      for (var i = 0; i < 10; i++) {
+        aim.nudge(0.2);
+      }
+      expect(aim.angle, closeTo(0.5, 1e-6));
+      for (var i = 0; i < 20; i++) {
+        aim.nudge(-0.2);
+      }
+      expect(aim.angle, closeTo(-0.5, 1e-6));
+    });
+
+    test('rejects a non-finite or inverted band', () {
+      expect(() => ManualAim(minAngle: double.nan, maxAngle: 1),
+          throwsArgumentError);
+      expect(() => ManualAim(minAngle: 1, maxAngle: 0), throwsArgumentError);
+    });
   });
 
   // ── TEAM 2v2 + FFA fairness ────────────────────────────────────────────────
@@ -266,10 +329,11 @@ void main() {
     expect(g.winResult!.ranking.toSet(), {0, 1, 2});
   });
 
-  test('render never throws across modes (gunner mascot + team tints + wreck)',
+  test('render never throws across modes (reticle + arc + strafe + gunner + wreck)',
       () {
-    // Drive each mode to a finish (so wrecks, the winner pulse and the cheering
-    // gunner are all on screen) and render at several points — none may throw.
+    // Drive each mode to a finish (so wrecks, the winner pulse, the strafing
+    // tanks, the predicted-arc reticle and the cheering gunner are all on
+    // screen) and render at several points — none may throw.
     for (final mode in [GameMode.ffa, GameMode.team2v2]) {
       final g = TankDuel()..init(ctxFor(4, seed: 33, mode: mode));
       expect(() {
@@ -280,6 +344,43 @@ void main() {
         renderOnce(g); // final frame: winner celebration + any wrecks
       }, returnsNormally, reason: 'mode $mode threw while rendering');
       expect(g.status, MiniGameStatus.finished);
+    }
+  });
+
+  test('render never throws for 1..4 players while a human drags + charges', () {
+    // A human dragging onto the field and holding a charge populates the live
+    // predicted arc + reticle + charge gauge; rendering that with 1..4 seats and
+    // a strafing board must never throw.
+    for (final count in [1, 2, 3, 4]) {
+      final players = [
+        PlayerSlot.defaults(0),
+        for (var i = 1; i < count; i++) PlayerSlot.defaults(i, isBot: true),
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(60 + count),
+        zones: ZoneLayout.forPlayers(count),
+      );
+      final g = TankDuel()..init(ctx);
+      expect(() {
+        for (var i = 0; i < 60 * 80 && g.status != MiniGameStatus.finished; i++) {
+          // Hold a drag-charge on P0 so the arc preview + gauge are live.
+          if (i % 90 == 0) {
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.5)));
+          }
+          if (i % 90 == 40) {
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.holdTick, normPos: Offset(0.4, 0.5)));
+          }
+          if (i % 90 == 60) {
+            g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+          }
+          g.update(1 / 60);
+          if (i % 25 == 0) renderOnce(g);
+        }
+      }, returnsNormally, reason: '$count-player render threw');
     }
   });
 
@@ -328,19 +429,19 @@ void main() {
     });
   });
 
-  // ── THE DESIGN LAW: a blind trigger-masher must LOSE to timed, aimed fire ────
+  // ── THE DESIGN LAW: a blind trigger-masher must LOSE to LED, aimed fire ─────
 
   /// Build a 2p human-vs-human duel (P0 bottom, P1 top) on a shared seed so both
-  /// shooters face the SAME sweep phases, crate board and airdrops — any score
+  /// shooters face the SAME strafe phases, crate board and airdrops — any score
   /// gap is the SKILL gap, not luck. No bots: both tanks are human-driven by the
   /// test so [ctx.rng] alone drives the world deterministically.
   ///
   /// A SQUARE arena is used on purpose: it makes the two facing tanks symmetric
   /// (neither gravity-favored the way a top tank firing DOWN would be on a tall
-  /// board), so the round isolates the one variable under test — timed aim vs
-  /// blind mashing — instead of confounding it with edge geometry. A snap shot
-  /// comfortably reaches across this span, so the proof is purely about WHEN you
-  /// loose the scarce shell, not whether it can reach.
+  /// board), so the round isolates the one variable under test — LED, timed aim
+  /// vs blind mashing — instead of confounding it with edge geometry. A snap shot
+  /// comfortably reaches across this span, so the proof is purely about WHERE you
+  /// point the scarce shell (the moving foe's lead) and WHEN you loose it.
   MiniGameContext duelCtx(int seed) => MiniGameContext(
         players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1)],
         arena: const Size(800, 800),
@@ -348,31 +449,32 @@ void main() {
         zones: ZoneLayout.forPlayers(2),
       );
 
-  /// Drive one shared duel: P0 SKILLED (fires only when the breech is loaded AND
-  /// the sweep is lined up on the solved lead onto the foe), P1 BLIND SPAMMER
-  /// (down+up every single frame, never aiming/charging). The spammer's own rng
-  /// is separate from [ctx.rng] so the sim stays deterministic. Returns the game
-  /// at finish.
+  /// Drive one shared duel: P0 SKILLED (each frame DRAGS its manual aim onto the
+  /// solved lead onto the strafing foe via the debug seams, and fires the instant
+  /// the breech is loaded AND the barrel is on the lead), P1 BLIND SPAMMER
+  /// (down+up every single frame, never aiming — its sticky barrel just sits at
+  /// its rest angle while shells fly at a foe that has strafed away). Returns the
+  /// game at finish.
   TankDuel runDuel(int seed) {
     final g = TankDuel()..init(duelCtx(seed));
-    // Aim tolerance for the skilled release: a tight cone, so P0 only looses a
-    // scarce shell when the sweep actually crosses the firing line (timing it on
-    // the sweep — exactly what the design rewards).
+    // Aim tolerance for the skilled release: tight, so P0 only looses when its
+    // manual barrel is genuinely on the solved lead.
     const aimTol = 0.06;
     var n = 0;
     while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
-      // P0 SKILLED: wait for a loaded breech, then fire the instant the sweep is
-      // within the cone of the lead angle onto the enemy (a snap, well-aimed).
-      if (g.debugIsLoaded(0)) {
-        final want = g.debugBestAimAngle(0);
-        if (want != null && (g.debugAimAngle(0) - want).abs() <= aimTol) {
+      // P0 SKILLED: solve the lead onto the MOVING foe, DRIVE the manual aim onto
+      // it (the player's drag), then fire only when loaded + lined up.
+      final want = g.debugBestAimAngle(0);
+      if (want != null) {
+        g.debugSetAim(0, want); // drag the barrel onto the lead
+        if (g.debugIsLoaded(0) && (g.debugAimAngle(0) - want).abs() <= aimTol) {
           g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down));
           g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
         }
       }
-      // P1 BLIND SPAMMER: mash the trigger every frame, no aim, no charge. The
-      // reload economy holds it to the same scarce shell budget, and every shell
-      // it does loose flies at whatever angle the sweep happens to sit on.
+      // P1 BLIND SPAMMER: mash the trigger every frame, no aim. The reload economy
+      // holds it to the same scarce shell budget, and every shell it looses flies
+      // down its STALE rest aim at a foe that keeps strafing out of the way.
       g.onInput(const PlayerInput(playerId: 1, phase: InputPhase.down));
       g.onInput(const PlayerInput(playerId: 1, phase: InputPhase.up));
       g.update(1 / 60);
@@ -382,9 +484,10 @@ void main() {
 
   test('DESIGN LAW (per-seed): a blind trigger-masher NEVER wins the duel', () {
     // On EVERY seed the blind spammer must not finish 1st against a shooter who
-    // times the scarce shot on the sweep. Requiring it across several shared
-    // boards makes the proof robust (not one lucky sweep) and would surface any
-    // real hole in the reload-gated "each shot must count" law.
+    // leads the moving foe and times the scarce shot. Requiring it across several
+    // shared boards makes the proof robust (not one lucky strafe) and would
+    // surface any real hole in the manual-aim + reload-gated "each shot must
+    // count" law.
     for (final seed in [1, 7, 19, 23, 42, 88]) {
       final g = runDuel(seed);
       expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
@@ -395,13 +498,13 @@ void main() {
     }
   });
 
-  test('DESIGN LAW (aggregate): timed aim strictly OUT-HITS blind mashing', () {
+  test('DESIGN LAW (aggregate): led, timed aim strictly OUT-HITS blind mashing',
+      () {
     // Across the shared seeds, the skilled shooter's TOTAL landed hits must
-    // strictly dominate the spammer's. (A single chaotic duel can swing on a
-    // lucky spray, so the strict dominance is asserted in aggregate — the same
-    // shape the sibling chaotic games use.) Also proves the spammer banks SOME
-    // hits (the board isn't degenerate) yet still loses the volume war on
-    // accuracy, not on a lower fire-rate.
+    // strictly DOMINATE the spammer's. (A single chaotic duel can swing on a
+    // lucky spray, so the strict dominance is asserted in aggregate.) Also proves
+    // the spammer banks SOME hits (the board isn't degenerate) yet still loses
+    // the volume war on AIM (leading a moving target), not on a lower fire-rate.
     var skilledHits = 0.0, spamHits = 0.0;
     var skilledShots = 0, spamShots = 0;
     for (final seed in [1, 7, 19, 23, 42, 88]) {
@@ -413,11 +516,11 @@ void main() {
       spamShots += g.debugShotsFired(1);
     }
     expect(skilledHits, greaterThan(spamHits),
-        reason: 'timed aim must out-hit blind mashing in aggregate '
+        reason: 'led aim must out-hit blind mashing in aggregate '
             '(skilled=$skilledHits spam=$spamHits)');
     // Dominance, not a coin-flip edge: aim should clearly beat spray.
     expect(skilledHits, greaterThan(spamHits * 1.5),
-        reason: 'aimed fire should DOMINATE, not edge out, blind mashing '
+        reason: 'led fire should DOMINATE, not edge out, blind mashing '
             '(skilled=$skilledHits spam=$spamHits)');
     // The win is accuracy, NOT volume: the masher gets at least as many shells
     // off as the skilled shooter (it pulls the trigger far more often), yet
@@ -446,5 +549,39 @@ void main() {
     expect(shots, lessThanOrEqualTo(4),
         reason: 'reload must cap a frame-perfect mash to a few shells/s, got '
             '$shots');
+  });
+
+  test('manual aim is STICKY: a tap never moves the barrel from where it was set',
+      () {
+    // Manual aim holds between shots. Set it via the debug seam, then a
+    // zero-position tap (snap fire) must leave the angle exactly where it was —
+    // the barrel does not re-center or sweep on its own.
+    final g = TankDuel()..init(duelCtx(13));
+    // Bottom tank: inward normal is up (-pi/2); aim toward one band edge.
+    g.debugSetAim(0, -math.pi / 2 - 0.5);
+    final set = g.debugAimAngle(0);
+    // A pure tap (no position) fires but must NOT change the aim.
+    g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.down));
+    g.onInput(const PlayerInput(playerId: 0, phase: InputPhase.up));
+    g.update(1 / 60);
+    expect(g.debugAimAngle(0), closeTo(set, 1e-9),
+        reason: 'a tap must keep the sticky manual aim, not move it');
+  });
+
+  test('tanks STRAFE: the solved lead angle tracks the moving foe over time', () {
+    // The moving-target mechanic: the solved lead angle onto the enemy must shift
+    // as that enemy strafes (a static foe would never move the lead). Read the
+    // lead at two well-separated times; it must differ.
+    final g = TankDuel()..init(duelCtx(17));
+    final a0 = g.debugBestAimAngle(0);
+    for (var i = 0; i < 90; i++) {
+      g.update(1 / 60); // ~1.5s — comfortably more than half a strafe pass
+    }
+    final a1 = g.debugBestAimAngle(0);
+    expect(a0, isNotNull);
+    expect(a1, isNotNull);
+    expect((a1! - a0!).abs(), greaterThan(1e-3),
+        reason: 'the lead onto a strafing foe should move as it slides '
+            '(a0=$a0 a1=$a1)');
   });
 }

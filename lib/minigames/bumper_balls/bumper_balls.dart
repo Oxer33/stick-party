@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/push_arena.dart';
@@ -9,51 +11,53 @@ import '../../engine/player_manager.dart';
 import 'bumper_fx.dart';
 import 'bumper_render.dart';
 
-/// Bumper Balls — neon knockout. Every player is a glowing bumper ball on a
-/// circular platform and shoves rivals off the edge.
+/// Bumper Balls — "Fionda & sponde" (slingshot + bank shots). Every player is a
+/// glowing bumper ball on a circular platform. A SLINGSHOT launch caroms off
+/// rivals AND fixed PEGS to bank knock-outs off the edge — a skilful trick-shot
+/// game, not a shove-spam.
 ///
 /// SCORED BRAWL (not last-one-standing): the round runs the FULL [_timeLimit]
 /// and your SCORE is the number of ring-outs you CAUSE. A knocked-off ball does
 /// NOT end the round — it RESPAWNS ~[_respawnSec] later from its spawn edge with
 /// a brief spawn-invuln, so a 1v1 becomes a sustained bumper match: knock the
 /// rival off, it comes back, most ring-outs in [_timeLimit] wins. A ring-out
-/// credits the LAST ball that bumped the victim; bumping YOURSELF off (no recent
-/// attacker) scores nobody and docks a small penalty, so blind mash that rockets
-/// you off the edge loses ground to paced, aimed caroms.
+/// credits the LAST ball that bumped the victim; ringing YOURSELF out (no recent
+/// attacker) scores nobody and docks a small penalty, so a feeble flail that
+/// drifts you off the edge loses ground to judged, banked launches.
 ///
-/// CONTROL (the heart of it — full player agency, one touch; the player owns
-/// the aim, nothing auto-targets):
-///  * DRAG from your ball in the direction you want to fire — the telegraph
-///    follows your thumb, so YOU choose the angle every bump.
-///  * HOLD builds a charge meter while you keep dragging to re-aim; longer hold
-///    = harder bump (power ∝ charge).
-///  * RELEASE → a charged release becomes a ROCKET DASH: the ball keeps its
-///    momentum and stays bouncy for ~1s, so you carom off rivals (elastic
-///    caroms) to knock them into the edge while you ricochet on — a real
-///    "trick shot" decision instead of one dead-stop nudge.
-///  * A committed HOLD-and-release with no drag fires at the nearest rival (a
-///    kid-safe default that is EARNED by holding past [_autoAimMinCharge]). A
-///    blind instant tap-mash does NOT get this assist: it fires in the ball's
-///    stale aim with no retarget, so flailing whiffs and self-rings.
+/// CONTROL — the SLINGSHOT (the heart of it; full agency, the player owns aim
+/// AND power, nothing auto-targets):
+///  * DRAG BACKWARD from your ball (pull back, like pool / Angry-Birds). A live
+///    elastic band + a dotted trajectory preview + a power gauge show exactly
+///    where and how hard you will fire — the launch vector is OPPOSITE the pull.
+///  * POWER is the VISIBLE pull distance (∝ pull, clamped at [_maxPullFrac]). A
+///    longer pull = a stronger cross-platform rocket.
+///  * RELEASE = LAUNCH: the ball rolls with real momentum and caroms elastically
+///    off rivals and off the PEGS (bank shots), staying bouncy for ~1s so a
+///    well-judged angle banks a rival into the rim while you ricochet on.
+///  * A tiny tap / micro-pull goes NOWHERE — a feeble nudge that drifts. There
+///    is no invisible charge and no auto-aim assist: power and angle are earned
+///    by the pull you can see.
 ///
-/// WHY SPAM LOSES (the design law): a KO ejection requires an AIMED + CHARGED
-/// dash. Charging briefly ROOTS the ball ([_chargeRootRetain]) so a whiffed
-/// charge is punishable; contact knockback that ejects a rival scales with the
-/// attacker's COMMITTED charge ([_committedCharge]) so a weak/uncharged bump or a
-/// stale carom can shove but never luck-launch; and only a committed charge arms
-/// the momentum-keep rocket. A blind dasher out-scores nobody and self-rings on
-/// the shrinking edge; an aimer who banks rivals into the rim wins.
+/// WHY SPAM LOSES (the design law): a KO ejection requires a JUDGED pull. Launch
+/// momentum is ∝ the pull fraction, so a blind tapper makes only feeble drifts;
+/// contact knockback that ejects a rival scales with the attacker's COMMITTED
+/// launch power ([_committedPower] window) so a weak nudge or a stale carom can
+/// shove but never luck-launch; and only a strong launch arms the momentum-keep
+/// rocket that banks off pegs. A blind masher out-scores nobody and self-rings
+/// on the shrinking edge; a player who aims a banked slingshot wins.
 ///
-/// Feel: a slick-but-grippy floor so bumps carry without instantly ejecting an
-/// idle ball; elastic caroms (PushArena) plus a speed- and head-on-scaled
-/// knockback bonus, so a fast square hit flings a rival much further than a
-/// graze. Squash & stretch on impact, impact spark rings, motion trails, and a
-/// platform that slowly shrinks after a grace period so matches always resolve.
+/// Feel: a slick-but-grippy floor so launches carry; elastic caroms (PushArena)
+/// off rivals + locally-resolved PEG bounces (restitution ~1) for lively banks;
+/// a speed- and head-on-scaled knockback bonus so a fast square hit flings a
+/// rival much further than a graze. Squash & stretch on impact, impact spark
+/// rings, motion trails, glossy neon pegs that flash on impact, and a platform
+/// that slowly shrinks after a grace period so matches always resolve.
 ///
-/// Bots cannot drag, so they aim at the nearest opponent (via [_aimAtNearest]):
-/// a short warmup, then approach with a light nudge and commit a charged rocket
-/// only when close; near the edge they save themselves toward the centre.
-/// [BotProfile] governs timing, charge and aim error so they read as deliberate,
+/// Bots aim a slingshot at the nearest rival (or a bank line) and pull a power
+/// scaled by accuracy: a short warmup, then hard bots line up strong banked
+/// launches while easy bots mis-aim / under-pull and self-ring near the edge.
+/// [BotProfile] governs timing, power and aim error so they read as deliberate,
 /// not random — and never eject an idle player in the first several seconds.
 class BumperBalls extends MiniGameBase {
   @override
@@ -63,85 +67,91 @@ class BumperBalls extends MiniGameBase {
     minPlayers: 1,
     maxPlayers: 4,
     modes: [GameMode.ffa, GameMode.duel1v1],
-    inputHint: 'DRAG / HOLD',
+    inputHint: 'PULL BACK',
   );
 
   // ── Arena / sim tuning ──────────────────────────────────────────────────────
-  // Device-tuned (matched to Sumo Smash) for a sustained ~28s match: small
-  // bodies + big ring + grippy floor + a weak base bump so a single hit never
-  // instantly ejects an idle ball; ring-outs come from positioning + charged
-  // bumps near the edge. KO'd balls respawn, so the round always plays the FULL
-  // limit instead of ending on the first knockout.
+  // Device-tuned for a sustained ~28s match: small bodies + big ring + grippy
+  // floor so launches carry and bank but an idle ball is not instantly ejected;
+  // ring-outs come from aimed, banked slingshot launches near the edge. KO'd
+  // balls respawn, so the round always plays the FULL limit.
   static const double _timeLimit = 28;
   static const double _ringRadiusFactor = 0.46;
   static const double _bodyRadiusFactor = 0.05; // glossy bumper footprint
-  static const double _ringFriction = 0.95; // grippy so bumps don't slide off
-  static const double _ringRestitution = 0.92; // lively caroms, not chaotic
+  static const double _ringFriction = 0.95; // grippy so launches settle, carry
+  static const double _ringRestitution = 0.92; // lively ball-ball caroms
   static const double _spawnRadiusFactor = 0.55;
 
-  // ── Aim + charge control tuning ─────────────────────────────────────────────
-  // The aim is owned by the player's DRAG (see [_applyDragAim]); a bot or a
-  // no-drag tap resolves it at fire time toward the nearest opponent.
-  static const double _chargeTimeSec = 0.6; // hold time to full charge
-  static const double _cooldownSec = 0.24; // snappy recovery between bumps
-  static const double _dashBase = 1.4; // quick tap = a small nudge
-  static const double _dashCharge = 3.8; // full hold = a strong launch
-  static const double _selfPushback = 0.08; // recoil opposite the bump
-  static const double _trailLifeSec = 0.2;
+  // ── SLINGSHOT control tuning (the heart) ────────────────────────────────────
+  // The player DRAGS BACKWARD from the ball; power is the VISIBLE pull distance
+  // (no invisible charge). Pull is clamped to [_maxPullFrac] of the min screen
+  // side; below [_minPullFrac] it is a feeble nudge that goes nowhere. The launch
+  // momentum maps the pull fraction onto an impulse so a FULL pull is a strong
+  // cross-platform rocket while a tap drifts.
+  static const double _maxPullFrac = 0.16; // full pull = this share of min side
+  static const double _minPullFrac =
+      0.022; // below this the pull is a dud (a tap goes nowhere)
+  static const double _cooldownSec = 0.22; // snappy recovery between launches
+  // Launch impulse (arena-radius units) at zero vs full pull. A zero/micro pull
+  // is a true DUD — it barely dribbles and cannot bank a rival; a full pull is a
+  // strong rocket that crosses the platform and banks, but the grippy floor reins
+  // it in if it misses (so a wild full launch is not a guaranteed self-ring). The
+  // tiny base is what makes a blind every-frame tapper feeble.
+  static const double _launchBase = 0.1; // near-nothing floor for a tap
+  static const double _launchSpan = 3.4; // added at full pull → strong rocket
+  static const double _selfPushback = 0.05; // tiny recoil opposite the launch
+  static const double _trailLifeSec = 0.22;
   static const double _maxSpeedRef =
       700.0; // speed mapped to full trail/stretch
-  // Drag aim: the touch must move at least this far (fraction of the min screen
-  // side) from the ball before it counts as a deliberate aim; a smaller wiggle
-  // is treated as a no-drag tap (→ aim at nearest, a kid-safe default).
-  static const double _aimDragDeadzone = 0.018;
-  // The kid-safe "no-drag release aims at the nearest rival" assist is EARNED by
-  // a committed hold (charge >= this). A quick TAP (below it, no drag) fires the
-  // ball's CURRENT shown aim with no retarget — so a masher who never drags nor
-  // holds sprays mis-aimed dashes that whiff (bumper's lively caroms would let an
-  // auto-aimed 0-charge dash grind ejects, so the aim must be earned). The idle
-  // aim arrow makes that current aim visible, so a tap is readable, not random.
-  static const double _autoAimMinCharge = 0.18;
-  // While charging, retain only this share of speed per 1/60s — a near-root so a
-  // whiffed charge is punishable (the ball is briefly a sitting duck and cannot
-  // mash its way across the platform). A real hold-to-commit COSTS position.
-  static const double _chargeRootRetain = 0.62;
 
-  // ── Rocket dash (the bumper differentiator) ─────────────────────────────────
-  // A charged release tags the ball "launched": for [_launchSec] the game
-  // counteracts ring-friction on it so it keeps its momentum and caroms off
-  // rivals (elastic, restitution 0.92) — knocking them toward the edge while it
-  // ricochets on — instead of one dead-stop nudge. Only a real charge arms it.
-  static const double _launchSec =
-      1.0; // momentum-keep window after a charged bump
-  // Arm the momentum-keep ROCKET only on a COMMITTED charge (== the contact
-  // commit gate), so an under-committed dash both whiffs its eject bonus AND
-  // dead-stops on contact (no fast carom) — a blind/weak dash cannot keep speed
-  // to luck-launch a rival. Skill (a real hold) is what buys the trick-shot.
-  static const double _launchChargeMin = 0.5; // == _committedCharge
+  // ── Rocket window (momentum-keep so launches bank off pegs) ─────────────────
+  // A strong launch tags the ball "launched": for [_launchSec] the game
+  // counteracts ring-friction so it keeps momentum and caroms off rivals + pegs
+  // (bank shots) instead of dragging to a stop. Only a pull past
+  // [_launchRocketMin] arms it, so a weak nudge dies quickly with no bank.
+  static const double _launchSec = 1.0; // momentum-keep window after a launch
+  static const double _launchRocketMin = 0.45; // pull frac that arms the rocket
   static const double _launchFrictionRetain =
-      0.992; // per-1/60s speed kept while launched
+      0.994; // per-1/60s speed kept while launched (a rocket carries across)
   static const double _launchMaxSpeed =
-      1100.0; // cap so a rocket never runs away
+      1000.0; // cap so a rocket crosses the platform but never runs away
+
+  // ── Pegs (static bumpers — the bank-shot anchors) ───────────────────────────
+  // A small deterministic set of fixed circular bumpers. PushArena has no
+  // immovable bodies, so the game resolves ball-peg contacts LOCALLY (reflect
+  // about the contact normal, restitution [_pegRestitution], push out of
+  // overlap) every frame — deterministic + frame-rate independent.
+  static const double _pegRadiusFactor = 0.9; // peg R / body R
+  static const double _pegRestitution = 1.0; // lively, near-perfectly elastic
+  static const double _pegRingFactor =
+      0.5; // off-centre pegs sit at this share of the ring R
+  static const double _pegCoreOffsetFactor =
+      0.2; // core peg nudged this far off centre (clears the spawn axis)
+  static const double _pegFlashDecayPerSec = 3.4; // hit-flash relax speed
+  // A peg must clear every spawn by this multiple of (body R + peg R), so a
+  // respawning ball is never wedged into a bumper but pegs can still sit in the
+  // spawn gaps. Kept tight: the bisector placement already maximises the angle.
+  static const double _pegSpawnClearFactor = 1.12;
 
   // ── Knockback (contact) tuning ──────────────────────────────────────────────
   static const double _contactSpeedRef =
       700.0; // speed mapped to full knockback
   static const double _contactBonusScale =
-      0.28; // bonus impulse / attacker speed
-  static const double _headOnExtra = 0.85; // extra multiplier for a head-on hit
+      0.95; // bonus impulse / attacker speed (an aimed hit reliably ejects)
+  static const double _headOnExtra = 1.2; // extra multiplier for a head-on hit
   static const double _heavyHitSpeed = 380.0; // above → heavy shake + hit-stop
   static const double _squashOnHit = 0.42; // squash amount stamped on impact
   static const double _squashDecayPerSec = 3.2; // how fast squash relaxes
   static const double _impactRingLifeSec = 0.32;
   static const double _impactRingMaxFactor = 2.4; // ring max radius / body R
   // ── COMMIT GATE on contact knockback (the anti-luck-launch rule) ─────────────
-  // An UNCHARGED bump (below [_committedCharge]) transfers only
-  // [_weakHitKnockbackFloor] of its eject impulse, so a weak/incidental nudge —
-  // or a fast carom that wasn't an aimed commit — can shove a rival but cannot
-  // luck-launch them off the ring. Only a committed (charged) dash ejects.
-  // Scales linearly to full at [_committedCharge]. (Mirrors Sumo's commit gate.)
-  static const double _weakHitKnockbackFloor = 0.35;
-  static const double _committedCharge = 0.5;
+  // A weakly-slung ball (committed power below [_committedPower]) transfers only
+  // [_weakHitKnockbackFloor] of its eject impulse, so a feeble nudge — or a ball
+  // kept fast only by a later carom, not an aimed launch — can shove a rival but
+  // cannot luck-launch them off the ring. Only a committed (strongly-slung) ball
+  // ejects. Scales linearly to full at [_committedPower].
+  static const double _weakHitKnockbackFloor = 0.32;
+  static const double _committedPower = 0.5; // pull frac for full eject credit
 
   // ── Shrinking platform (sudden death) tuning ────────────────────────────────
   // The shrink does the late-game work: it starts after a grace period (so an
@@ -197,27 +207,34 @@ class BumperBalls extends MiniGameBase {
   static const double _spawnInvulnSec = 0.9; // post-respawn grace (no KO either way)
   static const double _attackerCreditSec =
       1.1; // a bump credits a KO only this recently
-  static const double _selfRingPenalty = 1.0; // score docked for a self-ring-out
+  // A self-ring-out docks this (a soft nudge, not the headline) so a banked KO is
+  // the dominant score signal — a feeble spammer that drifts off the shrinking
+  // edge still loses ground, but the round is decided by KOs CAUSED, not by who
+  // self-ringed least in the chaos.
+  static const double _selfRingPenalty = 0.5;
 
   // ── Expression tuning ────────────────────────────────────────────────────────
   static const double _scaredEdgeFactor = 0.78; // dist/ring above → looks scared
 
-  // ── Bot tuning (mirrors Sumo's fair model) ──────────────────────────────────
+  // ── Bot tuning (slingshot, BotProfile-driven, fair + beatable) ──────────────
+  // Bots aim a slingshot and pick a PULL power scaled by accuracy. A warmup grace
+  // keeps them passive at the start so they never eject an idle human early.
   static const double _botWarmupSec = 2.0; // grace before bots engage
-  static const double _botCloseRangeFactor = 4.2; // approach vs shove threshold
+  static const double _botCarrySpeed = 120.0; // skip a launch while already fast
   static const double _botEdgeBackoff =
-      0.62; // dist/ring above → retreat inward
+      0.62; // dist/ring above → save toward centre
   static const double _botAimErrorRad = 0.55; // max aim jitter at accuracy 0
-  static const double _botCarrySpeed = 120.0; // skip bump while already fast
-  static const double _botSaveCharge = 0.5; // charge used to save off the edge
-  static const double _botApproachCharge =
-      0.06; // light nudge to close distance
-  // Charge band for a close-range bot dash, scaled by accuracy in [_botDecide]
-  // so the COMMIT GATE makes a real skill gradient: a HARD bot reliably clears
-  // [_committedCharge] (lands ejects), an EASY bot stays under it (weak shoves
-  // that rarely KO — beatable by a human who aims charged dashes).
-  static const double _botShoveChargeMin = 0.25; // floor of the band
-  static const double _botShoveChargeMax = 0.7; // hard-bot reach (> commit gate)
+  static const double _botSavePull = 0.55; // pull used to save off the edge
+  // Pull band for a bot launch, scaled by accuracy in [_botDecide] so the COMMIT
+  // GATE + the pull→momentum map make a real skill gradient: a HARD bot reliably
+  // pulls past [_committedPower] (strong banked launches that eject), an EASY bot
+  // mostly stays under it (weak drifts that rarely KO and self-ring near the
+  // edge) — beatable by a human who aims a judged slingshot.
+  static const double _botPullMin = 0.22; // floor of the band (weak drift)
+  static const double _botPullMax = 0.82; // hard-bot reach (strong rocket)
+  // Easy bots over-pull/mis-judge a save and can fling THEMSELVES off the rim;
+  // hard bots line up a bank toward the nearest rival.
+  static const double _botBankAccuracy = 0.7; // ≥ this accuracy attempts banks
 
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _accent = Color(0xFF5FE0FF); // neon platform rim accent
@@ -234,11 +251,14 @@ class BumperBalls extends MiniGameBase {
   late double _ringRadius; // initial (max) radius — also the arena's radius
   late double _currentRingRadius; // shrinking radius for ring-out + visuals
   late double _bodyRadius;
+  late double _maxPullPx; // full slingshot pull distance in screen px
+  late double _previewMaxLen; // trajectory-preview length at full power (px)
 
   final Map<int, ReactionClock> _botClocks = <int, ReactionClock>{};
   final Map<int, BallState> _ball = <int, BallState>{};
   final Set<int> _ragdolled = <int>{}; // bodies currently knocked off (respawning)
   final List<ImpactRing> _impacts = <ImpactRing>[];
+  final List<Peg> _pegs = <Peg>[]; // static bumpers (bank-shot anchors)
 
   /// Spawn position per player, reused to fling a respawn back in from its edge.
   final Map<int, Offset> _spawnPos = <int, Offset>{};
@@ -273,6 +293,8 @@ class BumperBalls extends MiniGameBase {
     _ringRadius = minSide * _ringRadiusFactor;
     _currentRingRadius = _ringRadius;
     _bodyRadius = minSide * _bodyRadiusFactor;
+    _maxPullPx = minSide * _maxPullFrac;
+    _previewMaxLen = _ringRadius * 1.25; // a full pull projects ~across the disc
     _stars = StarController(
       radius: _bodyRadius * _starRadiusFactor,
       firstSpawnSec: _starFirstSpawnSec,
@@ -297,8 +319,67 @@ class BumperBalls extends MiniGameBase {
     );
 
     _buildBodies();
+    _buildPegs();
     _seedMotes();
     begin();
+  }
+
+  /// Place a small deterministic set of static PEGS (bank-shot anchors). The
+  /// count scales with player count (more balls → more banks worth setting up),
+  /// and the layout is fixed by arena size + count so it is identical every run.
+  /// Pegs are kept clear of every spawn point so a ball never lands inside one.
+  ///
+  /// Layout: a near-centre peg (the core bank anchor, nudged OFF the spawn axis
+  /// so it never sits dead-on the line between two opposed spawns — otherwise a
+  /// straight duel shot would always be blocked), plus off-centre pegs at the
+  /// BISECTOR angles between adjacent spawn rays (so they sit in the GAPS, never
+  /// on a spawn) at a radius safely inside the spawn ring. Lively banks open up
+  /// off these without ever wedging a respawning ball or walling off a lane.
+  void _buildPegs() {
+    final count = ctx.players.length;
+    final pegR = _bodyRadius * _pegRadiusFactor;
+    final ringR = _ringRadius * _pegRingFactor;
+    // 2 pegs at 1 player, scaling up to 4 at a full table — deterministic.
+    final pegCount = (count + 1).clamp(2, 4);
+    final ringPegs = pegCount - 1;
+
+    // The core peg is nudged off-centre along a fixed diagonal so it is never
+    // collinear with two opposed spawns (which would wall off a straight duel
+    // shot); it still anchors bank lines from near the middle.
+    final coreOffset = _ringRadius * _pegCoreOffsetFactor;
+    final candidates = <Offset>[
+      _center + Offset(coreOffset, coreOffset * 0.5),
+    ];
+    // Spawns are evenly spaced from +90° (see [_buildBodies]); place ring pegs on
+    // the spawn-gap BISECTORS so each is maximally far (angularly) from every
+    // spawn. With >1 player the slice is 2π/count; for a single player there is
+    // no gap, so the lone ring peg goes straight opposite the spawn (north).
+    for (var i = 0; i < ringPegs; i++) {
+      final double angle;
+      if (count <= 1) {
+        angle = math.pi / 2 + math.pi; // opposite the single bottom spawn
+      } else {
+        // Bisector of spawn slice i: spawn angle + half a slice.
+        angle = math.pi / 2 + (i + 0.5) / count * math.pi * 2;
+      }
+      candidates.add(
+        _center + Offset(math.cos(angle), math.sin(angle)) * ringR,
+      );
+    }
+
+    final clear = _bodyRadius * _pegSpawnClearFactor + pegR;
+    for (final pos in candidates) {
+      // Skip a candidate that would sit too close to any spawn point (so a
+      // respawning ball is never wedged into a peg).
+      final tooCloseToSpawn = _spawnPos.values.any(
+        (sp) => (sp - pos).distance < clear,
+      );
+      if (tooCloseToSpawn) continue;
+      _pegs.add(Peg(pos: pos, radius: pegR));
+    }
+    // Guarantee at least the centre peg exists even in a degenerate layout, so
+    // the bank-shot identity always holds.
+    if (_pegs.isEmpty) _pegs.add(Peg(pos: _center, radius: pegR));
   }
 
   /// Place one ball per player evenly on a spawn circle, with its aim pointing
@@ -331,7 +412,7 @@ class BumperBalls extends MiniGameBase {
     }
   }
 
-  // ── Input: hold to charge + aim, release to bump (mirrors Sumo) ─────────────
+  // ── Input: SLINGSHOT — drag back to aim+power, release to launch ────────────
 
   @override
   void onInput(PlayerInput input) {
@@ -343,57 +424,57 @@ class BumperBalls extends MiniGameBase {
     switch (input.phase) {
       case InputPhase.down:
         if (s.ready && !s.invulnerable) {
-          s.charging = true; // begin charging
-          s.hasDragAim = false; // a plain tap stays on the nearest-rival aim
-          s.downPos = Offset(
-            input.normPos.dx * _size.width,
-            input.normPos.dy * _size.height,
-          );
+          s.aiming = true; // begin a pull
+          s.hasPull = false;
+          s.pullFrac = 0;
+          s.downPos = _screen(input.normPos);
+          s.dragPos = s.downPos;
         }
       case InputPhase.holdTick:
-        // Only a real DRAG (finger travels from the press point) re-aims by hand.
-        _applyDragAim(input, body, s);
+        // The finger travels: capture the live pull (relative to the ball) so the
+        // band, preview and power gauge update. The launch fires OPPOSITE it.
+        _updatePull(input, body, s);
       case InputPhase.up:
-        if (s.charging) {
-          s.charging = false;
-          _applyDragAim(input, body, s); // a final flick can still steer
-          // A deliberate DRAG aims by hand; a committed HOLD (charge >= the gate)
-          // earns the nearest-rival auto-assist; a quick TAP fires the CURRENT
-          // shown aim with no retarget — so a no-drag, no-hold masher's dashes
-          // stay mis-aimed and whiff (bumper's caroms would let an auto-aimed
-          // 0-charge dash grind ejects). The always-on idle arrow shows that aim,
-          // so the tap is readable, not random.
-          final earnedAssist = s.charge >= _autoAimMinCharge;
-          final aim = s.hasDragAim
-              ? s.aim
-              : (earnedAssist ? (_aimAtNearest(input.playerId) ?? s.aim) : s.aim);
-          _commitDash(input.playerId, body, aim, s.charge);
-          s.charge = 0;
-          s.hasDragAim = false;
+        if (s.aiming) {
+          s.aiming = false;
+          _updatePull(input, body, s); // a final move still counts
+          // Power is the VISIBLE pull fraction — no charge, no auto-aim. A pull
+          // under the dead-zone is a dud nudge that goes nowhere; a judged pull
+          // launches opposite the drag with momentum ∝ the pull.
+          _launch(input.playerId, body, s.aim, s.hasPull ? s.pullFrac : 0.0);
+          s.pullFrac = 0;
+          s.hasPull = false;
         }
     }
   }
 
-  /// Set the ball's aim from the drag vector (touch [input.normPos] relative to
-  /// the ball), in true screen pixels so the angle is not skewed by the portrait
-  /// aspect. A move shorter than [_aimDragDeadzone] (or a synthetic hold-tick
-  /// with no position) is ignored, leaving any prior chosen aim — or the
-  /// nearest-opponent fallback — intact.
-  void _applyDragAim(PlayerInput input, Body body, BallState s) {
-    if (!s.charging) return;
-    if (input.normPos == Offset.zero) return; // a bare per-frame tick has no pos
-    final touch = Offset(
-      input.normPos.dx * _size.width,
-      input.normPos.dy * _size.height,
-    );
+  /// Capture the live slingshot pull from the finger position. The pull VECTOR
+  /// is finger−ball; the launch heading [BallState.aim] is OPPOSITE it (drag
+  /// back, fire forward), and [BallState.pullFrac] is the pull distance clamped
+  /// to [_maxPullPx]. A pull shorter than [_minPullFrac] of the min side leaves
+  /// the launch a dud, so a tap-in-place fires nowhere. A bare per-frame tick
+  /// with no position is ignored (keeps the last captured pull).
+  void _updatePull(PlayerInput input, Body body, BallState s) {
+    if (!s.aiming) return;
+    if (input.normPos == Offset.zero) return; // a bare tick carries no pos
+    final touch = _screen(input.normPos);
+    s.dragPos = touch;
+    final pull = touch - body.pos; // finger relative to the ball
+    final dist = pull.distance;
     final minSide = math.min(_size.width, _size.height);
-    // Manual aim engages only once the finger DRAGS from where it pressed; a
-    // tap-in-place leaves the nearest-rival default, so a tap never fires in a
-    // surprise direction. The angle points from the ball toward the finger.
-    if ((touch - s.downPos).distance < minSide * _aimDragDeadzone) return;
-    s.aim = math.atan2(touch.dy - body.pos.dy, touch.dx - body.pos.dx);
-    s.hasDragAim = true;
+    if (dist < minSide * _minPullFrac) {
+      s.hasPull = false; // still within the dead-zone — a dud so far
+      s.pullFrac = 0;
+      return;
+    }
+    // Launch opposite the pull (the slingshot fires away from the drag).
+    s.aim = math.atan2(-pull.dy, -pull.dx);
+    s.pullFrac = (dist / _maxPullPx).clamp(0.0, 1.0);
+    s.hasPull = true;
   }
+
+  Offset _screen(Offset norm) =>
+      Offset(norm.dx * _size.width, norm.dy * _size.height);
 
   @override
   void update(double dt) {
@@ -409,6 +490,7 @@ class BumperBalls extends MiniGameBase {
     _tickImpacts(dt);
     _tickFlung(dt);
     _tickRespawns(dt);
+    _tickPegs(dt);
     _driveBots(dt);
     _shrinkRing(dt);
     _stars.tick(
@@ -422,10 +504,77 @@ class BumperBalls extends MiniGameBase {
     _arena.update(sdt);
 
     _driveLaunched(sdt);
+    // Resolve ball-PEG caroms AFTER integration + the rocket re-boost so the
+    // bounce acts on the ball's true post-step velocity (the bank shot). The
+    // engine has no immovable bodies, so this is owned locally.
+    _resolvePegCollisions();
     _collectStars();
     _resolveContacts();
     _detectRingOuts();
     _resolveOutcome();
+  }
+
+  /// Relax each peg's hit-flash toward 0 (visual only), frame-rate independent.
+  void _tickPegs(double dt) {
+    for (final peg in _pegs) {
+      peg.tick(dt, _pegFlashDecayPerSec);
+    }
+  }
+
+  /// Resolve ball-vs-PEG collisions LOCALLY (PushArena has no immovable bodies):
+  /// for each alive ball overlapping a peg, push the ball out of the overlap and
+  /// reflect its velocity about the contact normal with [_pegRestitution]. The
+  /// peg is treated as infinitely heavy (it never moves), so this is a clean
+  /// mirror bounce — deterministic and frame-rate independent (it uses positions
+  /// + velocity only, no dt). Stamps a hit flash + spark so a bank reads.
+  void _resolvePegCollisions() {
+    for (final b in _arena.aliveBodies) {
+      for (final peg in _pegs) {
+        final delta = b.pos - peg.pos; // peg → ball
+        final dist = delta.distance;
+        final minDist = b.radius + peg.radius;
+        if (dist >= minDist) continue; // not touching
+
+        // Contact normal (peg → ball); a dead-centre overlap gets a deterministic
+        // fallback (use the ball's heading, else +x) so we never divide by zero.
+        final Offset normal;
+        if (dist > 1e-6) {
+          normal = delta / dist;
+        } else {
+          final h = _normalize(b.vel);
+          normal = h == Offset.zero ? const Offset(1, 0) : h;
+        }
+        // Push fully out of the overlap so the ball never tunnels through.
+        b.pos = peg.pos + normal * minDist;
+
+        // Reflect velocity about the normal only if moving INTO the peg, damped
+        // by restitution. v' = v - (1 + e)(v·n) n.
+        final vn = b.vel.dx * normal.dx + b.vel.dy * normal.dy;
+        if (vn < 0) {
+          b.vel = b.vel - normal * ((1.0 + _pegRestitution) * vn);
+        }
+
+        // A peg bank does not change WHO last bumped a rival (it is geometry,
+        // not an attacker), so KO credit still belongs to the slinging ball.
+        peg.hit();
+        _spawnImpact(peg.pos, _colorOf(b.id));
+        _ball[b.id]?.bump(_squashOnHit * 0.7, -normal);
+        final speed = b.vel.distance;
+        if (speed >= _heavyHitSpeed) {
+          _juice.hit(peg.pos, _colorOf(b.id), sparks: 8);
+          _juice.shake.light();
+        } else if (speed > 1) {
+          _juice.particles.burst(
+            at: peg.pos,
+            count: 5,
+            color: _colorOf(b.id),
+            speed: 180,
+            size: 4,
+            life: 0.28,
+          );
+        }
+      }
+    }
   }
 
   /// ROCKET DASH momentum-keep: the arena applied its normal friction this frame
@@ -464,44 +613,20 @@ class BumperBalls extends MiniGameBase {
 
   // ── Per-frame ball state ─────────────────────────────────────────────────────
 
-  /// Fill charge while held, relax squash, age the trail + launch window and
-  /// recover cooldown — all frame-rate independent. The aim is NOT touched here:
-  /// it is owned by the player's drag (see [_applyDragAim]).
-  ///
-  /// Two skill gates run here every charging frame:
-  ///  * CHARGE-ROOT: a charging ball is slowed to a near-stop ([_chargeRootRetain])
-  ///    so committing to a hold COSTS position — a whiffed/mashed charge leaves
-  ///    the ball a sitting duck instead of skating across the platform.
-  ///  * EARNED nearest-preview: the telegraph only snaps to the nearest rival
-  ///    once the hold has earned the auto-assist ([_autoAimMinCharge]); below
-  ///    that it holds the stale aim, so an instant tap that releases before
-  ///    committing fires unaimed (the skill gate is honest, not a free retarget
-  ///    on the very first flick frame).
+  /// Relax squash, age the trail + launch window and recover cooldown — all
+  /// frame-rate independent. The aim + power are owned by the player's live pull
+  /// (see [_updatePull]); nothing is auto-set here. Unlike the old charge model
+  /// there is NO root while aiming: the ball is already at rest after a launch
+  /// settles, and the slingshot is a discrete pull→release, so the player simply
+  /// lines up a shot — power is the visible pull distance, earned, not timed.
   void _tickBallStates(double dt) {
     for (final entry in _ball.entries) {
-      final id = entry.key;
-      final s = entry.value;
-      if (_isAlive(id) && s.charging) {
-        s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
-        // Once the hold has EARNED the assist, preview (and fire toward) the
-        // nearest rival so the arrow matches the release; below it the arrow
-        // holds the current aim, so a quick tap honestly fires un-retargeted.
-        if (!s.hasDragAim && s.charge >= _autoAimMinCharge) {
-          final a = _aimAtNearest(id);
-          if (a != null) s.aim = a;
-        }
-        final body = _bodyOf(id);
-        if (body != null && body.vel != Offset.zero) {
-          final retain = math.pow(_chargeRootRetain, dt * 60.0).toDouble();
-          body.vel = body.vel * retain;
-        }
-      }
-      s.tick(dt, _squashDecayPerSec);
+      entry.value.tick(dt, _squashDecayPerSec);
     }
   }
 
   /// Angle from a ball to the nearest alive opponent, or null when none remain
-  /// (e.g. the last ball standing) — then the aim simply holds its last heading.
+  /// (e.g. the last ball standing). Used by the BOTS to aim a slingshot.
   double? _aimAtNearest(int playerId) {
     final self = _bodyOf(playerId);
     final target = _nearestOpponentPos(playerId);
@@ -534,7 +659,10 @@ class BumperBalls extends MiniGameBase {
     }
   }
 
-  /// Bots pick an aim + charge and commit a bump directly (no hold sim).
+  /// Bots aim a SLINGSHOT and pull a power scaled by accuracy, then launch
+  /// directly (no pull sim). The pull→momentum map + the commit gate make a real
+  /// skill gradient: a hard bot pulls strong, aimed banked launches; an easy bot
+  /// under-pulls / mis-aims and self-rings near the edge.
   void _botDecide(int playerId) {
     final self = _bodyOf(playerId);
     final s = _ball[playerId];
@@ -545,76 +673,119 @@ class BumperBalls extends MiniGameBase {
     final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
     final err = (1.0 - acc) * _botAimErrorRad;
 
-    // Near the edge: a competent bot saves itself with a dash back toward the
+    // Near the edge: a competent bot SAVES itself with a launch back toward the
     // centre — but a LOW-ACCURACY (easy) bot mis-judges the save by [err], so it
-    // can over-commit at an angle and fling ITSELF off the rim. Skill (accuracy)
-    // buys a clean recovery; a weak bot self-rings, exactly the beatable
-    // behaviour the human exploits. The save is charged enough to carry inward.
+    // can mis-aim and fling ITSELF off the rim. Skill (accuracy) buys a clean
+    // recovery; a weak bot self-rings, exactly the beatable behaviour a human
+    // exploits. The save is pulled strong enough to carry inward.
     if (_isNearEdge(self)) {
       final aim =
           math.atan2(_center.dy - self.pos.dy, _center.dx - self.pos.dx) +
           ctx.rng.jitter(err);
-      s.aim = aim;
-      _commitDash(playerId, self, aim, _botSaveCharge + 0.25 * acc);
+      _launch(playerId, self, aim, _botSavePull + 0.25 * acc);
       return;
     }
 
-    // Don't waste a bump while already carrying lots of speed.
+    // Don't waste a launch while already carrying lots of speed (it would just
+    // overshoot) — let the current shot play out.
     if (self.vel.distance > _botCarrySpeed) return;
 
     final targetPos = _nearestOpponentPos(playerId);
     if (targetPos == null) return;
 
-    final to = targetPos - self.pos;
-    final aim = math.atan2(to.dy, to.dx) + ctx.rng.jitter(err);
-    // Far → a light nudge to close in; close → a charged dash into the rival.
-    // The attack charge scales with accuracy so the COMMIT GATE creates a real
-    // skill gradient: a HARD bot (high accuracy) charges past [_committedCharge]
-    // and lands true ring-out launches, while an EASY bot mostly stays under it
-    // — its weak, mis-aimed dashes shove but rarely eject, so a human who aims
-    // charged dashes out-KOs it. (Mirrors the human's own hold-to-commit cost.)
-    final charge = to.distance > _bodyRadius * _botCloseRangeFactor
-        ? _botApproachCharge
-        : (_botShoveChargeMin +
-                  (_botShoveChargeMax - _botShoveChargeMin) *
-                      acc *
-                      ctx.rng.range(0.7, 1.0))
-              .clamp(0.0, 1.0);
-    s.aim = aim;
-    _commitDash(playerId, self, aim, charge);
+    // Hard bots (high accuracy) may aim a BANK off the nearest peg instead of a
+    // straight line — a deliberate trick-shot that reads as skill. Easy bots aim
+    // straight (and badly). Either way the aim carries [err] jitter.
+    double aimAngle;
+    if (acc >= _botBankAccuracy) {
+      aimAngle = _bankAimAngle(self.pos, targetPos) ??
+          math.atan2(targetPos.dy - self.pos.dy, targetPos.dx - self.pos.dx);
+    } else {
+      aimAngle = math.atan2(targetPos.dy - self.pos.dy, targetPos.dx - self.pos.dx);
+    }
+    aimAngle += ctx.rng.jitter(err);
+
+    // Pull power scales with accuracy so the COMMIT GATE creates the gradient: a
+    // HARD bot pulls past [_committedPower] (strong launches that eject), an EASY
+    // bot mostly stays under it — weak drifts that rarely KO and risk self-ring.
+    final pull = (_botPullMin +
+            (_botPullMax - _botPullMin) * acc * ctx.rng.range(0.7, 1.0))
+        .clamp(0.0, 1.0);
+    _launch(playerId, self, aimAngle, pull);
   }
 
-  /// Shared bump commit: an aimed impulse of the given [charge] (0..1) in
-  /// [aimAngle], a small self-recoil, cooldown, trail, a forward stretch hint
-  /// and a directional spark telegraph. Used by humans and bots so the feel
-  /// matches exactly.
-  void _commitDash(int playerId, Body self, double aimAngle, double charge) {
+  /// A launch angle that banks off the nearest peg toward [targetPos]: aim at a
+  /// point just off the near side of the peg so the ball glances off it onto the
+  /// rival. Returns null if no peg helps (then the caller aims straight). Cheap,
+  /// deterministic, used by HARD bots so a bank reads as a deliberate trick-shot.
+  double? _bankAimAngle(Offset from, Offset targetPos) {
+    Peg? best;
+    var bestDist = double.infinity;
+    for (final peg in _pegs) {
+      // Only banks that sit roughly between the shooter and the target help.
+      final toPeg = peg.pos - from;
+      final toTarget = targetPos - from;
+      if (toPeg.distance < 1e-3) continue;
+      final dot = toPeg.dx * toTarget.dx + toPeg.dy * toTarget.dy;
+      if (dot <= 0) continue; // peg is behind / sideways — not a useful bank
+      if (toPeg.distance < bestDist) {
+        bestDist = toPeg.distance;
+        best = peg;
+      }
+    }
+    if (best == null) return null;
+    // Aim at the side of the peg facing the target so the ball grazes it onto
+    // the rival rather than dead-centre (which would bounce straight back).
+    final toPeg = best.pos - from;
+    final perp = _normalize(Offset(-toPeg.dy, toPeg.dx));
+    final side = ((targetPos - best.pos).dx * perp.dx +
+            (targetPos - best.pos).dy * perp.dy) >=
+        0
+        ? 1.0
+        : -1.0;
+    final aimPoint = best.pos + perp * side * (best.radius + _bodyRadius);
+    return math.atan2(aimPoint.dy - from.dy, aimPoint.dx - from.dx);
+  }
+
+  /// Shared SLINGSHOT launch: fire the ball along [aimAngle] with momentum ∝
+  /// [power] (0..1, the pull fraction), a small self-recoil, cooldown, trail, a
+  /// forward stretch hint and a release spark. Used by humans (pull→release) and
+  /// bots (direct) so the feel matches exactly. A power below the dud floor still
+  /// fires a feeble nudge (it goes nowhere) — the visible pull is the only lever.
+  ///
+  /// Visible for testing so a deterministic round can drive an exact aim+power
+  /// launch without scripting touch geometry (see [debugLaunch]).
+  void _launch(int playerId, Body self, double aimAngle, double power) {
     final s = _ball[playerId];
     if (s == null || !s.ready || s.invulnerable) return;
 
+    final p = power.clamp(0.0, 1.0);
     final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
-    // A collected star briefly amplifies every bump — the buffed ball hits
-    // noticeably harder, the core of the chaos swing.
+    // A collected star briefly amplifies a launch — the buffed ball flies harder.
     final buffMul = s.buffed ? _buffDashMul : 1.0;
-    final magnitude =
-        _ringRadius * (_dashBase + _dashCharge * charge) * buffMul;
-    _arena.impulse(playerId, dir * magnitude);
-    _arena.impulse(playerId, -dir * magnitude * _selfPushback);
+    // Momentum is the VISIBLE pull mapped onto an impulse: a feeble floor for a
+    // micro-pull, a strong cross-platform rocket at a full pull.
+    final magnitude = _ringRadius * (_launchBase + _launchSpan * p) * buffMul;
+    // A launch SETS velocity (it does not stack onto a still-moving ball) so the
+    // shot power is exactly the visible pull — no spam-stacking past the cap.
+    self.vel = dir * magnitude;
+    self.vel -= dir * magnitude * _selfPushback;
 
-    // Contact knockback reads this: only a COMMITTED (charged) dash ejects a
-    // rival; a blind uncharged tap marks ~0 and so cannot luck-launch anyone.
-    s.markBump(charge);
+    // Contact knockback reads this: only a strongly-slung ball ejects a rival; a
+    // feeble nudge marks low power and so cannot luck-launch anyone.
+    s.markLaunch(p);
     s.fire(_cooldownSec);
     s.trail = DashTrail(dir: dir, life: _trailLifeSec);
     s.stretchDir = dir;
-    // A charged release arms the ROCKET DASH: a momentum-keep window so the ball
-    // caroms off rivals toward the edge. A light tap (low charge) does not.
-    if (charge >= _launchChargeMin) s.launch = _launchSec;
+    s.aim = aimAngle;
+    // A strong pull arms the ROCKET window: a momentum-keep so the ball banks off
+    // pegs + rivals toward the edge. A weak nudge does not (it dies quickly).
+    if (p >= _launchRocketMin) s.launch = _launchSec;
 
-    final intensity = 0.5 + 0.5 * charge;
+    final intensity = 0.5 + 0.5 * p;
     _juice.particles.burst(
       at: self.pos - dir * _bodyRadius,
-      count: (6 + 8 * charge).round(),
+      count: (6 + 8 * p).round(),
       color: _colorOf(playerId),
       speed: 200 * intensity,
       baseAngle: math.atan2(-dir.dy, -dir.dx),
@@ -623,8 +794,8 @@ class BumperBalls extends MiniGameBase {
       gravity: 120,
       life: 0.3,
     );
-    _juice.hit(self.pos, _colorOf(playerId), sparks: (3 + 4 * charge).round());
-    if (charge > 0.6) _juice.shake.light();
+    _juice.hit(self.pos, _colorOf(playerId), sparks: (3 + 4 * p).round());
+    if (p > 0.6) _juice.shake.light();
   }
 
   bool _isNearEdge(Body b) =>
@@ -707,18 +878,18 @@ class BumperBalls extends MiniGameBase {
     final headOn = (attackerDir.dx * toVictim.dx + attackerDir.dy * toVictim.dy)
         .clamp(0.0, 1.0);
     final speedFactor = (speed / _contactSpeedRef).clamp(0.0, 1.4);
-    // COMMIT GATE: a blind, uncharged bump transfers only [_weakHitKnockbackFloor]
-    // of its eject impulse; a fully committed (charged) dash transfers the full
-    // hit. So a rival is launched off the ring only by an *aimed, charged* dash —
-    // an incidental bump or a stale carom can shove someone but not eject them,
-    // which is what makes button-spam unable to luck-KO. A star-buffed attacker
-    // always counts as committed (the buff IS the commitment).
+    // COMMIT GATE: a feeble nudge transfers only [_weakHitKnockbackFloor] of its
+    // eject impulse; a strongly-slung ball transfers the full hit. So a rival is
+    // launched off the ring only by an *aimed, hard* slingshot — an incidental
+    // bump or a ball kept fast only by a later carom can shove someone but not
+    // eject them, which is what makes button-spam unable to luck-KO. A
+    // star-buffed attacker always counts as committed (the buff IS the power).
     final atkS = _ball[attacker.id];
     final commit = (atkS?.buffed ?? false)
         ? 1.0
         : (atkS == null
               ? 1.0
-              : (atkS.committedCharge / _committedCharge).clamp(0.0, 1.0));
+              : (atkS.committedPower / _committedPower).clamp(0.0, 1.0));
     final commitFactor =
         _weakHitKnockbackFloor + (1.0 - _weakHitKnockbackFloor) * commit;
     final bonus =
@@ -961,9 +1132,9 @@ class BumperBalls extends MiniGameBase {
     final s = _ball[id];
     if (s != null) {
       s
-        ..charging = false
-        ..hasDragAim = false
-        ..charge = 0
+        ..aiming = false
+        ..hasPull = false
+        ..pullFrac = 0
         ..launch = 0
         ..squash = 0
         ..invuln = _spawnInvulnSec
@@ -1098,6 +1269,11 @@ class BumperBalls extends MiniGameBase {
       t: _animClock,
     );
 
+    // Pegs sit on the floor under the balls so a ball rides over a bumper.
+    for (final peg in _pegs) {
+      BumperFx.drawPeg(canvas, peg, _animClock);
+    }
+
     final star = _stars.star;
     if (star != null) BumperFx.drawStar(canvas, star);
 
@@ -1221,22 +1397,19 @@ class BumperBalls extends MiniGameBase {
         face: _faceFor(b, state),
       );
 
-      // Show the aim telegraph whenever this human can act — faint at rest (idle
-      // "fire THIS way" preview), bright while charging — so the bump direction
-      // is ALWAYS readable (bots show nothing).
-      final showAim = state != null &&
-          (state.charging ||
-              (!_botClocks.containsKey(b.id) &&
-                  state.ready &&
-                  !state.invulnerable));
-      if (showAim) {
-        BumperRenderer.drawAim(
+      // SLINGSHOT telegraph: only while the player is actively pulling back —
+      // the elastic band + dotted trajectory + power gauge show where and how
+      // hard the launch will fire (bots never touch-aim, so they show nothing).
+      if (state != null && state.aiming && state.hasPull) {
+        BumperRenderer.drawSlingshot(
           canvas,
           b.pos,
           b.radius,
           color,
           aim: state.aim,
-          charge: state.charge,
+          power: state.pullFrac,
+          pullBack: state.dragPos - b.pos,
+          maxPreviewLen: _previewMaxLen,
         );
       }
     }
@@ -1315,4 +1488,81 @@ class BumperBalls extends MiniGameBase {
     if (d < 1e-6) return Offset.zero;
     return v / d;
   }
+
+  // ── Test hooks (deterministic drive + read; never used in production) ────────
+
+  /// Fire a SLINGSHOT for [playerId] at [aimAngle] (radians) with [power] (0..1,
+  /// the pull fraction) — the same code path a human release takes, without
+  /// scripting touch geometry. A no-op if the ball is dead / on cooldown /
+  /// invulnerable. Lets a deterministic test drive a "measured slingshotter"
+  /// (a strong aimed pull) vs a "blind tapper" (power 0) and compare outcomes.
+  @visibleForTesting
+  void debugLaunch(int playerId, double aimAngle, double power) {
+    final self = _bodyOf(playerId);
+    if (self == null || !self.alive) return;
+    _launch(playerId, self, aimAngle, power);
+  }
+
+  /// Angle from [playerId]'s ball to the nearest alive rival (radians), or null
+  /// when none remain — so a test can aim a measured shot at a real target.
+  @visibleForTesting
+  double? debugAimAtNearest(int playerId) => _aimAtNearest(playerId);
+
+  /// The nearest alive rival's distance from centre as a fraction of the CURRENT
+  /// (shrinking) ring radius — so a test can play the bank-shot skill of firing
+  /// only when a rival is teetering near the edge (a likely KO). Null when no
+  /// rival remains.
+  @visibleForTesting
+  double? debugNearestRivalEdgeFrac(int playerId) {
+    final target = _nearestOpponentPos(playerId);
+    if (target == null || _currentRingRadius <= 0) return null;
+    return (target - _center).distance / _currentRingRadius;
+  }
+
+  /// This ball's own distance from centre as a fraction of the CURRENT ring
+  /// radius (1 = at the rim). Lets a test keep a measured player off its own edge.
+  @visibleForTesting
+  double? debugSelfEdgeFrac(int playerId) {
+    final self = _bodyOf(playerId);
+    if (self == null || _currentRingRadius <= 0) return null;
+    return (self.pos - _center).distance / _currentRingRadius;
+  }
+
+  /// Distance (arena px) from [playerId]'s ball to the nearest alive rival, or
+  /// null when none remain — so a test can fire only when a shot will connect.
+  @visibleForTesting
+  double? debugNearestRivalDist(int playerId) {
+    final self = _bodyOf(playerId);
+    final target = _nearestOpponentPos(playerId);
+    if (self == null || target == null) return null;
+    return (target - self.pos).distance;
+  }
+
+  /// The body radius (arena px) — lets a test scale a "close enough to connect"
+  /// launch gate to the ball size.
+  @visibleForTesting
+  double get debugBodyRadius => _bodyRadius;
+
+  /// The current ring-out score ( KOs caused minus self-ring penalties) for
+  /// [playerId]. Mirrors the engine score; lets a test assert the spam-loses
+  /// margin directly.
+  @visibleForTesting
+  double debugScoreOf(int playerId) => _ball[playerId]?.koScore ?? 0;
+
+  /// How many static pegs are on the platform (for the peg-layout test).
+  @visibleForTesting
+  int get debugPegCount => _pegs.length;
+
+  /// The peg centers (arena px) for the layout / spawn-clearance test.
+  @visibleForTesting
+  List<Offset> get debugPegPositions =>
+      _pegs.map((p) => p.pos).toList(growable: false);
+
+  /// A player's spawn point (arena px) so a test can check pegs stay clear.
+  @visibleForTesting
+  Offset? debugSpawnOf(int playerId) => _spawnPos[playerId];
+
+  /// A player's ball position (arena px), or null if absent.
+  @visibleForTesting
+  Offset? debugBallPos(int playerId) => _bodyOf(playerId)?.pos;
 }

@@ -331,9 +331,12 @@ class SumoRenderer {
     figure.render(canvas, root);
   }
 
-  /// The charge telegraph: while charging, a solid layered arrow points where
-  /// the shove will fire and a ground arc shows the charge [charge] (0..1). No
-  /// blur — cheap to draw every frame. A no-op when not charging.
+  /// The LUNGE telegraph: a solid layered arrow pointing where a tap will lunge.
+  /// [charge] here is a rest↔primed emphasis (0 = faint idle "you'll lunge THIS
+  /// way" preview, 1 = long bright committed arrow while the finger is down), NOT
+  /// a fillable meter — a lunge is one fixed committed dash. So the player always
+  /// sees their aim and never fires in a surprise direction. No blur — cheap to
+  /// draw every frame.
   static void drawAim(
     Canvas canvas,
     Offset center,
@@ -342,17 +345,14 @@ class SumoRenderer {
     required double aim,
     required double charge,
   }) {
-    final c = charge.clamp(0.0, 1.0);
+    final c = charge.clamp(0.0, 1.0); // 0 = idle preview, 1 = primed (finger down)
     final dir = Offset(math.cos(aim), math.sin(aim));
     final base = bodyR * 0.95;
-    // A faint short stub at rest (the idle "you'll shove THIS way" preview) that
-    // grows long + bright as the charge fills — so the player always sees their
-    // aim and never fires in a surprise direction.
-    final len = bodyR * (1.2 + 2.4 * c);
+    final len = bodyR * (1.2 + 2.0 * c);
     final alpha = 0.4 + 0.55 * c;
     final start = center + dir * base;
     final end = center + dir * (base + len);
-    final w = bodyR * (0.2 + 0.28 * c);
+    final w = bodyR * (0.2 + 0.26 * c);
 
     canvas.drawLine(
         start,
@@ -370,7 +370,7 @@ class SumoRenderer {
           ..strokeCap = StrokeCap.round);
 
     final perp = Offset(-dir.dy, dir.dx);
-    final head = bodyR * (0.5 + 0.34 * c);
+    final head = bodyR * (0.5 + 0.3 * c);
     final tip = end + dir * head;
     final l = end + perp * head * 0.66;
     final r = end - perp * head * 0.66;
@@ -383,19 +383,16 @@ class SumoRenderer {
       Paint()..color = color.withValues(alpha: alpha),
     );
 
-    // The radial charge ring only once a hold is building (skipped at rest).
+    // A "primed" pip ring at the base while the finger is down — a small pop that
+    // reads as "release = lunge NOW" without implying a fillable charge meter.
     if (c > 0.01) {
-      final groundCenter = center.translate(0, bodyR);
-      canvas.drawArc(
-        Rect.fromCircle(center: groundCenter, radius: bodyR * 1.25),
-        -math.pi / 2,
-        math.pi * 2 * c,
-        false,
+      canvas.drawCircle(
+        center,
+        bodyR * (1.18 + 0.06 * c),
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = bodyR * 0.18
-          ..strokeCap = StrokeCap.round
-          ..color = (_blend(color, _white, c)).withValues(alpha: 0.9),
+          ..strokeWidth = bodyR * 0.1
+          ..color = _blend(color, _white, 0.5).withValues(alpha: 0.55 * c),
       );
     }
   }

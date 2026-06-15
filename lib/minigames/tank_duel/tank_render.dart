@@ -27,7 +27,7 @@ extension TankEdgeGeometry on TankEdge {
 /// Immutable snapshot of one tank handed to the renderer. Carries only what is
 /// needed to draw — no gameplay coupling, no mutation.
 class TankView {
-  final Offset base; // turret pivot in arena px
+  final Offset base; // LIVE turret-base anchor in arena px (slides with strafe)
   final Color color;
   final TankEdge edge;
   final double aimAngle; // barrel angle in radians (screen space)
@@ -42,6 +42,10 @@ class TankView {
   final double charge; // 0..1 charge level while holding (0 = snap/tap)
   final double reload; // 0..1 breech reload fill (1 = loaded; < 1 = re-arming)
   final double victory; // 0..1 winner-celebration pulse on the hull (0 = none)
+  final double strafeDir; // −1/0/+1 slide direction along the edge (track lean)
+  // The shell's PREDICTED gravity arc for the current aim+charge, muzzle→tip, in
+  // arena px. Empty hides the preview (e.g. mid-reload). Drawn by [drawAimGuide].
+  final List<Offset> aimArc;
 
   const TankView({
     required this.base,
@@ -59,6 +63,8 @@ class TankView {
     this.charge = 0,
     this.reload = 1,
     this.victory = 0,
+    this.strafeDir = 0,
+    this.aimArc = const <Offset>[],
   });
 }
 
@@ -425,57 +431,82 @@ class TankRenderer {
   }
 
   // ── Aim guide / reticle from the barrel ────────────────────────────────────
-  /// A dashed fading guide line + reticle along the barrel. While the player
-  /// holds to charge ([t.precision]) the guide brightens, gains crosshair ticks,
-  /// and its reach grows with [t.charge] — so the reticle visibly creeps out
-  /// from a near lob toward a far snipe as power builds, and a charging shot
-  /// reads clearly distinct from the idle sweep.
+  /// The MANUAL aim guide: a dashed fading PREDICTED-ARC trail tracing the shell's
+  /// gravity parabola for the current aim + charge ([t.aimArc]), capped by a
+  /// reticle ring where the shell would land. So a player SEES the lead+arc their
+  /// drag has set — a flat snap reads as a near-straight line, a low charge as a
+  /// high lob curving down over cover. While charging ([t.precision]) the trail
+  /// brightens, gains crosshair ticks at the landing point, and shows the charge
+  /// gauge. Falls back to a straight barrel line if no arc was supplied (e.g.
+  /// mid-reload), so it never draws nothing. Guards its inputs; never throws.
   static void drawAimGuide(Canvas canvas, TankView t) {
     final dir = Offset(math.cos(t.aimAngle), math.sin(t.aimAngle));
     final muzzle = _muzzlePoint(t);
     final c = t.charge.clamp(0.0, 1.0);
-    // Reach: idle = base; charging starts short (near lob) and extends toward a
-    // long snipe as the gauge fills.
-    final reachMul = t.precision ? (0.7 + 1.1 * c) : 1.0;
-    final reach = _aimGuideLen * reachMul;
-    final end = muzzle + dir * reach;
     final boost = t.precision ? 1.0 : 0.0;
-    // Dashed fading guide line (brighter + longer dashes while precision-aiming).
-    final steps = t.precision ? 18 : 14;
+
+    // The polyline to trace: the predicted arc when supplied, else a short
+    // straight stub down the barrel (keeps a guide even with no arc).
+    final arc = t.aimArc;
+    final end = arc.length >= 2 ? arc.last : muzzle + dir * _aimGuideLen;
+
+    // Dashed fading trail along the arc (brighter + denser while precision-aiming).
     final paint = Paint()
       ..strokeWidth = 2 + boost
       ..strokeCap = StrokeCap.round;
-    for (var i = 0; i < steps; i++) {
-      if (i.isOdd) continue;
-      final a = i / steps;
-      final b = (i + 1) / steps;
-      final fade = (1 - a) * (0.5 + 0.4 * boost);
-      paint.color = t.color.withValues(alpha: fade.clamp(0.0, 1.0));
-      canvas.drawLine(
-        Offset.lerp(muzzle, end, a)!,
-        Offset.lerp(muzzle, end, b)!,
-        paint,
-      );
+    if (arc.length >= 2) {
+      final n = arc.length - 1;
+      for (var i = 0; i < n; i++) {
+        if (i.isOdd) continue; // dashed: skip every other segment
+        final f = i / n; // 0 at muzzle → 1 at landing
+        final fade = (1 - f) * (0.5 + 0.4 * boost);
+        paint.color = t.color.withValues(alpha: fade.clamp(0.0, 1.0));
+        canvas.drawLine(arc[i], arc[i + 1], paint);
+      }
+    } else {
+      // Fallback straight stub.
+      const steps = 14;
+      for (var i = 0; i < steps; i++) {
+        if (i.isOdd) continue;
+        final a = i / steps, b = (i + 1) / steps;
+        paint.color = t.color.withValues(alpha: ((1 - a) * 0.5).clamp(0.0, 1.0));
+        canvas.drawLine(
+            Offset.lerp(muzzle, end, a)!, Offset.lerp(muzzle, end, b)!, paint);
+      }
     }
-    // Reticle ring at the end (brighter while precision-aiming).
+
+    // The tip's local heading (last segment) orients the reticle ticks along the
+    // arc's descent, not the launch angle, so a lob's crosshair sits flat.
+    final tipDir = arc.length >= 2
+        ? _unit(arc.last - arc[arc.length - 2], dir)
+        : dir;
+
+    // Reticle ring at the landing point (brighter while precision-aiming).
     final ringR = 7 * t.scale * (t.precision ? 1.15 : 1.0);
     final ring = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2 + boost
       ..color = t.color.withValues(alpha: (0.45 + 0.45 * boost).clamp(0.0, 1.0));
     canvas.drawCircle(end, ringR, ring);
-    // Crosshair ticks only when locked in for a careful shot.
+    // Crosshair ticks + charge gauge only when locked in for a careful shot.
     if (t.precision) {
       final tick = ringR * 0.85;
-      final perp = Offset(-dir.dy, dir.dx);
+      final perp = Offset(-tipDir.dy, tipDir.dx);
       final p = Paint()
         ..strokeWidth = 1.6
         ..strokeCap = StrokeCap.round
         ..color = _white.withValues(alpha: 0.7);
-      canvas.drawLine(end - dir * tick, end + dir * tick, p);
+      canvas.drawLine(end - tipDir * tick, end + tipDir * tick, p);
       canvas.drawLine(end - perp * tick, end + perp * tick, p);
       _drawChargeGauge(canvas, end, ringR, c);
     }
+  }
+
+  /// Unit vector of [v], or [fallback] when [v] is too small / non-finite.
+  static Offset _unit(Offset v, Offset fallback) {
+    final d = v.distance;
+    if (!d.isFinite || d < 1e-3) return fallback;
+    return v / d;
   }
 
   /// A power arc hugging the reticle that sweeps from empty to a full hot ring as
@@ -532,6 +563,11 @@ class TankRenderer {
     );
     canvas.restore();
 
+    // Strafe dust: a couple of low puffs kicked up behind the moving tank, on
+    // the side it's sliding FROM, so the steady back-and-forth reads at a glance
+    // (the cue a player leads off). Ground fx — drawn even during invuln blink.
+    if (t.strafeDir != 0) _drawStrafeDust(canvas, t, r, side, up);
+
     // Invuln blink: skip the body on the "off" phase, but always keep shadow.
     final blinkHidden = t.invuln > 0 && t.invuln.floor().isOdd;
     if (blinkHidden) return;
@@ -551,6 +587,26 @@ class TankRenderer {
     // before it can fire again. A charging shot owns the aim-guide gauge instead.
     if (t.reload < 0.999 && !t.precision) _drawReloadRing(canvas, t, r);
     _drawHealthPips(canvas, t, r, side, up);
+  }
+
+  /// A low fan of dust puffs kicked up on the trailing side of a strafing tank.
+  /// [t.strafeDir] (−1/+1 along the edge axis) picks the side; the puffs splay
+  /// backward + slightly outward from the tracks. Cheap solid fills; the dust
+  /// color matches the battlefield haze. Deterministic from geometry only.
+  static void _drawStrafeDust(
+      Canvas canvas, TankView t, double r, Offset side, Offset up) {
+    // The tracks sit a touch outward of the hull center; dust trails the slide.
+    final trackCenter = t.base + up * (r * 0.2);
+    final back = side * (-t.strafeDir); // opposite the travel direction
+    final dust = Paint();
+    for (var i = 0; i < 3; i++) {
+      final f = i / 3.0;
+      // Each puff sits a bit further back along the trail, shrinking as it ages.
+      final at = trackCenter + back * (r * (0.9 + 1.0 * f)) + up * (r * 0.05);
+      final grow = r * (0.32 - 0.12 * f);
+      dust.color = _dust.withValues(alpha: (0.16 * (1 - f)).clamp(0.0, 1.0));
+      canvas.drawCircle(at, grow, dust);
+    }
   }
 
   /// A re-arm arc sweeping around the turret as the breech reloads: a dim backing

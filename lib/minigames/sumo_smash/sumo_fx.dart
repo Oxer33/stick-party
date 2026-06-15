@@ -101,6 +101,13 @@ class SumoFx {
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _bannerColor = Color(0xFFFF4B3E);
 
+  // Brace shield tuning.
+  static const double _braceRingR = 1.62; // shield radius / bodyR
+  static const int _braceTicks = 12; // planted-feet "bracket" ticks
+  // Stun "dizzy" tuning.
+  static const int _stunStars = 3; // orbiting dizzy stars
+  static const double _stunOrbitR = 1.05; // orbit radius / bodyR
+
   /// Gently brake any alive [bodies] teetering in the last sliver before the
   /// edge while moving slowly, nudging them back toward [center]. A genuine fast
   /// charged hit (speed above [maxSpeed]) sails past, so skill still ejects —
@@ -186,6 +193,94 @@ class SumoFx {
       }
     }
     return path..close();
+  }
+
+  /// The BRACE tell: a glowing planted shield ring around a braced wrestler with
+  /// short radial "anchor" ticks (feet dug in). Cool blue so it reads instantly
+  /// as defense vs the warm lunge trail. Deterministic — animated only off the
+  /// supplied sim clock [t]. No mask blur in the tick loop (cheap every frame).
+  static void drawBraceShield(
+    Canvas canvas,
+    Offset center,
+    double bodyR,
+    Color color,
+    double t,
+  ) {
+    if (bodyR <= 1) return;
+    final pulse = 0.5 + 0.5 * math.sin(t * 7.0);
+    final r = bodyR * _braceRingR;
+
+    // Soft halo disc (single solid, no per-call mask cost).
+    canvas.drawCircle(
+      center,
+      r * 1.12,
+      Paint()..color = color.withValues(alpha: (0.10 + 0.06 * pulse).clamp(0.0, 1.0)),
+    );
+    // The shield ring itself — a bright stroked circle that breathes.
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = bodyR * (0.16 + 0.05 * pulse)
+        ..color = color.withValues(alpha: (0.55 + 0.35 * pulse).clamp(0.0, 1.0)),
+    );
+    // Inner crisp hairline for a glassy double-edge.
+    canvas.drawCircle(
+      center,
+      r * 0.9,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, bodyR * 0.05)
+        ..color = _white.withValues(alpha: (0.28 + 0.22 * pulse).clamp(0.0, 1.0)),
+    );
+    // Radial "anchor" ticks — feet dug into the clay, planted around the base.
+    final tick = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.2, bodyR * 0.08)
+      ..color = color.withValues(alpha: (0.6 + 0.3 * pulse).clamp(0.0, 1.0));
+    const step = math.pi * 2 / _braceTicks;
+    final inR = r * 1.02;
+    final outR = r * (1.14 + 0.05 * pulse);
+    for (var i = 0; i < _braceTicks; i++) {
+      final a = i * step;
+      final dir = Offset(math.cos(a), math.sin(a));
+      canvas.drawLine(center + dir * inR, center + dir * outR, tick);
+    }
+  }
+
+  /// The STUN read: a ring of dizzy stars orbiting above a wrestler that was
+  /// repelled when it lunged into a brace. [fade] 0..1 (remaining stun fraction)
+  /// dims the whole flourish as it wears off. Deterministic — orbit phase comes
+  /// only from the sim clock [t]. Cheap layered circles + tiny star paths.
+  static void drawStunStars(
+    Canvas canvas,
+    Offset center,
+    double bodyR,
+    double t,
+    double fade,
+  ) {
+    final a = fade.clamp(0.0, 1.0);
+    if (a <= 0.02 || bodyR <= 1) return;
+    final orbit = bodyR * _stunOrbitR;
+    final starR = bodyR * 0.3;
+    for (var i = 0; i < _stunStars; i++) {
+      final phase = t * 6.5 + i * (math.pi * 2 / _stunStars);
+      // A shallow ellipse so the stars circle the head in perspective.
+      final p = center + Offset(math.cos(phase) * orbit, math.sin(phase) * orbit * 0.45);
+      final twinkle = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(phase * 1.7));
+      final col = _starCore.withValues(alpha: (a * twinkle).clamp(0.0, 1.0));
+      final path = _starPath(p, starR, starR * 0.46, phase * 0.5);
+      canvas.drawPath(path, Paint()..color = col);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(0.8, starR * 0.16)
+          ..strokeJoin = StrokeJoin.round
+          ..color = _starEdge.withValues(alpha: (a * twinkle).clamp(0.0, 1.0)),
+      );
+    }
   }
 
   /// A bold pulsing "SUDDEN DEATH" banner across the top of the arena, shown

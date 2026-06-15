@@ -4,24 +4,31 @@ import 'dart:ui';
 import '../../core/rng.dart';
 
 /// Round-scoped extras for [BumperBalls] kept out of the main file so it stays
-/// under the line budget: the grab-a-star power pickup model + its spawn/age
-/// controller, plus the pure-Canvas neon SUDDEN DEATH banner and star drawing.
-/// Holds only its own pickup state; the game owns the balls.
+/// under the line budget: the slingshot-aim ball state, the static peg model,
+/// the grab-a-star power pickup model + its spawn/age controller, plus the
+/// pure-Canvas neon SUDDEN DEATH banner, peg and star drawing. Holds only its
+/// own pickup/peg state; the game owns the balls.
 
-/// Per-player ball control + bookkeeping: player-chosen drag aim, charge while
-/// held, cooldown, impact squash, stretch heading, the star buff, the active
-/// trail and the rocket-dash launch window. Mutable round-scoped state (allowed
-/// for one round).
+/// Per-player SLINGSHOT control + bookkeeping. The player DRAGS BACKWARD from
+/// the ball (pool / Angry-Birds style): the live pull vector is captured here,
+/// the launch fires OPPOSITE the pull with power proportional to the (clamped)
+/// pull distance, and a tiny pull goes nowhere. No invisible charge meter and no
+/// commit gate — power is the VISIBLE pull distance, so a blind tap is honestly
+/// feeble while a judged, long pull rockets across the platform.
+///
+/// Also tracks impact squash, stretch heading, the star buff, the active trail
+/// and the rocket-keep launch window. Mutable round-scoped state (one round).
 class BallState {
-  double aim; // current aim angle (radians) — set by the player's drag
-  Offset downPos = Offset.zero; // touch point at press, to tell a tap from a drag
-  bool charging = false;
-  bool hasDragAim = false; // true once this charge has a thumb-chosen angle
-  double charge = 0; // 0..1 while held
-  double _cooldown = 0; // seconds remaining until ready
+  double aim; // launch heading (radians) — OPPOSITE the live pull; for the HUD
+  Offset downPos = Offset.zero; // press point (screen px)
+  Offset dragPos = Offset.zero; // current finger point while pulling (screen px)
+  bool aiming = false; // true while the finger is down building a pull
+  bool hasPull = false; // true once the pull has cleared the dead-zone
+  double pullFrac = 0; // 0..1 pull distance as a share of the max pull
+  double _cooldown = 0; // seconds remaining until ready to slingshot again
   double squash = 0; // current squash amount (relaxes toward 0)
-  double buff = 0; // seconds of star bump-buff remaining
-  double launch = 0; // seconds of rocket-dash momentum-keep remaining
+  double buff = 0; // seconds of star launch-buff remaining
+  double launch = 0; // seconds of rocket momentum-keep remaining
   Offset stretchDir = const Offset(1, 0); // axis the squash/stretch acts along
   DashTrail? trail;
 
@@ -30,13 +37,13 @@ class BallState {
   double invuln = 0; // post-respawn grace, seconds (no KO either way)
   int lastAttacker = -1; // id of the ball that last bumped this one (-1 none)
   double attackerAge = 0; // seconds since [lastAttacker] was recorded
-  // ── Commit gate (anti-luck-launch) ──
-  // Charge (0..1) of this ball's most recent dash, decaying over a short window.
-  // Read at contact time so only a COMMITTED (charged) dash transfers full eject
-  // knockback — a blind uncharged nudge (or a stale carom) cannot luck-launch a
-  // rival out. (Mirrors Sumo's shoveCharge.)
-  double bumpCharge = 0;
-  double _bumpChargeAge = 0;
+  // ── Launch power (read at contact for the eject-knockback scaling) ──
+  // The pull fraction (0..1) of this ball's most recent slingshot, decaying over
+  // a short window. Read at contact time so a launched ball delivers an eject
+  // proportional to how hard it was SLUNG — a feeble pull can nudge but not
+  // launch a rival off the rim, a committed pull banks ring-outs.
+  double launchPower = 0;
+  double _launchPowerAge = 0;
 
   BallState({required this.aim});
 
@@ -44,30 +51,30 @@ class BallState {
   bool get buffed => buff > 0;
   bool get invulnerable => invuln > 0;
 
-  /// Window (seconds) over which [bumpCharge] stays meaningful after a dash —
+  /// Window (seconds) over which [launchPower] stays meaningful after a launch —
   /// long enough that a committed rocket still counts when it CONNECTS (the body
-  /// usually crosses the gap within this window, especially while it keeps
-  /// momentum), but short enough that a body kept fast only by later collision
-  /// carries is treated as incidental, not an aimed launch.
-  static const double _bumpChargeWindow = 0.7;
+  /// usually crosses the gap within this window while it keeps momentum), but
+  /// short enough that a body kept fast only by a later carom is treated as
+  /// incidental, not an aimed launch.
+  static const double _launchPowerWindow = 0.7;
 
-  /// The freshness-weighted charge of the last dash (0..1). Fades to 0 over
-  /// [_bumpChargeWindow] so only a ball actively mid-commit counts as committed.
-  double get committedCharge {
-    if (_bumpChargeAge >= _bumpChargeWindow) return 0;
-    final f = 1.0 - (_bumpChargeAge / _bumpChargeWindow);
-    return (bumpCharge * f).clamp(0.0, 1.0);
+  /// The freshness-weighted launch power of the last slingshot (0..1). Fades to
+  /// 0 over [_launchPowerWindow] so only a ball actively mid-launch counts.
+  double get committedPower {
+    if (_launchPowerAge >= _launchPowerWindow) return 0;
+    final f = 1.0 - (_launchPowerAge / _launchPowerWindow);
+    return (launchPower * f).clamp(0.0, 1.0);
   }
 
-  /// Record the charge of a just-fired dash so contact knockback can tell a
+  /// Record the power of a just-fired slingshot so contact knockback can tell a
   /// committed launch from an incidental bump.
-  void markBump(double charge) {
-    bumpCharge = charge.clamp(0.0, 1.0);
-    _bumpChargeAge = 0;
+  void markLaunch(double power) {
+    launchPower = power.clamp(0.0, 1.0);
+    _launchPowerAge = 0;
   }
 
-  /// True while the ball is in its rocket-dash window (keeps momentum, caroms
-  /// off rivals) — drives a hotter trail/aura so the table sees the launch.
+  /// True while the ball is in its rocket window (keeps momentum, caroms off
+  /// rivals + pegs) — drives a hotter trail/aura so the table sees the launch.
   bool get launched => launch > 0;
 
   /// Record [attackerId] as the most recent bumper of this ball (for KO
@@ -84,7 +91,7 @@ class BallState {
     if (launch > 0) launch = math.max(0, launch - dt);
     if (invuln > 0) invuln = math.max(0, invuln - dt);
     attackerAge += dt;
-    _bumpChargeAge += dt;
+    _launchPowerAge += dt;
     if (squash != 0) {
       final relax = squashDecayPerSec * dt;
       squash = squash > 0
@@ -106,6 +113,32 @@ class BallState {
       squash = -amount.abs(); // negative = flatten on impact
       if (dir != Offset.zero) stretchDir = dir;
     }
+  }
+}
+
+/// A fixed circular BUMPER PEG on the platform. Balls carom elastically off it
+/// for bank shots; it never moves and is never eliminated. The engine's
+/// [PushArena] has no immovable bodies, so the game resolves ball-peg contacts
+/// locally and stamps a [flash] here for the render flash. Mutable round-scoped
+/// state (only the cosmetic flash changes).
+class Peg {
+  /// Center in arena px.
+  final Offset pos;
+
+  /// Collision radius in arena px.
+  final double radius;
+
+  /// 0..1 hit flash, stamped to 1 on impact and relaxing each frame (visual).
+  double flash = 0;
+
+  Peg({required this.pos, required this.radius});
+
+  /// Brighten the hit flash (stamped to full so a fresh impact always reads).
+  void hit() => flash = 1.0;
+
+  /// Relax the flash toward 0 at [perSec] per second (frame-rate independent).
+  void tick(double dt, double perSec) {
+    if (flash > 0) flash = math.max(0, flash - perSec * dt);
   }
 }
 
@@ -271,6 +304,80 @@ class BumperFx {
   static const Color _starEdge = Color(0xFFFFB02E);
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _bannerColor = Color(0xFFFF5A78);
+  static const Color _pegCore = Color(0xFFB388FF); // neon-violet bumper face
+  static const Color _pegEdge = Color(0xFF6A3CE0); // deeper rim of the peg
+  static const Color _pegHot = Color(0xFFE0D2FF); // hit-flash bloom
+
+  /// Draw a glossy neon bumper PEG: a soft aura (pulsing with the sim clock and
+  /// brightening on a recent hit), a top-lit domed core, a bright rim and a
+  /// specular blob. On impact [peg.flash] climbs to 1 and the whole peg flares +
+  /// throws a quick shock ring. Layered solids + a single arc — cheap, no blur,
+  /// deterministic off [t]. Safe from render (guards its own inputs, no throw).
+  static void drawPeg(Canvas canvas, Peg peg, double t) {
+    final r = peg.radius;
+    if (r <= 0.5) return;
+    final c = peg.pos;
+    final f = peg.flash.clamp(0.0, 1.0);
+    final breathe = 0.5 + 0.5 * math.sin(t * 2.4 + c.dx * 0.01);
+
+    // Soft outer aura — steady breathing glow, flares on a fresh hit.
+    final auraAlpha = (0.14 + 0.10 * breathe + 0.5 * f).clamp(0.0, 1.0);
+    canvas.drawCircle(
+      c,
+      r * (1.55 + 0.25 * breathe + 0.5 * f),
+      Paint()..color = _blendC(_pegCore, _pegHot, f).withValues(alpha: auraAlpha),
+    );
+
+    // Domed body with a top-lit radial gradient (glossy bumper).
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..shader = Gradient.radial(
+          c.translate(-r * 0.3, -r * 0.36),
+          r * 1.35,
+          [
+            _blendC(_white, _pegCore, 0.25 + 0.5 * f),
+            _blendC(_pegCore, _pegHot, f),
+            _pegEdge,
+          ],
+          const [0.0, 0.5, 1.0],
+        ),
+    );
+
+    // Bright rim ring (hotter on a hit) so the peg reads as a hard bumper.
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, r * 0.16)
+        ..color = _blendC(_pegEdge, _white, 0.4 + 0.5 * f)
+            .withValues(alpha: (0.7 + 0.3 * f).clamp(0.0, 1.0)),
+    );
+
+    // Specular highlight blob, top-left.
+    canvas.drawCircle(
+      c + Offset(-r * 0.32, -r * 0.36),
+      r * 0.24,
+      Paint()..color = _white.withValues(alpha: 0.75),
+    );
+
+    // Quick expanding shock ring on a fresh impact (rides the flash down).
+    if (f > 0.02) {
+      canvas.drawCircle(
+        c,
+        r * (1.0 + 0.9 * (1.0 - f)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, r * 0.14 * f)
+          ..color = _pegHot.withValues(alpha: (0.6 * f).clamp(0.0, 1.0)),
+      );
+    }
+  }
+
+  static Color _blendC(Color a, Color b, double t) =>
+      Color.lerp(a, b, t.clamp(0.0, 1.0)) ?? a;
 
   /// Draw a 5-point gold star with a soft glow ring + rotating glint. Layered
   /// solids only (no blur) — reads as shiny and is cheap every frame.
