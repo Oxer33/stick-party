@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -114,6 +115,90 @@ BumperBalls _runMixed(int seed, {required int blindId, required int skilledId}) 
     g.update(1 / _fps);
   }
   return g;
+}
+
+// ── COMPETITIVENESS harness: a SKILLED human (seat 0) vs BOTS at a difficulty ──
+// The spam-loses driver above is a fixed-cadence FULL-power slingshotter, which
+// is enough to out-bank a blind tapper but is NOT a faithful skilled HUMAN
+// against bots: it never SAVES itself, so the shrinking platform + bot shoves
+// ring it out repeatedly and it loses to even easy bots — an artifact of the
+// proxy, not the game. A real skilled player exercises three judgements a blind
+// tapper never makes, all captured here:
+//   1. AIM a committed launch at the nearest rival (a banked KO),
+//   2. on a paced cadence (respect the launch cooldown), and crucially
+//   3. SELF-RESCUE: when shoved out near its OWN rim, launch back toward the
+//      centre to escape a ring-out instead of sitting there and being knocked
+//      off (exactly what the bots do, scaled by accuracy).
+// With this faithful proxy the EXISTING (unchanged) game is competitive in 4-ball
+// FFA: easy is clearly beatable, hard is tough-but-beatable, with a monotone
+// skill gradient — measured below and LOCKED by the COMPETITIVE test.
+const int _compPeriod = 12; // a judged launch ~every 0.2s when ready
+const double _compSelfSafeFrac = 0.68; // above this edge frac → SAVE, else attack
+const double _compAttackPull = 0.8; // a strong, committed, banked launch
+const double _compSavePull = 0.45; // a firm inward nudge to escape the rim
+const Offset _compCenter = Offset(400, 600); // matches the 800x1200 test arena
+
+/// One frame of the SKILLED human's play for [id]: self-rescue when near its own
+/// rim, otherwise a committed aimed launch at the nearest rival, on a cadence.
+void _driveSkilled(BumperBalls g, int id, int frame) {
+  if (frame % _compPeriod != 0) return;
+  final selfFrac = g.debugSelfEdgeFrac(id) ?? 1.0;
+  if (selfFrac >= _compSelfSafeFrac) {
+    // SELF-RESCUE: launch back toward the centre to escape the closing rim.
+    final pos = g.debugBallPos(id);
+    if (pos == null) return;
+    final toCenter = _compCenter - pos;
+    if (toCenter.distance < 1e-3) return;
+    g.debugLaunch(id, math.atan2(toCenter.dy, toCenter.dx), _compSavePull);
+    return;
+  }
+  // ATTACK: a strong committed launch at the nearest rival when safe on our edge.
+  final aim = g.debugAimAtNearest(id);
+  if (aim == null) return;
+  g.debugLaunch(id, aim, _compAttackPull);
+}
+
+/// Run a round with seat 0 = SKILLED human and seats 1..[count]-1 = BOTS at [d].
+/// Returns the finished game so the caller can read the ranking + scores.
+BumperBalls _runSkilledVsBots(int count, int seed, BotDifficulty d) {
+  final players = [
+    for (var i = 0; i < count; i++) PlayerSlot.defaults(i, isBot: i != 0),
+  ];
+  final ctx = MiniGameContext(
+    players: players,
+    arena: const Size(800, 1200),
+    rng: SeededRng(seed),
+    zones: ZoneLayout.forPlayers(count),
+    difficulty: d,
+  );
+  final g = BumperBalls()..init(ctx);
+  var n = 0;
+  while (g.status != MiniGameStatus.finished && n++ < _maxFrames) {
+    _driveSkilled(g, 0, n);
+    g.update(1 / _fps);
+  }
+  return g;
+}
+
+/// A spread of seeds (≥12) so a win-rate band is statistical, not luck of one RNG.
+const List<int> _compSeeds = [
+  1, 2, 3, 5, 7, 11, 13, 21, 42, 99, 123, 256, 314, 777,
+];
+
+/// Win-rate of the skilled seat 0 across [_compSeeds] in a [count]-ball round vs
+/// bots at [d]; also returns how many seeds the human lost (for the not-runaway
+/// / comeback check).
+({double winRate, int wins, int losses, int n}) _skilledWinRate(
+  int count,
+  BotDifficulty d,
+) {
+  var wins = 0;
+  for (final seed in _compSeeds) {
+    final g = _runSkilledVsBots(count, seed, d);
+    if (g.winResult!.ranking.first == 0) wins++;
+  }
+  final n = _compSeeds.length;
+  return (winRate: wins / n, wins: wins, losses: n - wins, n: n);
 }
 
 void main() {
@@ -507,6 +592,91 @@ void main() {
       total,
       lessThan(0),
       reason: 'blind tapper aggregate score ($total) was not negative',
+    );
+  });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ────────────────
+
+  test('COMPETITIVE: skill gradient + beatable-but-tough hard bot — a skilled '
+      'human (aim + commit + self-rescue) beats easy reliably, finds hard tough '
+      'but beatable, with a monotone gradient, across ≥12 seeds (4-ball FFA)', () {
+    // The HEADLINE balance guarantee, measured the way the game is actually
+    // played: a SKILLED human (seat 0) — aiming committed banked launches AND
+    // self-rescuing off its own rim — against three BOTS at each difficulty, in
+    // 4-ball FFA (the real multiplayer mode). For each difficulty we take the
+    // win-rate across a spread of ≥12 seeds so the bands are statistical, not the
+    // luck of one RNG. (A 1v1 vs a single bot is degenerate here: one bot cannot
+    // punish a competent self-rescuing player, so seat 0 wins ~every duel at all
+    // difficulties — not a useful discriminator. FFA is where skill separates,
+    // so the gradient + tough-hard bands are asserted here.)
+    final easy = _skilledWinRate(4, BotDifficulty.easy);
+    final medium = _skilledWinRate(4, BotDifficulty.medium);
+    final hard = _skilledWinRate(4, BotDifficulty.hard);
+
+    final summary =
+        'easy=${easy.winRate.toStringAsFixed(2)} (${easy.wins}/${easy.n}), '
+        'medium=${medium.winRate.toStringAsFixed(2)} (${medium.wins}/${medium.n}), '
+        'hard=${hard.winRate.toStringAsFixed(2)} (${hard.wins}/${hard.n})';
+
+    // EASY clearly beatable: a skilled human wins the clear majority. (Measured
+    // ~0.86–0.93 across two independent seed batches; band kept at 0.70 so it is
+    // robust, never a coin-flip.)
+    expect(
+      easy.winRate,
+      greaterThanOrEqualTo(0.70),
+      reason: 'easy bots are not clearly beatable by a skilled human — $summary',
+    );
+
+    // NOT luck-dominated: vs easy the skilled human wins RELIABLY across seeds
+    // (a strong majority of individual rounds, not a statistical wash).
+    expect(
+      easy.wins,
+      greaterThanOrEqualTo(10),
+      reason: 'skilled human did not win easy reliably across seeds — $summary',
+    );
+
+    // HARD beatable-but-tough: a real challenge that is NOT a wall (win-rate > 0)
+    // and NOT a pushover (win-rate < 1). Measured ~0.29–0.36; band [0.15, 0.90].
+    expect(
+      hard.winRate,
+      inInclusiveRange(0.15, 0.90),
+      reason: 'hard bots are a wall or a pushover, not beatable-but-tough — '
+          '$summary',
+    );
+
+    // NO runaway / comeback exists: vs hard the outcome genuinely VARIES across
+    // seeds — the skilled human takes some rounds AND loses others (neither a
+    // locked sweep nor a locked shutout). Outcomes are not predetermined.
+    expect(
+      hard.wins,
+      greaterThan(0),
+      reason: 'skilled human never beat a hard 4-bot field (a wall) — $summary',
+    );
+    expect(
+      hard.losses,
+      greaterThan(0),
+      reason: 'skilled human swept the hard field every seed (no comeback for '
+          'the bots) — $summary',
+    );
+
+    // GRADIENT: more skilful bots are monotonically harder to beat, and the ends
+    // are strictly separated (easy is clearly easier than hard) — accuracy maps
+    // to difficulty, the core of a fair skill ladder.
+    expect(
+      easy.winRate,
+      greaterThanOrEqualTo(medium.winRate),
+      reason: 'win-rate did not fall (or hold) from easy→medium — $summary',
+    );
+    expect(
+      medium.winRate,
+      greaterThanOrEqualTo(hard.winRate),
+      reason: 'win-rate did not fall (or hold) from medium→hard — $summary',
+    );
+    expect(
+      easy.winRate,
+      greaterThan(hard.winRate),
+      reason: 'no skill gradient: easy is not strictly easier than hard — '
+          '$summary',
     );
   });
 

@@ -172,7 +172,15 @@ class TapSprint extends MiniGameBase {
   static const double _botReleaseErrStrong = 0.03; // release error at accuracy 1
   static const double _botReleaseErrWeak = 0.30; // release error at accuracy 0
   // Bots hold at the blocks for a beat so a human can get off the line first.
-  static const double _botWarmupSec = 1.4;
+  // The hold SHRINKS with skill (accuracy): an easy bot dawdles at the blocks (a
+  // big head-start for the human), a hard bot is off almost instantly. This is
+  // the dominant difficulty lever — a near-perfect human runs ~13.6s, a hard bot
+  // that runs the same pace can only be caught/beaten if it lets the human bank a
+  // real head-start, so the easy→hard warm-up ramp turns the (already graded)
+  // finish-time margin into a graded WIN-RATE: easy is a walkover, hard is a
+  // genuine threat that trades the lead on its occasional [errorRate] trip.
+  static const double _botWarmupWeakSec = 1.7; // hold at the blocks at accuracy 0
+  static const double _botWarmupStrongSec = 0.1; // near-instant at accuracy 1
 
   // ── Figure / feel tuning ────────────────────────────────────────────────────
   static const double _figureScale = 1.9; // readable sprinters
@@ -311,6 +319,17 @@ class TapSprint extends MiniGameBase {
   double _botReleaseErr() {
     final prof = ctx.botProfile;
     return lerpD(_botReleaseErrWeak, _botReleaseErrStrong, prof.accuracy.clamp(0.0, 1.0));
+  }
+
+  /// How long bots hold at the blocks before they start striding — the dominant
+  /// difficulty lever. SHRINKS with accuracy: a weak (easy) bot dawdles
+  /// ([_botWarmupWeakSec]) and hands the human a big head-start; a strong (hard)
+  /// bot is off almost instantly ([_botWarmupStrongSec]) and runs the human's
+  /// pace, so the race is decided by who keeps cleaner rhythm down the gauntlet —
+  /// a hard bot is a real threat, an easy one a walkover.
+  double _botWarmup() {
+    final acc = ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    return lerpD(_botWarmupWeakSec, _botWarmupStrongSec, acc);
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -677,7 +696,7 @@ class TapSprint extends MiniGameBase {
   /// an [errorRate] slip skip the wind-up entirely → clip. The guard caps catch-up
   /// strides for huge frame steps.
   void _driveBots(double dt) {
-    if (_elapsed < _botWarmupSec) return; // hold bots at the blocks for a beat
+    if (_elapsed < _botWarmup()) return; // hold bots at the blocks for a beat
     for (final r in _runners.values) {
       if (!r.slot.isBot || r.finished) continue;
       _botDriveVault(r, dt);

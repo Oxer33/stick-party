@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -103,6 +104,77 @@ SumoSmash _blindVsMeasured(
     g.update(1 / 60);
   }
   return g;
+}
+
+/// Drive a SKILLED human-sim in seat [skilledId] against BOTS in every other
+/// seat, for a given [diff], and run to the finish. The skilled play is the best
+/// drivable via the debug hooks: a REACTIVE BRACE-COUNTER —
+///
+///  * BLOCK — the instant a foe is mid-lunge (an incoming dash), plant a brace
+///    so the lunge is REPELLED + the attacker STUNNED (the read that wins).
+///  * PUNISH — the instant a foe is EXPOSED (stunned / mid-recovery, i.e. cannot
+///    act), fire a lunge (auto-aimed at the nearest rival) to bank a credited KO.
+///  * READY — otherwise do nothing (no blind flailing into open clay).
+///
+/// This is genuine skill expression (read + react), not a passive turtle, so the
+/// win-rate it produces measures how BEATABLE each bot tier is for a good player.
+SumoSmash _skilledVsBots(int count, int seed, BotDifficulty diff,
+    {int skilledId = 0}) {
+  final players = [
+    for (var i = 0; i < count; i++)
+      PlayerSlot.defaults(i, isBot: i != skilledId),
+  ];
+  final ctx = MiniGameContext(
+    players: players,
+    arena: const Size(800, 1200),
+    rng: SeededRng(seed),
+    zones: ZoneLayout.forPlayers(count),
+    difficulty: diff,
+  );
+  final g = SumoSmash()..init(ctx);
+  var n = 0;
+  while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+    var foeExposed = false; // a foe stunned / mid-recovery → a free KO to punish
+    var foeLunging = false; // a foe mid-lunge → an incoming threat to block
+    for (var id = 0; id < count; id++) {
+      if (id == skilledId) continue;
+      if (g.debugIsStunned(id) || !g.debugCanAct(id)) foeExposed = true;
+      if (g.debugIsLungeActive(id)) foeLunging = true;
+    }
+    if (g.debugIsBracing(skilledId)) {
+      // Hold the block only while the threat is live; drop it the moment it ends.
+      if (!foeLunging) g.debugReleaseBrace(skilledId);
+    } else if (g.debugCanAct(skilledId)) {
+      if (foeLunging) {
+        g.debugForceBrace(skilledId, holdSec: 0.5); // reactive block
+      } else if (foeExposed) {
+        g.debugForceLunge(skilledId); // punish the exposed foe
+      }
+      // else: stay READY — wait for a read.
+    }
+    g.update(1 / 60);
+  }
+  return g;
+}
+
+/// Seat-0 win-rate of the skilled-sim over [seeds] at [diff], plus the per-seed
+/// (skilled − best-opponent) score margins (for runaway / variety checks).
+({double winRate, List<int> margins, int wins}) _skilledWinRate(
+    int count, BotDifficulty diff, List<int> seeds) {
+  var wins = 0;
+  final margins = <int>[];
+  for (final seed in seeds) {
+    final g = _skilledVsBots(count, seed, diff);
+    final mine = g.debugScoreOf(0);
+    var bestOpp = double.negativeInfinity;
+    for (var id = 1; id < count; id++) {
+      final s = g.debugScoreOf(id);
+      if (s > bestOpp) bestOpp = s;
+    }
+    if (g.winResult!.ranking.first == 0) wins++;
+    margins.add((mine - bestOpp).round());
+  }
+  return (winRate: wins / seeds.length, margins: margins, wins: wins);
 }
 
 void main() {
@@ -538,6 +610,86 @@ void main() {
         );
       }
     }
+  });
+
+  // ── COMPETITIVE BALANCE: skill gradient + a beatable-but-tough hard bot ──────
+
+  test('COMPETITIVE: skill gradient + beatable-but-tough hard bot', () {
+    // MEASURED (18 deterministic seeds, skilled brace-counter human-sim in seat 0
+    // vs bots). 1v1 is the clean skilled-vs-bot read; 4p is noted for the
+    // gradient. Numbers this test locks (seat-0 win-rate):
+    //   1v1 — easy 100% · medium 100% · hard 55.6%
+    //   4p  — easy 61.1% · medium 33.3% · hard 11.1%
+    // So: easy is a near-certain win, hard is a genuine contest a good player
+    // edges (not a wall, not a sweep), difficulty is strictly monotonic, and the
+    // outcome is decided by SKILL (every easy seed is won), not the seed.
+    const seeds = [
+      1, 7, 13, 21, 99, 123, 256, 512, 1024, 2, 3, 5, 8, 42, 77, 100, 314, 271,
+    ];
+
+    final easy = _skilledWinRate(2, BotDifficulty.easy, seeds);
+    final medium = _skilledWinRate(2, BotDifficulty.medium, seeds);
+    final hard = _skilledWinRate(2, BotDifficulty.hard, seeds);
+
+    // EASY is clearly beatable by a skilled player.
+    expect(easy.winRate, greaterThanOrEqualTo(0.85),
+        reason: '1v1 easy win-rate ${easy.winRate} below 0.85 — easy is not the '
+            'gentle, clearly-winnable tier it should be');
+
+    // HARD is BEATABLE-BUT-TOUGH: not an unfair wall (0) and not a trivial sweep
+    // (1.0). The measured value is ~0.56 — a real coin-edge contest; the band is
+    // robust around "beatable AND challenging".
+    expect(hard.winRate, greaterThanOrEqualTo(0.30),
+        reason: '1v1 hard win-rate ${hard.winRate} below 0.30 — the hard bot has '
+            'become an unfair WALL a skilled player can barely beat');
+    expect(hard.winRate, lessThanOrEqualTo(0.80),
+        reason: '1v1 hard win-rate ${hard.winRate} above 0.80 — the hard bot has '
+            'become a PUSHOVER a skilled player sweeps');
+
+    // GRADIENT is monotonic and bot difficulty MATTERS (easy strictly > hard).
+    expect(easy.winRate, greaterThanOrEqualTo(medium.winRate),
+        reason: 'gradient broke: easy ${easy.winRate} < medium ${medium.winRate}');
+    expect(medium.winRate, greaterThanOrEqualTo(hard.winRate),
+        reason: 'gradient broke: medium ${medium.winRate} < hard ${hard.winRate}');
+    expect(easy.winRate, greaterThan(hard.winRate),
+        reason: 'difficulty does not matter: easy ${easy.winRate} == hard '
+            '${hard.winRate} (bot tier had no effect)');
+
+    // NOT LUCK-DOMINATED: vs easy the skilled-sim wins almost every seed, so the
+    // skill of the play — not the RNG seed — decides the easy outcome.
+    expect(easy.wins, greaterThanOrEqualTo(16),
+        reason: 'skilled-sim won only ${easy.wins}/18 vs easy — easy is '
+            'luck-dominated, not skill-decided');
+
+    // NO RUNAWAY: a trailing player is not mathematically dead — the hard match is
+    // a real contest whose outcome varies seed to seed (the skilled-sim both WINS
+    // some and LOSES some), with a SPREAD of margins (not the identical blowout
+    // every seed). avg hard margin is near zero (a knife-edge), not a sweep.
+    final hardWins = hard.margins.where((m) => m > 0).length;
+    final hardLosses = hard.margins.where((m) => m < 0).length;
+    expect(hardWins, greaterThan(0),
+        reason: 'skilled-sim never out-scored the hard bot on any seed');
+    expect(hardLosses, greaterThan(0),
+        reason: 'skilled-sim out-scored the hard bot on EVERY seed — not a real '
+            'contest (no variety / no comeback for the bot)');
+    expect(hard.margins.toSet().length, greaterThanOrEqualTo(4),
+        reason: 'hard margins ${hard.margins} are not varied — outcomes look '
+            'like the same blowout every seed (runaway/deterministic-rout)');
+
+    // 4p sanity: the gradient holds with three bots too, and hard is not a wall.
+    final easy4 = _skilledWinRate(4, BotDifficulty.easy, seeds);
+    final medium4 = _skilledWinRate(4, BotDifficulty.medium, seeds);
+    final hard4 = _skilledWinRate(4, BotDifficulty.hard, seeds);
+    expect(easy4.winRate, greaterThanOrEqualTo(medium4.winRate),
+        reason: '4p gradient broke: easy ${easy4.winRate} < medium '
+            '${medium4.winRate}');
+    expect(medium4.winRate, greaterThanOrEqualTo(hard4.winRate),
+        reason: '4p gradient broke: medium ${medium4.winRate} < hard '
+            '${hard4.winRate}');
+    expect(easy4.winRate, greaterThan(hard4.winRate),
+        reason: '4p difficulty does not matter: easy == hard');
+    expect(hard4.wins, greaterThan(0),
+        reason: '4p hard is an unfair wall: skilled-sim never won a single seed');
   });
 
   group('StarController (chaos pickup)', () {

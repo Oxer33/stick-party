@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -41,6 +42,63 @@ void main() {
     while (g.status != MiniGameStatus.finished && n++ < maxFrames) {
       g.update(1 / 60);
     }
+  }
+
+  // Mixed context: seat 0 is a HUMAN, every other seat is a BOT at [d]. The
+  // engine sets ALL bots' BotProfile from this difficulty — the lever the
+  // competitiveness audit sweeps (easy/medium/hard).
+  MiniGameContext mixedCtx(int n, BotDifficulty d, int seed) {
+    final players = [
+      PlayerSlot.defaults(0, isBot: false),
+      for (var i = 1; i < n; i++) PlayerSlot.defaults(i, isBot: true),
+    ];
+    return MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(seed),
+      zones: ZoneLayout.forPlayers(n),
+      difficulty: d,
+    );
+  }
+
+  // Drive one 1v1 match where seat 0 is a SKILLED human-sim: every ~16 frames
+  // (~0.27s) it looses a SOLVED arc at the nearest open scoring target —
+  // judging the lob, LEADING the mover's drift, banking bullseyes + combos and
+  // conserving the scarce quiver (it holds fire when only bombs/walled targets
+  // are up). Returns (seat-0 score, bot score). Cadence 16 matches the deliberate
+  // aimer used by the anti-spam proof above — not a spammer's blind spray.
+  (num, num) duelSkilledVsBot(BotDifficulty d, int seed) {
+    final g = ArcherPop()..init(mixedCtx(2, d, seed));
+    var frame = 0;
+    while (g.status != MiniGameStatus.finished && frame++ < 60 * 80) {
+      if (frame % 16 == 0 && g.debugAmmo(0) > 0) {
+        g.debugShootNearestTarget(0);
+      }
+      g.update(1 / 60);
+    }
+    return (g.scores.of(0), g.scores.of(1));
+  }
+
+  // Win-rate + margin spread of the skilled human vs a [d] bot over [seeds].
+  ({double winRate, num minMargin, num maxMargin, int wins, int n})
+      sweepDuel(BotDifficulty d, List<int> seeds) {
+    var wins = 0;
+    num minMargin = 1 << 30;
+    num maxMargin = -(1 << 30);
+    for (final seed in seeds) {
+      final (s0, bot) = duelSkilledVsBot(d, seed);
+      final margin = s0 - bot;
+      if (s0 > bot) wins++;
+      if (margin < minMargin) minMargin = margin;
+      if (margin > maxMargin) maxMargin = margin;
+    }
+    return (
+      winRate: wins / seeds.length,
+      minMargin: minMargin,
+      maxMargin: maxMargin,
+      wins: wins,
+      n: seeds.length,
+    );
   }
 
   // ── Finish / ranking invariants ─────────────────────────────────────────────
@@ -320,5 +378,87 @@ void main() {
     expect(g.status, MiniGameStatus.finished);
     expect(g.scores.of(0), greaterThan(2),
         reason: 'aiming at real targets should score clearly positive');
+  });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ───────────────
+  //
+  // Measured: a SKILLED human-sim in seat 0 (solves + LEADS the lob at the
+  // nearest open target every ~0.27s, banks bullseyes/combos, conserves ammo)
+  // vs a single BOT at each difficulty over 24 seeds (1v1, the contracted shape).
+  // Win-rate table at this cadence (seeds 1..24) — the permanent contract:
+  //     easy   WR ≈ 0.875   avgMargin ≈ +17
+  //     medium WR ≈ 0.750   avgMargin ≈ +9
+  //     hard   WR ≈ 0.667   avgMargin ≈ +6
+  // (Underlying N=80 sweep agrees: 0.875 / 0.762 / 0.662, with bot scores
+  // 6.2 / 7.7 / 11.2 — a monotone difficulty.) The bands below are deliberately
+  // ROBUST (wide of the measured values) so they lock the SHAPE — a real skill
+  // gradient and a hard bot that is beatable but never a pushover/wall — without
+  // being brittle to engine RNG tweaks. A regression that flattens the gradient,
+  // walls the hard bot, or turns it into a pushover trips this.
+  group('COMPETITIVE: skill gradient + beatable-but-tough hard bot', () {
+    // >= 12 seeds (24 used): a robust, contiguous, non-cherry-picked window.
+    final seeds = [for (var s = 1; s <= 24; s++) s];
+
+    final easy = sweepDuel(BotDifficulty.easy, seeds);
+    final medium = sweepDuel(BotDifficulty.medium, seeds);
+    final hard = sweepDuel(BotDifficulty.hard, seeds);
+
+    test('EASY is clearly beatable (win-rate >= 0.70)', () {
+      expect(easy.winRate, greaterThanOrEqualTo(0.70),
+          reason: 'skilled human should dominate easy bots '
+              '(${easy.wins}/${easy.n} = ${easy.winRate})');
+    });
+
+    test('HARD is beatable-but-tough (win-rate in [0.15, 0.90])', () {
+      // Not a WALL (> 0.15: a skilled player can win), not a PUSHOVER
+      // (< 0.90: the hard bot takes real games off you).
+      expect(hard.winRate, greaterThanOrEqualTo(0.15),
+          reason: 'hard bot must not be an unbeatable wall '
+              '(${hard.wins}/${hard.n} = ${hard.winRate})');
+      expect(hard.winRate, lessThanOrEqualTo(0.90),
+          reason: 'hard bot must not be a trivial pushover '
+              '(${hard.wins}/${hard.n} = ${hard.winRate})');
+    });
+
+    test('GRADIENT: winEasy >= winMedium >= winHard and winEasy > winHard', () {
+      expect(easy.winRate, greaterThanOrEqualTo(medium.winRate),
+          reason: 'easy (${easy.winRate}) should be >= medium '
+              '(${medium.winRate})');
+      expect(medium.winRate, greaterThanOrEqualTo(hard.winRate),
+          reason: 'medium (${medium.winRate}) should be >= hard '
+              '(${hard.winRate})');
+      expect(easy.winRate, greaterThan(hard.winRate),
+          reason: 'easy (${easy.winRate}) must STRICTLY beat hard '
+              '(${hard.winRate}) — a real skill gradient, not a flat line');
+    });
+
+    test('NOT luck-dominated: vs EASY the skilled human wins a clear majority',
+        () {
+      // A skill signal, not a coin flip: > 60% of seeds are wins vs easy.
+      expect(easy.wins, greaterThan(seeds.length * 0.6),
+          reason: 'vs easy the skilled human should win reliably across seeds '
+              '(${easy.wins}/${easy.n})');
+    });
+
+    test('NO runaway: outcomes VARY across seeds (margins span both signs)',
+        () {
+      // Across each difficulty the per-seed margin spans a wide range and
+      // includes seeds the human LOSES (minMargin < 0) — the match is not a
+      // fixed runaway; the bot mounts comebacks on some seeds.
+      for (final r in [
+        (BotDifficulty.easy, easy),
+        (BotDifficulty.medium, medium),
+        (BotDifficulty.hard, hard),
+      ]) {
+        final d = r.$1;
+        final res = r.$2;
+        expect(res.maxMargin - res.minMargin, greaterThan(20),
+            reason: '$d: margins should vary across seeds, not a fixed runaway '
+                '(min ${res.minMargin}, max ${res.maxMargin})');
+        expect(res.minMargin, lessThan(0),
+            reason: '$d: the bot should take at least one seed off the human '
+                '(min margin ${res.minMargin}) — no guaranteed runaway');
+      }
+    });
   });
 }

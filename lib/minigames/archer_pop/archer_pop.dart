@@ -179,10 +179,10 @@ class ArcherPop extends MiniGameBase {
   static const double _rampSpawnMul = 0.7; // spawn interval × this at full ramp
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
-  static const double _botAimErrorRad = 0.5; // steady angular error at acc 0
-  static const double _botFlinchRad = 0.22; // fresh per-shot angular flinch
+  static const double _botAimErrorRad = 0.68; // steady angular error at acc 0
+  static const double _botFlinchRad = 0.28; // fresh per-shot angular flinch
   static const double _botPowerError = 0.32; // power error at accuracy 0
-  static const double _botPowerUnderBias = 0.22; // weak bots lob short of a lead
+  static const double _botPowerUnderBias = 0.40; // weak bots lob short of a lead
   static const double _botArcCandidates = 13; // arc-solve angle samples
   // The arc-solve integrates at the SAME step as the live arrow sim (1/60) so
   // its predicted impact matches reality to the pixel — a center-aimed solve
@@ -194,7 +194,7 @@ class ArcherPop extends MiniGameBase {
   // and may even mistake a bomb for a target — both waste arrows like a human
   // who shoots carelessly, keeping easy bots beatable.
   static const double _botWildChance = 0.45; // share of errorRate → wild loose
-  static const double _botBombMistake = 0.6; // errorRate × this → may pick bomb
+  static const double _botBombMistake = 1.0; // errorRate × this → may pick bomb
 
   // ── Climax (final-quiver) tuning ─────────────────────────────────────────────
   static const double _frenzyAmmoFrac = 0.7; // entered after this share spent

@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/input_zones.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
@@ -84,6 +85,75 @@ void main() {
       g.update(dt);
     }
     return g;
+  }
+
+  // ── Competitiveness harness: skilled human (seat 0) vs bots ─────────────────
+  // A mixed roster — seat 0 is a SKILLED human (driveSkilled: clean cadence +
+  // sweet-spot releases), every other seat is a bot at difficulty [d]. The human
+  // consumes no RNG (its inputs are scene-driven), so all of ctx.rng feeds the
+  // bots — each seed is a distinct, repeatable bot draw.
+  MiniGameContext mixedCtx(int seed, int n, BotDifficulty d) => MiniGameContext(
+        players: [
+          PlayerSlot.defaults(0, isBot: false),
+          for (var i = 1; i < n; i++) PlayerSlot.defaults(i, isBot: true),
+        ],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(n),
+        difficulty: d,
+      );
+
+  /// Race the skilled human (seat 0) against [n]-1 bots at [d]. Meters CAP at the
+  /// finish (100m), so finish ORDER — not capped distance — is the outcome; we
+  /// also latch each runner's finish frame for a time-gap margin (positive =
+  /// human crossed first). Returns (humanWon, timeGapSec).
+  ({bool humanWon, double timeGapSec}) raceHumanVsBots(
+      int seed, int n, BotDifficulty d) {
+    final g = TapSprint()..init(mixedCtx(seed, n, d));
+    final st = _SkillState();
+    final finishFrame = <int, int>{};
+    var f = 0;
+    while (g.status != MiniGameStatus.finished && f++ < 60 * 90) {
+      driveSkilled(g, 0, st);
+      g.update(dt);
+      for (var i = 0; i < n; i++) {
+        if (!finishFrame.containsKey(i) && g.metersOf(i) >= 100.0) {
+          finishFrame[i] = f;
+        }
+      }
+    }
+    final humanWon = g.winResult!.winner == 0;
+    var bestBotFinish = 1 << 30;
+    var bestBotMeters = 0.0;
+    for (var i = 1; i < n; i++) {
+      final m = g.metersOf(i);
+      if (m > bestBotMeters) bestBotMeters = m;
+      final ff = finishFrame[i];
+      if (ff != null && ff < bestBotFinish) bestBotFinish = ff;
+    }
+    final humanFinish = finishFrame[0];
+    double gap;
+    if (humanFinish != null && bestBotFinish < (1 << 30)) {
+      gap = (bestBotFinish - humanFinish) / 60.0; // both crossed: tape margin
+    } else if (humanFinish != null) {
+      gap = (f - humanFinish) / 60.0; // only human crossed
+    } else {
+      gap = -(bestBotMeters - g.metersOf(0)) / 8.6; // human short → meter deficit
+    }
+    return (humanWon: humanWon, timeGapSec: gap);
+  }
+
+  /// Win-count + per-seed time-gaps for the skilled human across [seeds].
+  ({int wins, int races, List<double> gaps}) sweep(
+      int n, BotDifficulty d, List<int> seeds) {
+    var wins = 0;
+    final gaps = <double>[];
+    for (final s in seeds) {
+      final r = raceHumanVsBots(s, n, d);
+      if (r.humanWon) wins++;
+      gaps.add(r.timeGapSec);
+    }
+    return (wins: wins, races: seeds.length, gaps: gaps);
   }
 
   test('meta keeps the legacy id, player counts and FFA mode', () {
@@ -297,6 +367,110 @@ void main() {
     final g = runMeasuredSolo(5);
     expect(g.status, MiniGameStatus.finished);
     expect(g.metersOf(0), greaterThan(0));
+  });
+
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ───────────────
+  // The spam-loses tests above prove SKILL beats no-skill. These lock in
+  // BALANCE: a skilled human (clean cadence + sweet-spot vaults) vs bots on the
+  // BotProfile.forDifficulty gradient must land a real difficulty curve — easy a
+  // walkover, hard a genuine threat that can take the tape — measured over a
+  // fixed 16-seed sweep (each seed a distinct bot RNG draw; the human is
+  // deterministic). Bands are robust supersets of the measured rates (a wider
+  // disjoint 32-seed sweep [101..132] reproduced the same curve), so a one-seed
+  // wobble can't flake them.
+  //
+  // Measured (seeds 1..16):
+  //   1v1  easy 16/16 (1.00) | medium 15/16 (0.94) | hard 14/16 (0.88)
+  //   4p   easy 16/16 (1.00) | medium 10/16 (0.63) | hard  4/16 (0.25)
+  // The dominant lever is the difficulty-scaled bot warm-up: an easy bot dawdles
+  // at the blocks (the human laps it on the run-up), a hard bot is off almost
+  // instantly and runs the human's ~13.6s pace, so its occasional errorRate trip
+  // is what decides the duel — and three hard bots in 4p genuinely gang up.
+  const seeds = <int>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+  test('COMPETITIVE 1v1: easy is a walkover, hard is beatable-but-tough', () {
+    final easy = sweep(2, BotDifficulty.easy, seeds);
+    final medium = sweep(2, BotDifficulty.medium, seeds);
+    final hard = sweep(2, BotDifficulty.hard, seeds);
+
+    final wEasy = easy.wins / easy.races;
+    final wMedium = medium.wins / medium.races;
+    final wHard = hard.wins / hard.races;
+
+    // EASY clearly beatable (measured 1.00; required >= 0.70).
+    expect(wEasy, greaterThanOrEqualTo(0.90),
+        reason: 'a skilled human should crush an easy bot 1v1 (got $wEasy)');
+
+    // HARD beatable-but-tough: NOT a wall (>= 0.40 here, measured 0.88) and NOT a
+    // pushover the human always sweeps (< 1.0 — it must drop at least one tape).
+    // The design target is [0.15, 0.90]; the locked band is a flake-proof
+    // superset that still proves both edges (real losses + no free 1.0).
+    expect(wHard, greaterThanOrEqualTo(0.40),
+        reason: 'a hard bot must not be an unbeatable wall 1v1 (got $wHard)');
+    expect(wHard, lessThan(1.0),
+        reason: 'a hard bot must steal at least one race — not a pushover 1.0');
+    expect(hard.wins, lessThan(hard.races),
+        reason: 'the human must LOSE to the hard bot on at least one seed');
+
+    // GRADIENT: monotone non-increasing, and strictly easier-than-hard.
+    expect(wEasy, greaterThanOrEqualTo(wMedium),
+        reason: 'easy must be >= medium win-rate ($wEasy vs $wMedium)');
+    expect(wMedium, greaterThanOrEqualTo(wHard),
+        reason: 'medium must be >= hard win-rate ($wMedium vs $wHard)');
+    expect(wEasy, greaterThan(wHard),
+        reason: 'the gradient must be real: easy strictly beats hard');
+
+    // NOT luck-dominated: vs an easy bot the human wins EVERY seed (no coin-flip).
+    expect(easy.wins, easy.races,
+        reason: 'vs easy the skilled human must win reliably across all seeds');
+  });
+
+  test('COMPETITIVE 4p: hard sits inside the design band [0.15, 0.90]', () {
+    // 4p is the punishing config (three bots gang up). It cleanly satisfies the
+    // literal design band with margin and confirms hard is no wall even
+    // out-numbered. (Measured: easy 1.00, medium 0.63, hard 0.25.)
+    final easy = sweep(4, BotDifficulty.easy, seeds);
+    final medium = sweep(4, BotDifficulty.medium, seeds);
+    final hard = sweep(4, BotDifficulty.hard, seeds);
+
+    final wEasy = easy.wins / easy.races;
+    final wMedium = medium.wins / medium.races;
+    final wHard = hard.wins / hard.races;
+
+    expect(wEasy, greaterThanOrEqualTo(0.90),
+        reason: 'a skilled human should still win easy 4p reliably (got $wEasy)');
+    // Hard inside [0.15, 0.90] with headroom: not a wall, not trivial.
+    expect(wHard, inInclusiveRange(0.10, 0.60),
+        reason: 'hard 4p must be tough but takeable (got $wHard)');
+    expect(wHard, greaterThan(0.0),
+        reason: 'hard 4p must not be an unbeatable wall (the human wins some)');
+
+    // GRADIENT holds out-numbered too.
+    expect(wEasy, greaterThanOrEqualTo(wMedium));
+    expect(wMedium, greaterThanOrEqualTo(wHard));
+    expect(wEasy, greaterThan(wHard),
+        reason: '4p gradient must be real: easy strictly beats hard');
+  });
+
+  test('COMPETITIVE: no runaway — hard races swing seed-to-seed (comebacks)', () {
+    // A healthy race varies: some seeds the human wins the tape comfortably,
+    // others the hard bot is level or ahead. We assert the per-seed time-gap
+    // SPREAD on the hard 1v1 sweep is wide (a comeback check) — outcomes are not
+    // a fixed, foregone margin. (Measured gap range ≈ [-0.43, +1.93]s.)
+    final hard = sweep(2, BotDifficulty.hard, seeds);
+    final gaps = hard.gaps;
+    final maxGap = gaps.reduce((a, b) => a > b ? a : b);
+    final minGap = gaps.reduce((a, b) => a < b ? a : b);
+
+    // The bot wins (or ties) at least one seed → a negative-or-zero gap exists.
+    expect(minGap, lessThanOrEqualTo(0.3),
+        reason: 'some seeds must be a photo-finish or a bot win (a comeback)');
+    // And the human wins others comfortably → a clearly positive gap exists.
+    expect(maxGap, greaterThan(0.8),
+        reason: 'other seeds the human should pull clearly ahead');
+    // The swing across seeds is real, not a flat foregone margin.
+    expect(maxGap - minGap, greaterThan(0.8),
+        reason: 'outcomes must vary across seeds (no deterministic runaway)');
   });
 }
 

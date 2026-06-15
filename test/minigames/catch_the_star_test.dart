@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stick_party/core/rng.dart';
+import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
 import 'package:stick_party/engine/input_zones.dart';
@@ -153,6 +154,68 @@ void main() {
     }
   });
 
+  test(
+      'COMPETITIVE: skill gradient + beatable-but-tough hard bot (1v1, 12 seeds)',
+      () {
+    // The rework PROVES spam loses; this PROVES it is competitively BALANCED.
+    // A SKILLED human-sim (the deliberate intercepter, _trackStarsDodgeBombs)
+    // sits in seat 0 and plays a clean 1v1 against ONE bot in seat 1, for each
+    // difficulty via BotProfile.forDifficulty(d). We measure seat-0 win-rate and
+    // per-seed score margins over a fixed 12-seed set and require:
+    //   * EASY clearly beatable (a kid wins most of the time),
+    //   * HARD beatable-but-tough (neither an unwinnable wall nor a pushover),
+    //   * a real difficulty GRADIENT (winEasy >= winMed >= winHard, easy > hard),
+    //   * the easy result is reliable (skill, not luck),
+    //   * and HARD outcomes VARY across seeds (no single fixed blowout).
+    // 1v1 is used for a clean head-to-head read (a 4p win-rate measures
+    // "beat the best of three independent bots", which muddies the gradient).
+    const seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
+    final easy = _skilledVsBot1v1(BotDifficulty.easy, seeds);
+    final medium = _skilledVsBot1v1(BotDifficulty.medium, seeds);
+    final hard = _skilledVsBot1v1(BotDifficulty.hard, seeds);
+
+    final n = seeds.length;
+    final winEasy = easy.wins / n;
+    final winMedium = medium.wins / n;
+    final winHard = hard.wins / n;
+
+    // EASY clearly beatable: the skilled player wins the large majority.
+    expect(winEasy, greaterThanOrEqualTo(0.70),
+        reason: 'easy bot must be clearly beatable (win-rate $winEasy)');
+
+    // HARD beatable-but-tough: not a wall (>0) and not a trivial pushover (<1).
+    expect(winHard, greaterThanOrEqualTo(0.15),
+        reason: 'hard bot must not be an unwinnable wall (win-rate $winHard)');
+    expect(winHard, lessThanOrEqualTo(0.90),
+        reason: 'hard bot must not be a trivial pushover (win-rate $winHard)');
+
+    // GRADIENT: difficulty must matter, monotonically, with a real spread.
+    expect(winEasy, greaterThanOrEqualTo(winMedium),
+        reason: 'easy ($winEasy) must be >= medium ($winMedium)');
+    expect(winMedium, greaterThanOrEqualTo(winHard),
+        reason: 'medium ($winMedium) must be >= hard ($winHard)');
+    expect(winEasy, greaterThan(winHard),
+        reason: 'difficulty must matter: easy ($winEasy) > hard ($winHard)');
+
+    // NOT luck-dominated: vs easy, the skilled player wins RELIABLY — most seeds,
+    // and on average by a clear positive score margin.
+    expect(easy.wins, greaterThanOrEqualTo((n * 0.7).ceil()),
+        reason: 'easy wins must be reliable across seeds (${easy.wins}/$n)');
+    final easyAvgMargin =
+        easy.margins.fold<num>(0, (a, b) => a + b) / easy.margins.length;
+    expect(easyAvgMargin, greaterThan(0),
+        reason: 'skilled play must beat easy by a positive avg margin');
+
+    // NO runaway: HARD outcomes must VARY across seeds — there must exist BOTH a
+    // seed the skilled player clearly WINS and a seed it clearly LOSES, so it is
+    // a genuine contest rather than one repeated fixed blowout.
+    expect(hard.margins.any((m) => m >= 5), isTrue,
+        reason: 'vs hard, some seed must be a clear skilled WIN (margin >= +5)');
+    expect(hard.margins.any((m) => m <= -5), isTrue,
+        reason: 'vs hard, some seed must be a clear skilled LOSS (margin <= -5)');
+  });
+
   test('a basket stays clamped to its own lane even when dragged outside it', () {
     // Lanes confine each basket so nobody reaches into a rival's column. In a 2p
     // split player 0 owns the BOTTOM half but the basket only moves horizontally,
@@ -276,6 +339,47 @@ void _trackStarsDodgeBombs(CatchTheStar g, int id) {
   }
   // Nothing falling: hold under the basket's current x (still no luck involved).
   g.onInput(PlayerInput.down(id, Offset(basket, lineY)));
+}
+
+/// Aggregate outcome of a skilled-vs-bot sweep across seeds: how many seeds the
+/// skilled seat-0 won and the per-seed score margin (seat0 - bot).
+class _DuelStats {
+  final int wins;
+  final List<num> margins;
+  const _DuelStats(this.wins, this.margins);
+}
+
+/// Run a clean 1v1 for every [seed]: SKILLED human-sim in seat 0 (the deliberate
+/// intercepter, [_trackStarsDodgeBombs]) vs ONE bot in seat 1 at difficulty [d]
+/// (which sets [MiniGameContext.botProfile] via BotProfile.forDifficulty). Both
+/// lanes are fed the SAME calibrated angled-crossing ramp from the same seeded
+/// rng, so the only edge is skill. Returns seat-0 wins + per-seed margins.
+_DuelStats _skilledVsBot1v1(BotDifficulty d, List<int> seeds) {
+  var wins = 0;
+  final margins = <num>[];
+  for (final seed in seeds) {
+    final g = CatchTheStar()
+      ..init(MiniGameContext(
+        players: [
+          PlayerSlot.defaults(0), // skilled human
+          PlayerSlot.defaults(1, isBot: true), // bot at difficulty d
+        ],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+        difficulty: d,
+      ));
+    var frames = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+      g.update(1 / 60);
+      _trackStarsDodgeBombs(g, 0); // seat 0 reads + intercepts every frame
+    }
+    final me = g.scores.of(0);
+    final bot = g.scores.of(1);
+    if (me > bot) wins++;
+    margins.add(me - bot);
+  }
+  return _DuelStats(wins, margins);
 }
 
 /// Blind "spam" play for [id]: ignore every item and just sweep the basket back
