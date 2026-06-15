@@ -322,11 +322,14 @@ void main() {
   });
 
   group('spam-proofing (objective + interposing skill)', () {
-    test('the EARNED shot economy: power and aim climb only with possession', () {
-      // The core lever. A poke with no banked possession (what a masher always
-      // gets) sits at the powerless, aimless floor; a controlled, settled shot
-      // (skill) reaches full power AND a goalward assist. So skill out-shoots
-      // spam by construction — proven deterministically, no noisy match needed.
+    test('the EARNED shot economy: shot power climbs only with dribble possession',
+        () {
+      // The core lever. A panic tap with no banked dribble possession sits at the
+      // powerless floor (and dies on the goal-speed gate); a controlled run-up
+      // reaches full power. So a measured dribble-and-shoot out-shoots a frantic
+      // tap by construction — proven deterministically, no noisy match needed.
+      // (Aim is a fixed, readable HYBRID — mostly at the goal, bent by run dir —
+      // not a possession-scaled assist, so it is verified in play, not here.)
       final g = OneTouchSoccer()
         ..init(MiniGameContext(
           players: const [PlayerSlot(id: 0, name: 'P1', colorArgb: 0xFFFFFFFF)],
@@ -337,15 +340,10 @@ void main() {
 
       final floorPower = g.shotPowerFracForTest(0);
       final fullPower = g.shotPowerFracForTest(10); // long-controlled
-      expect(floorPower, lessThan(0.2), reason: 'a no-possession poke is feeble');
-      expect(fullPower, greaterThan(0.9), reason: 'a controlled shot blasts');
+      expect(floorPower, lessThan(0.2), reason: 'a no-possession tap is feeble');
+      expect(fullPower, greaterThan(0.9), reason: 'a controlled run-up blasts');
       expect(fullPower, greaterThan(floorPower * 3),
-          reason: 'control multiplies shot power several-fold');
-
-      expect(g.goalAssistForTest(0), 0.0,
-          reason: 'a poke gets ZERO goalward assist — the player must aim it');
-      expect(g.goalAssistForTest(10), greaterThan(0.0),
-          reason: 'only a controlled shot earns a goalward curl');
+          reason: 'dribble control multiplies shot power several-fold');
     });
 
     test('a lone player CAN score (goal credited to the side that attacks it)',
