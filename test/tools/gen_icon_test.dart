@@ -23,6 +23,12 @@ const _cyan = Color(0xFF22D3EE);
 const _dark = Color(0xFF0C0A18);
 const _white = Color(0xFFFFFFFF);
 
+// Foreground "camera": the whole fight group (dohyo→clash) is scaled about this
+// pivot so the two wrestlers fill more of the frame. Pivot sits on the grapple
+// mass; zoom kept so the adaptive foreground still fits the safe circle (r≤313).
+const _fgPivot = Offset(512, 520);
+const double _fgZoom = 1.3;
+
 Paint _strokePaint(double w, Color col) => Paint()
   ..style = PaintingStyle.stroke
   ..strokeWidth = w
@@ -45,8 +51,8 @@ void _wrestler(Canvas c, double px, double py, double s, double mirror, Color gl
     ..lineTo(14, 6)
     ..lineTo(28, 28) // front planted leg
     ..moveTo(-8, -14)
-    ..lineTo(-26, 4)
-    ..lineTo(-40, 28); // wide back leg
+    ..lineTo(-22, 4)
+    ..lineTo(-30, 28); // braced back leg
   c.drawPath(body, _strokePaint(10, glow.withValues(alpha: 0.22))); // neon halo
   c.drawPath(body, _strokePaint(4.6, glow)); // core
   c.drawPath(body, _strokePaint(1.7, Color.lerp(glow, _white, 0.6)!.withValues(alpha: 0.9)));
@@ -102,8 +108,8 @@ void _footShadows(Canvas c, double a) {
         Rect.fromCenter(center: Offset(x, y), width: w, height: w * 0.26),
         Paint()..color = const Color(0xFF000000).withValues(alpha: a),
       );
-  sh(253, 662, 150);
-  sh(771, 662, 150);
+  sh(289, 662, 150);
+  sh(735, 662, 150);
   sh(500, 664, 120);
   sh(524, 664, 120);
 }
@@ -125,17 +131,17 @@ void _dust(Canvas c) {
 }
 
 void _dohyo(Canvas c) {
-  const ctr = Offset(512, 656);
+  const ctr = Offset(512, 648);
   Rect e(double rx, double ry) => Rect.fromCenter(center: ctr, width: rx * 2, height: ry * 2);
   Paint ring(double w, Color col) => Paint()
     ..style = PaintingStyle.stroke
     ..strokeWidth = w
     ..color = col;
-  c.drawOval(e(270, 62), Paint()..color = const Color(0x14FBBF24)); // clay platform
-  c.drawOval(e(270, 62), ring(16, const Color(0x2EFBBF24))); // outer halo
-  c.drawOval(e(270, 62), ring(6, const Color(0x80FBBF24))); // mid ring
-  c.drawOval(e(270, 62), ring(2.6, const Color(0xCCFFE6B0))); // bright rim
-  c.drawOval(e(202, 46), ring(3, const Color(0x40FB7234))); // inner raked ring
+  c.drawOval(e(195, 50), Paint()..color = const Color(0x14FBBF24)); // clay platform
+  c.drawOval(e(195, 50), ring(16, const Color(0x2EFBBF24))); // outer halo
+  c.drawOval(e(195, 50), ring(6, const Color(0x80FBBF24))); // mid ring
+  c.drawOval(e(195, 50), ring(2.6, const Color(0xCCFFE6B0))); // bright rim
+  c.drawOval(e(145, 38), ring(3, const Color(0x40FB7234))); // inner raked ring
 }
 
 void _bg(Canvas c) {
@@ -174,6 +180,11 @@ Future<ui.Image> _render({required bool withBackground}) async {
   final rec = ui.PictureRecorder();
   final canvas = Canvas(rec, const Rect.fromLTWH(0, 0, 1024, 1024));
   if (withBackground) _bg(canvas);
+  // Zoom the fight group toward the camera (bg stays full-bleed).
+  canvas.save();
+  canvas.translate(_fgPivot.dx, _fgPivot.dy);
+  canvas.scale(_fgZoom);
+  canvas.translate(-_fgPivot.dx, -_fgPivot.dy);
   _dohyo(canvas);
   _clashHalo(canvas);
   _footShadows(canvas, withBackground ? 0.30 : 0.22);
@@ -181,6 +192,7 @@ Future<ui.Image> _render({required bool withBackground}) async {
   _wrestler(canvas, 627, 554, 3.6, -1, _cyan);
   _dust(canvas);
   _clashCore(canvas);
+  canvas.restore();
   return rec.endRecording().toImage(_size, _size);
 }
 
