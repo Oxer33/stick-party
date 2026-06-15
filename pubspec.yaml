@@ -40,6 +40,7 @@ dev_dependencies:
 
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.1
+  golden_toolkit: ^0.15.0 # loadAppFonts() for the visual-QA snapshot tool
 
 flutter:
   uses-material-design: true

@@ -1083,14 +1083,20 @@ class ChickenJump extends MiniGameBase {
     // SPIKE GATES (drawn over the stone so the trap reads on top). Every gated
     // rung shows its spikes creep up through the warn beat and stand tall when
     // live — the telegraphed hazard a reader times their hops around.
+    final climberRefY = c.rungYOf(c.hopper.lane);
     for (var lane = _Tuning.spikeStartRung; lane < c.rungs.count; lane++) {
       final level = _spikeLevel(lane, c.rungs.count);
       if (level <= 0) continue;
+      final ry = c.rungYOf(lane);
+      // Rungs above the climber recede into the distance (dim + short); the gate
+      // at the climber's height is full foreground. ~520px = fully receded.
+      final depth = ((climberRefY - ry) / 520.0).clamp(0.0, 1.0);
       ChickenRenderer.drawSpikes(
         canvas,
-        Offset(c.columnX, c.rungYOf(lane)),
+        Offset(c.columnX, ry),
         c.column.width,
         level,
+        depth: depth,
       );
     }
 

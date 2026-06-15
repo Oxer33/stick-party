@@ -24,6 +24,10 @@ class ChickenRenderer {
   /// Hot accent for the spike-trap hit cue ("SPIKED!") and the spikes themselves.
   static const Color spikeColor = Color(0xFFFF3B2F);
 
+  /// Cool dark ember the FAR/upcoming spikes recede toward (depth illusion), so
+  /// only near + armed teeth read hot-red instead of a uniform wall.
+  static const Color _emberFar = Color(0xFF4E1B14);
+
   // ── Palette (no magic colors inline elsewhere) ─────────────────────────────
   static const Color _skyTop = Color(0xFF1A1230); // upper cave sky
   static const Color _skyMid = Color(0xFF241733);
@@ -440,61 +444,64 @@ class ChickenRenderer {
     Canvas canvas,
     Offset center,
     double columnWidth,
-    double level,
-  ) {
+    double level, {
+    double depth = 0,
+  }) {
     if (columnWidth <= 1) return;
     final lvl = level.clamp(0.0, 1.0);
     if (lvl <= 0.01) return;
+    final dep = depth.clamp(0.0, 1.0);
+    final near = 1.0 - dep; // 1 = at the climber (foreground), 0 = far above
 
     final w = columnWidth * _platWidthFactor;
     final h = math.max(6.0, columnWidth * _platHeightFactor);
     final platTop = center.dy - h * 0.5;
     final live = lvl >= 0.999; // fully out → lethal styling
 
-    // Teeth span the rung; each extends from the stone top to a height scaled by
-    // [lvl] so they visibly creep up through the warn beat and stand tall when
-    // live.
+    // Teeth span the rung; height scales with [lvl] (creep up through the warn
+    // beat) AND recedes with [depth] so the far/upcoming gates read short + cool
+    // and only the NEAR, armed teeth blaze hot-red — depth instead of a flat wall.
     const teeth = 6;
-    final tipColor = live
+    final hot = live
         ? spikeColor
         : Color.lerp(_crackWarn, spikeColor, lvl) ?? spikeColor;
+    final tipColor = Color.lerp(_emberFar, hot, 0.32 + 0.68 * near) ?? hot;
+    final bodyA = (live ? 0.95 : 0.16 + 0.62 * lvl * lvl) * (0.42 + 0.58 * near);
     final fill = Paint()
       ..style = PaintingStyle.fill
-      ..color = tipColor.withValues(alpha: live ? 0.95 : 0.55 + 0.4 * lvl);
+      ..color = tipColor.withValues(alpha: bodyA);
     final edge = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(1.0, h * 0.12)
       ..strokeJoin = StrokeJoin.round
       ..color = _blend(tipColor, _white, 0.35)
-          .withValues(alpha: live ? 0.9 : 0.4 + 0.4 * lvl);
+          .withValues(alpha: bodyA * (live ? 0.95 : 0.72));
 
     final span = w * 0.92;
     final left = center.dx - span * 0.5;
     final step = span / teeth;
-    final tall = h * (0.9 + 1.7 * lvl); // creep up with arming
+    final tall = h * (0.5 + 1.9 * lvl) * (0.56 + 0.44 * near); // arm up, recede far
     for (var i = 0; i < teeth; i++) {
       final cx = left + step * (i + 0.5);
+      // Slight per-tooth jitter so the row never reads as a flat repeated comb.
+      final th = tall * (1.0 + 0.12 * math.sin(i * 1.7 + center.dy * 0.02));
       final path = Path()
         ..moveTo(cx - step * 0.42, platTop)
-        ..lineTo(cx, platTop - tall)
+        ..lineTo(cx, platTop - th)
         ..lineTo(cx + step * 0.42, platTop)
         ..close();
       canvas.drawPath(path, fill);
       canvas.drawPath(path, edge);
     }
 
-    // A hot danger glow over the spike band: a soft warn wash while telegraphing,
-    // a hard lethal band when fully out — so "do NOT land here" reads instantly.
-    final glowRect = Rect.fromLTRB(
-      left,
-      platTop - tall,
-      left + span,
-      platTop,
-    );
+    // Hot danger glow over the band — also recedes with depth so far gates don't
+    // smear the column red; the near lethal band still screams "do NOT land".
+    final glowRect = Rect.fromLTRB(left, platTop - tall, left + span, platTop);
     canvas.drawRect(
       glowRect,
       Paint()
-        ..color = spikeColor.withValues(alpha: live ? 0.18 : 0.06 + 0.1 * lvl),
+        ..color = spikeColor.withValues(
+            alpha: (live ? 0.18 : 0.04 + 0.1 * lvl * lvl) * (0.32 + 0.68 * near)),
     );
   }
 
