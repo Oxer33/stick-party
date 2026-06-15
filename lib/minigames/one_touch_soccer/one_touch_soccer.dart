@@ -19,17 +19,24 @@ import 'striker.dart';
 /// tall portrait screen) with a neutral ball (id -1) and one stick striker per
 /// seat.
 ///
-/// CONTROL (the heart of it — full player agency, still one touch):
+/// CONTROL (the heart of it — every touch is an ACTIVE, readable decision):
 ///  * MOVEMENT is a VIRTUAL JOYSTICK. Touch down anywhere in your zone to anchor
 ///    a joystick; drag from there — the vector from the anchor to your finger is
 ///    the direction you run and its length is your speed. Release to stop. You
 ///    steer freely in 2-D.
-///  * TRAP vs KICK is the per-touch DECISION. Reaching the ball WITHOUT a fresh
-///    tap TRAPS it: most of its speed is killed and it sticks to your feet so you
-///    carry / dribble it where you steer. Each TAP (the joystick press) arms a
-///    KICK for your next contact, which SHOOTS the ball goalward — and the longer
-///    the ball has been settled at your feet, the harder that shot flies. So a
-///    kid runs with the ball at their feet and taps to shoot.
+///  * The TRAP is an ACTIVE CLAIM, not a passive stick. A loose ball is NOT
+///    yours just because you ran into it — it rolls THROUGH / past your feet (to
+///    a teammate, a rival, or away). You only OWN the ball when you actively TRAP
+///    it: a TAP while the loose ball is in range KILLS its velocity and claims
+///    it. A mistimed trap (the ball not yet in range, or already gone) whiffs and
+///    the ball stays loose — a turnover a positioned opponent punishes. So
+///    positioning + trap timing are the visible skill.
+///  * SHOOTING is one-touch: while you POSSESS the ball, a TAP/flick SHOOTS it
+///    goalward — a HYBRID aim (mostly at the goal, bent by the way you run) at a
+///    power set by a quick charge that fills the instant you trap. So a player
+///    traps, runs the ball up, then taps to fire. A blind tap while possessing
+///    fires it straight away — an instant turnover — so spamming the button
+///    throws the ball away instead of building a strike.
 ///
 /// PACING: a real back-and-forth match — first to [_goalsToWin] goals or until
 /// the [_timeLimit] expires. The ball starts dead at center, there is a brief
@@ -37,14 +44,16 @@ import 'striker.dart';
 /// is never instantly scored and the midfield is genuinely contested.
 ///
 /// Feel: the ball is light so kicks fly, carries spin, leaves a motion trail and
-/// bounces off the SIDE walls. Goals trigger a net-bulge flash + big "GOAL!"
-/// popup + confetti + slow-mo + crowd roar.
+/// bounces off the SIDE walls. A trap pops a ring + dust; a whiffed trap flashes
+/// a TURNOVER. Goals trigger a net-bulge flash + big "GOAL!" popup + confetti +
+/// slow-mo + crowd roar.
 ///
 /// Teams / goals: even ids / [Team.a] attack the TOP goal (defend bottom); odd
 /// ids / [Team.b] attack the BOTTOM goal (defend top). A goal awards a point to
 /// every player on the scoring side (aggregated for 2v2). Bots steer toward the
-/// ball with the SAME joystick model, pushing it toward the opponent goal, and
-/// the rear player on a 2-player side drops back to guard its own net.
+/// ball with the SAME joystick model and TRAP it with the same active claim
+/// (easy bots mistime the trap and turn it over; hard bots trap clean and aim),
+/// and the rear player on a 2-player side drops back to guard its own net.
 class OneTouchSoccer extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -88,24 +97,34 @@ class OneTouchSoccer extends MiniGameBase {
   static const double _accelPerSec = 9.0; // velocity lerp toward target /s
   static const double _releaseDragPerSec = 7.0; // decel rate after release /s
 
-  // ── Ball control: DRIBBLE (ball sticks to feet) + TAP to shoot ───────────────
-  // You DRIBBLE by running into the ball: it sticks just ahead of your feet so
-  // you can SEE you own it and carry it. A quick TAP SHOOTS it; just holding the
-  // joystick runs/dribbles. Shot power is the dribble possession you banked, so
-  // a controlled run-up blasts and a panic tap nudges.
+  // ── Ball control: ACTIVE TRAP to claim + TAP to shoot ────────────────────────
+  // The ball is NOT yours by proximity. You must actively TRAP it: a TAP while
+  // the loose ball is in range claims it (kills its velocity, sticks it ahead of
+  // your feet). A tap whose window expires with no ball in range WHIFFS — the
+  // ball stays loose (a turnover). Once owned, a TAP SHOOTS; shot power is a quick
+  // charge that fills the moment you trap, so a held-then-aimed strike blasts and
+  // a panic re-tap fires it weakly straight away (an instant turnover).
   static const double _kickContactFactor = 1.18; // overlap = within this*radii
-  static const double _controlRangeFactor = 1.6; // ball within this*contact ⇒ you own it
-  // The dribbled ball sits just BEYOND contact range (> 1.0) so it never overlaps
+  static const double _trapRangeFactor = 1.55; // a TAP traps a loose ball within this*contact
+  // The trapped ball sits just BEYOND contact range (> 1.0) so it never overlaps
   // its owner — otherwise the arena would resolve the owner↔ball overlap every
   // frame and shove the (heavy) ball + the striker apart, knocking the dribbler
   // backwards off its own run.
   static const double _stickAheadFactor = 1.18; // ball sits this*(R+r) ahead of the feet
-  static const double _possessReclaimSec = 0.45; // after YOU shoot you can't re-own the ball for this long
-  static const double _tapHoldSec = 0.2; // a press shorter than this (+ little drag) = a TAP = SHOOT
-  static const double _tapMaxDrag = 0.05; // ...and the finger moved less than this (norm) = a tap, not a run
+  static const double _possessReclaimSec = 0.32; // after YOU shoot you can't re-trap for this long
+  // A press opens a TRAP/SHOOT window: a tap (released within [_tapHoldSec] and
+  // dragged less than [_tapMaxDrag]) fires the intent; a longer hold or a real
+  // drag is a steer-to-move and never traps or shoots. While the window is open
+  // and you do NOT yet own the ball, a loose ball entering trap range is CLAIMED.
+  static const double _tapHoldSec = 0.2;
+  static const double _tapMaxDrag = 0.05;
+  static const double _trapWindowSec = 0.26; // a press stays "trap-armed" this long
   static const double _kickPerSecond = 3.6; // full-power shot = pitch.h * this
-  static const double _kickMinPowerFrac = 0.05; // a no-possession tap shoots this weak (goal-gate stops it)
-  static const double _kickChargeFullSec = 0.3; // seconds of dribble possession → full shot power
+  static const double _kickMinPowerFrac = 0.05; // a no-charge tap shoots this weak (goal-gate stops it)
+  static const double _kickChargeFullSec = 0.5; // seconds of settled possession → full shot power
+  // A trap kills the ball's incoming speed to this fraction (a clean catch), so a
+  // claimed ball sits dead at the feet ready to be carried — never a deflection.
+  static const double _trapSpeedKeep = 0.0;
   // Aim is a HYBRID: the shot flies mostly AT the goal you attack, bent toward
   // the way you are running — so it is readable (always goalward) yet you can
   // angle it into a corner past the keeper. 0 = straight at goal, 1 = where you run.
@@ -123,6 +142,8 @@ class OneTouchSoccer extends MiniGameBase {
   // ── Goal / celebration tuning ───────────────────────────────────────────────
   static const double _kickoffPauseSec = 1.25; // sim frozen after a goal
   static const double _bulgeDurationSec = 0.9; // net ripple length
+  static const double _trapPopSec = 0.32; // trap-pop ring fade after a claim
+  static const double _whiffFlashSec = 0.5; // 'MISS'/'TURNOVER' cue fade
   // The goal slow-mo is now supplied by Juice.bigMoment (the signature beat).
 
   // ── Climax (double goals) tuning ────────────────────────────────────────────
@@ -163,10 +184,20 @@ class OneTouchSoccer extends MiniGameBase {
   // of the pitch from its own goal; higher up it PRESSES the ball to win it.
   static const double _botDefendZoneFrac = 0.40;
   // A bot only SHOOTS once it has banked at least this much possession (seconds
-  // of control) AND is in the attacking half — otherwise it keeps trapping and
-  // dribbling the ball goalward. So the bot earns its shot power exactly like a
-  // skilled human, and never floor-pokes the way a masher does.
-  static const double _botShootPossession = 0.06;
+  // of control) AND is in the attacking half — otherwise it keeps dribbling the
+  // ball goalward. So the bot earns its shot power exactly like a skilled human,
+  // and never floor-pokes the way a masher does.
+  static const double _botShootPossession = 0.18;
+  // A bot attempts an active TRAP when a loose ball is within this*trapRange and
+  // slow enough to catch. Its trap SUCCEEDS scaled by accuracy: a hard bot snaps
+  // the claim, an easy bot frequently mistimes it and turns the ball over — the
+  // same active-trap skill a human reads, expressed through BotProfile.
+  static const double _botTrapRangeFactor = 1.0; // of the human trap range
+  static const double _botTrapMaxBallSpeed = 280.0; // won't lunge at a rocket
+  // Floor on a bot's trap success so even an easy bot occasionally claims (keeps
+  // an all-bot match flowing); ceiling keeps a hard bot just shy of automatic.
+  static const double _botTrapSuccessFloor = 0.35;
+  static const double _botTrapSuccessCeil = 0.97;
 
   // ── Uneven-teams fairness (e.g. a lone human vs a 2-bot side) ────────────────
   // With an odd seat count one side is short-handed (3p ⇒ 1-vs-2). The short
@@ -195,6 +226,9 @@ class OneTouchSoccer extends MiniGameBase {
   double _kickoffPause = 0; // > 0 while the post-goal pause runs
   double _topBulge = 0; // net ripple timers
   double _bottomBulge = 0;
+  double _trapPop = 0; // > 0 just after a claim (trap-pop ring)
+  Offset _trapPopAt = Offset.zero; // where the last trap landed
+  Color _trapPopColor = const Color(0xFFFFFFFF);
   double _ballSpin = 0; // radians, for the seam hint
   double _ballSquash = 0; // 0..1, flatten on hard hits
   Offset _ballLastDir = Offset.zero;
@@ -206,11 +240,11 @@ class OneTouchSoccer extends MiniGameBase {
   /// Last move direction (unit) of each striker, for the auto-kick bias.
   final Map<int, Offset> _moveDir = <int, Offset>{};
 
-  /// Seconds each striker has held the ball in CONTROL (continuous possession at
-  /// its feet without booting it). This — not raw time — charges a shot, so the
-  /// only way to a powerful, aimed strike is to TRAP and keep the ball. A masher
-  /// that kicks on every contact never controls it, so its possession stays ~0
-  /// and its pokes stay at the feeble floor with no goalward assist.
+  /// Seconds each striker has held the ball in CONTROL since it TRAPPED it (a
+  /// continuous claim at its feet). This — not raw proximity time — charges a
+  /// shot, so the only way to a powerful, aimed strike is to TRAP and keep the
+  /// ball. A masher that re-taps shoots the instant it traps (charge ~0) and so
+  /// only ever floor-pokes; a turnover resets it to 0 for everyone.
   final Map<int, double> _possessionSec = <int, double>{};
 
   /// Side ([_attacksTop] value) of the striker who last touched the ball, or null
@@ -232,11 +266,22 @@ class OneTouchSoccer extends MiniGameBase {
   /// elapses, so a shot actually travels instead of re-sticking to the shooter.
   final Map<int, double> _shootCd = <int, double>{};
 
-  /// Touch bookkeeping to tell a SHOOT tap from a run/dribble drag: where the
+  /// Touch bookkeeping to tell a TRAP/SHOOT tap from a run/move drag: where the
   /// finger pressed, how long it has been held, and whether it has dragged far.
   final Map<int, Offset> _pressNorm = <int, Offset>{};
   final Map<int, double> _pressSec = <int, double>{};
   final Map<int, bool> _draggedFar = <int, bool>{};
+
+  /// Remaining seconds of each striker's open TRAP window (a press opens it; a
+  /// long hold or a far drag closes it early). While > 0 and the striker does NOT
+  /// own the ball, a loose ball entering trap range is actively CLAIMED. This is
+  /// the active-claim core: no window open ⇒ the ball rolls through your feet.
+  final Map<int, double> _trapArm = <int, double>{};
+
+  /// Brief per-striker flash timer after a WHIFFED trap (a tap that found no ball
+  /// in range, or a turnover), so the renderer can stamp a 'MISS'/'TURNOVER' cue.
+  /// Pure feel; never gates the sim.
+  final Map<int, double> _whiffFlash = <int, double>{};
 
   /// Per-bot desired heading (unit vector) refreshed on its reaction clock and
   /// applied smoothly every frame, mirroring how a human holds a joystick.
@@ -360,6 +405,8 @@ class OneTouchSoccer extends MiniGameBase {
       _possessionSec[p.id] = 0;
       _cumPossession[p.id] = 0;
       _shootCd[p.id] = 0;
+      _trapArm[p.id] = 0;
+      _whiffFlash[p.id] = 0;
       if (p.isBot) {
         _botClocks[p.id] = ReactionClock(ctx.botProfile, ctx.rng);
         _botHeading[p.id] = Offset.zero;
@@ -458,6 +505,13 @@ class OneTouchSoccer extends MiniGameBase {
     return Offset(b.pos.dx / _size.width, b.pos.dy / _size.height);
   }
 
+  /// Test-only view of who currently OWNS the ball (the active-trap possessor),
+  /// or null when the ball is loose. Lets a deterministic test assert that a
+  /// well-timed tap CLAIMS a loose ball and a mistimed one does NOT, without
+  /// reaching into private sim state. Not used by gameplay.
+  @visibleForTesting
+  int? possessorForTest() => _possessor;
+
   // ── Input: virtual joystick (press / drag / release) ─────────────────────────
 
   @override
@@ -471,29 +525,49 @@ class OneTouchSoccer extends MiniGameBase {
     // frozen ball, so those are ignored while the pause runs.
     if (_kickoffPause > 0 && input.phase != InputPhase.up) return;
 
+    final id = input.playerId;
     switch (input.phase) {
       case InputPhase.down:
         joy.press(input.normPos);
-        _pressNorm[input.playerId] = input.normPos;
-        _pressSec[input.playerId] = 0;
-        _draggedFar[input.playerId] = false;
+        _pressNorm[id] = input.normPos;
+        _pressSec[id] = 0;
+        _draggedFar[id] = false;
+        // A press is an ACTIVE intent. If you already OWN the ball it is a SHOOT
+        // tap (fired on release once we know it stayed a tap). If the ball is
+        // loose it OPENS a trap window: a loose ball that enters range while the
+        // window is open is CLAIMED in [_resolveTraps]. Either way, intent first.
+        if (_possessor != id) _trapArm[id] = _trapWindowSec;
       case InputPhase.holdTick:
         // A move sample carries a position; a pure per-frame held tick carries
         // only dt (normPos == Offset.zero) and just keeps the last vector.
         if (input.normPos != Offset.zero) {
           joy.drag(input.normPos);
-          final dn = _pressNorm[input.playerId];
+          final dn = _pressNorm[id];
           if (dn != null && (input.normPos - dn).distance > _tapMaxDrag) {
-            _draggedFar[input.playerId] = true;
+            _draggedFar[id] = true;
+            _trapArm[id] = 0; // a real drag is a MOVE, not a trap/shoot
           }
         }
       case InputPhase.up:
         joy.release();
-        // A quick press that barely moved is a TAP → SHOOT the ball you own. A
-        // press that dragged or was held is a run/dribble, never a stray shot.
-        final tap = !(_draggedFar[input.playerId] ?? false) &&
-            (_pressSec[input.playerId] ?? 99) <= _tapHoldSec;
-        if (tap) _tryShoot(input.playerId);
+        // A quick press that barely moved is a TAP. Possessing ⇒ SHOOT; loose ⇒
+        // it was a trap attempt — if the window never caught a ball it WHIFFS
+        // (a turnover cue). A press that dragged or was held is a MOVE, never a
+        // stray shot or trap.
+        final tap = !(_draggedFar[id] ?? false) &&
+            (_pressSec[id] ?? 99) <= _tapHoldSec;
+        if (tap) {
+          if (_possessor == id) {
+            _shoot(id);
+          } else if ((_trapArm[id] ?? 0) <= 0) {
+            // The window already expired with no claim → a whiffed trap tap.
+            _flashWhiff(id);
+          }
+          // else: window still open — let _resolveTraps catch a just-arriving
+          // ball this frame or the next few; if it never lands, it lapses quietly.
+        } else {
+          _trapArm[id] = 0;
+        }
     }
   }
 
@@ -508,7 +582,7 @@ class OneTouchSoccer extends MiniGameBase {
     _juice.update(dt);
     _tickTimers(dt);
     for (final joy in _joysticks.values) {
-      joy.tick(dt, tapHoldSec: _tapHoldSec);
+      joy.tick(dt); // just ages the kick trail now
     }
 
     // During the kickoff pause the world is frozen (only juice + timers run).
@@ -527,7 +601,8 @@ class OneTouchSoccer extends MiniGameBase {
     _driveBots(dt);
     _steerStrikers(sdt);
     _arena.update(sdt);
-    _updatePossession(sdt); // own the ball (stick to feet) + bank dribble time
+    _resolveTraps(sdt); // active CLAIM: an open trap window catches a loose ball
+    _holdPossession(sdt); // glue an owned ball to feet + bank settled possession
 
     _pads.tick(sdt, ctx.rng, _pitch);
     _triggerSpeedPad();
@@ -562,13 +637,18 @@ class OneTouchSoccer extends MiniGameBase {
     if (_kickoffPause > 0) _kickoffPause = math.max(0, _kickoffPause - dt);
     if (_topBulge > 0) _topBulge = math.max(0, _topBulge - dt);
     if (_bottomBulge > 0) _bottomBulge = math.max(0, _bottomBulge - dt);
-    // Age each held press (to tell a tap from a hold) and each post-shot lockout.
+    if (_trapPop > 0) _trapPop = math.max(0, _trapPop - dt);
+    // Age each held press (to tell a tap from a hold), each post-shot lockout and
+    // each whiff cue. (The trap WINDOW is aged in _resolveTraps on the sim clock.)
     for (final entry in _joysticks.entries) {
+      final id = entry.key;
       if (entry.value.active) {
-        _pressSec[entry.key] = (_pressSec[entry.key] ?? 0) + dt;
+        _pressSec[id] = (_pressSec[id] ?? 0) + dt;
       }
-      final cd = _shootCd[entry.key] ?? 0;
-      if (cd > 0) _shootCd[entry.key] = math.max(0, cd - dt);
+      final cd = _shootCd[id] ?? 0;
+      if (cd > 0) _shootCd[id] = math.max(0, cd - dt);
+      final wf = _whiffFlash[id] ?? 0;
+      if (wf > 0) _whiffFlash[id] = math.max(0, wf - dt);
     }
   }
 
@@ -625,47 +705,104 @@ class OneTouchSoccer extends MiniGameBase {
     _ballSquash = (_ballSquash - _squashDecayPerSec * dt).clamp(0.0, 1.0);
   }
 
-  // ── Ball control: OWN (dribble) + TAP to shoot ───────────────────────────────
+  // ── Ball control: ACTIVE TRAP to claim + glue while owned ────────────────────
 
-  /// After the physics step, decide who OWNS the ball and stick it to their feet.
-  /// The owner is the nearest striker within [_controlRangeFactor] of contact
-  /// range that is NOT in its post-shot lockout. While owned, the ball is glued
-  /// just ahead of the feet (a visible dribble) and the owner banks possession
-  /// (live shot charge + the match-long tie-break total). A loose ball — nobody
-  /// close, or a live shot whose shooter is still locked out — just obeys
-  /// physics. There is no auto-aim and no luck-launch: you move the ball by
-  /// carrying it, and it only leaves your feet when YOU tap to shoot.
-  void _updatePossession(double dt) {
-    final ctrlRange =
-        (_playerRadius + _ballRadius) * _kickContactFactor * _controlRangeFactor;
-    int? owner;
-    var best = double.infinity;
-    for (final id in _joysticks.keys) {
-      if ((_shootCd[id] ?? 0) > 0) continue; // just shot — can't re-grab yet
-      final b = _bodyOf(id);
-      if (b == null) continue;
-      final d = (b.pos - _ball.pos).distance;
-      if (d <= ctrlRange && d < best) {
-        best = d;
-        owner = id;
-      }
-    }
-    _possessor = owner;
+  /// Range within which an open trap window can claim a loose ball.
+  double get _trapRange =>
+      (_playerRadius + _ballRadius) * _kickContactFactor * _trapRangeFactor;
 
-    for (final id in _joysticks.keys) {
-      if (id == owner) {
-        _possessionSec[id] = (_possessionSec[id] ?? 0) + dt;
-        _cumPossession[id] = (_cumPossession[id] ?? 0) + dt; // match-long total
-      } else {
-        _possessionSec[id] = 0;
+  /// The ACTIVE claim. For each striker whose TRAP window is open (a fresh press,
+  /// not yet a hold/drag) and that does NOT already own the ball: if the LOOSE
+  /// ball is within [_trapRange] and the striker is off its post-shot lockout,
+  /// CLAIM it — kill the ball's velocity, set [_possessor], pop a trap ring. The
+  /// nearest armed striker wins a contested claim. A striker that did NOT tap (no
+  /// open window) is ignored, so the ball rolls straight through its feet — the
+  /// whole point: possession is taken, never gifted by proximity. Windows tick
+  /// down here; a window that lapses with the striker still empty was a whiff.
+  void _resolveTraps(double dt) {
+    // Only contest if the ball is actually loose (no current owner). An owned
+    // ball is glued; a rival takes it only after a shot/turnover frees it.
+    if (_possessor == null) {
+      int? claimer;
+      var best = double.infinity;
+      for (final id in _joysticks.keys) {
+        if ((_trapArm[id] ?? 0) <= 0) continue; // no active trap intent
+        if ((_shootCd[id] ?? 0) > 0) continue; // just shot — can't re-claim yet
+        final b = _bodyOf(id);
+        if (b == null) continue;
+        final d = (b.pos - _ball.pos).distance;
+        if (d <= _trapRange && d < best) {
+          best = d;
+          claimer = id;
+        }
       }
+      if (claimer != null) _claimBall(claimer);
     }
 
+    // Age every open trap window. A human window that lapses unclaimed (the tap
+    // landed but no ball ever arrived) shows a quiet MISS only if the player
+    // already lifted — handled in onInput; here we just expire the window.
+    for (final id in _joysticks.keys) {
+      final w = _trapArm[id] ?? 0;
+      if (w > 0) _trapArm[id] = math.max(0, w - dt);
+    }
+  }
+
+  /// Claim the loose ball for [id]: kill its velocity (a clean catch), mark the
+  /// possessor, reset its shot charge to 0 (you must settle to power up) and pop
+  /// the trap feedback. Closes the trap window (one claim per tap).
+  void _claimBall(int id) {
+    final self = _bodyOf(id);
+    if (self == null) return;
+    _possessor = id;
+    _possessionSec[id] = 0; // a fresh claim starts the charge from zero
+    _trapArm[id] = 0;
+    _ball.vel = _ball.vel * _trapSpeedKeep; // kill incoming speed
+    _ballSquash = 1.0;
+    _lastTouchAttacksTop = _attacksTop[id];
+    _trapPop = _trapPopSec;
+    _trapPopAt = _ball.pos;
+    _trapPopColor = Color(_colorOf(id));
+    SoccerFx.fireTrapFeedback(_juice,
+        feet: self.pos.translate(0, _playerRadius), ballPos: _ball.pos,
+        ballRadius: _ballRadius, color: _trapPopColor);
+  }
+
+  /// Stamp the whiff cue for [id] (a missed trap = a turnover) and pop its
+  /// feedback. Humans only — bots turn the ball over silently (no popup clutter).
+  void _flashWhiff(int id) {
+    _whiffFlash[id] = _whiffFlashSec;
+    if (_botClocks.containsKey(id)) return;
+    final self = _bodyOf(id);
+    if (self == null) return;
+    SoccerFx.fireWhiffFeedback(_juice,
+        feet: self.pos.translate(0, _playerRadius), radius: _playerRadius);
+  }
+
+  /// Glue an OWNED ball to its possessor's feet and bank settled possession (the
+  /// live shot charge + the match-long tie-break total). No owner ⇒ the ball is
+  /// loose and just obeys physics. There is NO proximity ownership: a ball only
+  /// becomes owned via [_claimBall], and only leaves the feet when the owner taps
+  /// to shoot (or a turnover frees it). So you move the ball by trapping then
+  /// carrying it — never by running into it.
+  void _holdPossession(double dt) {
+    final owner = _possessor;
+    for (final id in _joysticks.keys) {
+      if (id != owner) _possessionSec[id] = 0;
+    }
     if (owner == null) return;
-    // Glue the ball just ahead of the owner's feet in the dribble direction
-    // (where they run, or toward the goal when standing still), clamped inside
-    // the pitch so a dribble along a wall never rides the ball out of bounds.
-    final self = _bodyOf(owner)!;
+
+    final self = _bodyOf(owner);
+    if (self == null) {
+      _possessor = null;
+      return;
+    }
+    _possessionSec[owner] = (_possessionSec[owner] ?? 0) + dt;
+    _cumPossession[owner] = (_cumPossession[owner] ?? 0) + dt; // match-long total
+
+    // Glue the ball just ahead of the owner's feet in the carry direction (where
+    // they run, or toward the goal when standing still), clamped inside the pitch
+    // so a carry along a wall never rides the ball out of bounds.
     var dir = _moveDir[owner] ?? Offset.zero;
     if (dir == Offset.zero) dir = _normalize(_opponentGoalTarget(owner) - self.pos);
     final ahead = (_playerRadius + _ballRadius) * _stickAheadFactor;
@@ -678,19 +815,12 @@ class OneTouchSoccer extends MiniGameBase {
     _lastTouchAttacksTop = _attacksTop[owner]; // for the no-own-goal rule
   }
 
-  /// A TAP fires a shot ONLY from the striker that currently OWNS the ball, so a
-  /// tap with no ball at the feet does nothing — mashing in space is harmless.
-  void _tryShoot(int id) {
-    if (_possessor != id) return;
-    _shoot(id);
-  }
-
   /// SHOOT the owned ball: a HYBRID aim — mostly AT the goal you attack, bent
   /// toward the way you are running ([_shootBendToRun]) so it is readable yet you
-  /// can angle a corner — at a power set by the banked dribble possession (a
-  /// controlled run-up blasts; a panic tap nudges and dies on the goal-speed
-  /// gate). Releases the ball and locks the shooter out of re-owning it for a
-  /// beat so the shot actually travels.
+  /// can angle a corner — at a power set by the possession SETTLED since the trap
+  /// (a carried, settled ball blasts; a tap fired the instant you trap nudges and
+  /// dies on the goal-speed gate). Releases the ball and locks the shooter out of
+  /// re-claiming it for a beat so the shot actually travels.
   void _shoot(int id) {
     final self = _bodyOf(id);
     if (self == null) return;
@@ -707,6 +837,7 @@ class OneTouchSoccer extends MiniGameBase {
         dir * (_pitch.height * _kickPerSecond * powerFrac * _shotFactorOf(id));
 
     _possessionSec[id] = 0;
+    _trapArm[id] = 0;
     _shootCd[id] = _possessReclaimSec;
     _lastTouchAttacksTop = _attacksTop[id]; // for the no-own-goal rule
     _possessor = null;
@@ -806,7 +937,10 @@ class OneTouchSoccer extends MiniGameBase {
         (1.0 - ctx.botProfile.accuracy.clamp(0.0, 1.0)) * _botSteerErrorRad;
 
     // Own it → dribble toward the goal and SHOOT once charged + in the attacking
-    // half (the bot earns power by dribbling, just like a human). Loose → chase.
+    // half (the bot earns power by dribbling, just like a human). Loose → chase
+    // and, when the ball is close + slow enough, ACTIVELY TRAP it — a claim that
+    // SUCCEEDS scaled by accuracy (a hard bot snaps it, an easy bot often mistimes
+    // it and the ball rolls on = a turnover). Bots run the exact active-trap path.
     Offset aim;
     if (owns) {
       aim = _normalize(_opponentGoalTarget(playerId) - self.pos);
@@ -816,12 +950,35 @@ class OneTouchSoccer extends MiniGameBase {
       }
     } else {
       aim = _normalize(toBall); // chase a loose ball to win it
+      _botTryTrap(playerId, dist);
     }
     if (aim == Offset.zero) aim = const Offset(0, -1);
 
     // A throttle just under full so bots are firm but not perfectly fast.
     final throttle = (0.7 + ctx.botProfile.accuracy * 0.3).clamp(0.0, 1.0);
     _botHeading[playerId] = _rotate(aim, ctx.rng.jitter(err)) * throttle;
+  }
+
+  /// A bot's ACTIVE TRAP attempt on a loose ball (the bot equivalent of a human
+  /// tapping to claim). Only when the ball is loose, within the bot's trap reach
+  /// and slow enough to catch: roll success scaled by accuracy (clamped to a
+  /// floor so even an easy bot occasionally claims, and a ceiling so a hard bot is
+  /// not automatic). On success it OPENS the same trap window a human press does,
+  /// so [_resolveTraps] makes the claim through the one shared path; on failure
+  /// it leaves the window shut and the ball rolls on — a turnover. [dist] is the
+  /// bot→ball distance already computed by the caller.
+  void _botTryTrap(int playerId, double dist) {
+    if (_possessor != null) return; // ball already owned
+    if ((_shootCd[playerId] ?? 0) > 0) return; // just shot — can't re-claim
+    if ((_trapArm[playerId] ?? 0) > 0) return; // a window is already open
+    final reach = _trapRange * _botTrapRangeFactor;
+    if (dist > reach) return; // not close enough to claim yet
+    if (_ball.vel.distance > _botTrapMaxBallSpeed) return; // too hot to catch
+    final success = (ctx.botProfile.accuracy)
+        .clamp(_botTrapSuccessFloor, _botTrapSuccessCeil);
+    if (ctx.rng.chance(success)) {
+      _trapArm[playerId] = _trapWindowSec; // _resolveTraps will make the claim
+    }
   }
 
   /// True when [selfPos] is in [attacksTop]'s ATTACKING half (the half holding
@@ -985,13 +1142,17 @@ class OneTouchSoccer extends MiniGameBase {
     _ballTrail
       ..clear()
       ..add(_ball.pos);
-    // No one owns the fresh ball: clear live possession + any shot lockout so the
-    // kickoff is a clean scramble, and forget who last touched it.
+    // No one owns the fresh ball: clear live possession, any shot lockout and any
+    // open trap window so the kickoff is a clean scramble, and forget who last
+    // touched it. Clear the trap-pop cue too so it never lingers across kickoff.
     for (final id in _joysticks.keys) {
       _possessionSec[id] = 0;
       _shootCd[id] = 0;
+      _trapArm[id] = 0;
+      _whiffFlash[id] = 0;
     }
     _possessor = null;
+    _trapPop = 0;
     _lastTouchAttacksTop = null;
   }
 
@@ -1041,6 +1202,11 @@ class OneTouchSoccer extends MiniGameBase {
 
     _drawPlayers(canvas);
 
+    // Possession read UNDER the ball: a glow halo + a tether from the owner to
+    // the ball, drawn ONLY while someone owns it (its absence = a loose ball that
+    // must be TRAPPED). Makes the active-claim state instantly legible.
+    _drawPossession(canvas);
+
     SoccerRenderer.drawBall(
       canvas,
       _ball.pos,
@@ -1050,6 +1216,15 @@ class OneTouchSoccer extends MiniGameBase {
       spin: _ballSpin,
       squash: _ballSquash,
     );
+
+    // Trap-pop ring ON TOP of the ball the instant a claim lands (fades fast).
+    if (_trapPop > 0) {
+      SoccerFx.drawTrapPop(canvas,
+          at: _trapPopAt,
+          radius: _ballRadius,
+          color: _trapPopColor,
+          t: (_trapPop / _trapPopSec).clamp(0.0, 1.0));
+    }
 
     _drawAimAndPower(canvas);
 
@@ -1093,10 +1268,32 @@ class OneTouchSoccer extends MiniGameBase {
     }
   }
 
+  /// The POSSESSION read, drawn ONLY while a striker (human OR bot) owns the
+  /// ball: a glow halo + a tether from the owner's feet to the ball in the
+  /// owner's color. Its presence/absence is the active-claim signal — a loose
+  /// ball wears no tether, so a player reads at a glance that it is up for grabs
+  /// and must be TRAPPED. Phase rides [_elapsed] (the existing sim clock — no new
+  /// Ticker), so the halo breathes deterministically.
+  void _drawPossession(Canvas canvas) {
+    final id = _possessor;
+    if (id == null) return;
+    final self = _bodyOf(id);
+    if (self == null) return;
+    SoccerFx.drawPossessionTether(
+      canvas,
+      feet: self.pos.translate(0, _playerRadius),
+      ballPos: _ball.pos,
+      ballRadius: _ballRadius,
+      color: Color(_colorOf(id)),
+      phase: _elapsed,
+    );
+  }
+
   /// While a HUMAN owns the ball, draw the readable shot preview AT the ball: an
   /// arrow in the HYBRID aim (where a TAP would shoot — mostly at the goal, bent
-  /// by the way you run) plus a power ring that fills with banked dribble
-  /// possession. So a player always sees HOW to shoot and HOW HARD before tapping.
+  /// by the way you run) plus a power ring that fills with the possession SETTLED
+  /// since the trap. So a player always sees HOW to shoot and HOW HARD before
+  /// tapping (and a fresh claim shows an empty ring — settle to power up).
   void _drawAimAndPower(Canvas canvas) {
     final id = _possessor;
     if (id == null || _botClocks.containsKey(id)) return; // humans only
@@ -1151,7 +1348,10 @@ class OneTouchSoccer extends MiniGameBase {
   }
 
   /// Draw each active human joystick (base ring + thumb) in the player's color,
-  /// anchored at the touch origin so the player sees their control.
+  /// anchored at the touch origin so the player sees their control. The thumb
+  /// wears the ARMED halo when a tap would ACT this instant — either you own the
+  /// ball (a tap SHOOTS) or your trap window is open (a tap-in-range CLAIMS) — so
+  /// the "this touch does something" cue tracks the real active-trap state.
   void _drawJoysticks(Canvas canvas) {
     if (_kickoffPause > 0) return;
     for (final entry in _joysticks.entries) {
@@ -1159,13 +1359,14 @@ class OneTouchSoccer extends MiniGameBase {
       if (_botClocks.containsKey(id)) continue; // bots have no on-screen stick
       final joy = entry.value;
       if (!joy.active) continue;
+      final armed = _possessor == id || (_trapArm[id] ?? 0) > 0;
       SoccerRenderer.drawJoystick(
         canvas,
         origin: _toPixels(joy.origin),
         thumb: _toPixels(joy.current),
         maxRadius: _joyMaxRadius * _size.height,
         color: Color(_colorOf(id)),
-        armed: joy.kickArmed,
+        armed: armed,
       );
     }
   }

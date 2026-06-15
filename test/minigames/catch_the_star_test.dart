@@ -86,58 +86,71 @@ void main() {
   });
 
   test(
-      'ANTI-SPAM: a tracking player outscores a static/flailing one who eats bombs',
-      () {
+      'ANTI-SPAM: reading the crossings beats blind flailing (and eats far fewer '
+      'bombs)', () {
     // The design law: button-spam / no-skill play MUST LOSE. We pit two HUMANS in
-    // a fair 2-lane split (no bots, identical falling-field ramp per lane, same
-    // seed) and differ ONLY in input strategy:
-    //   * Player 0 TRACKS: each frame it slides under the nearest STAR and slides
-    //     OFF any imminent bomb — deliberate reading + positioning.
-    //   * Player 1 FLAILS: it ignores every item and just sweeps its basket back
-    //     and forth blindly (the "spam" play), so it catches stars only by random
-    //     coincidence AND blunders under bombs.
-    // The tracker must win clearly, and the flailer must even eat bombs — proving
-    // success requires skill and cannot happen by accident.
-    final g = CatchTheStar()
-      ..init(MiniGameContext(
-        players: [
-          PlayerSlot.defaults(0), // human tracker
-          PlayerSlot.defaults(1), // human flailer
-        ],
-        arena: const Size(800, 1200),
-        rng: SeededRng(7),
-        zones: ZoneLayout.forPlayers(2),
-      ));
+    // a fair 2-lane split (no bots, identical angled-crossing ramp per lane, same
+    // seed) across several seeds, differing ONLY in input strategy:
+    //   * Player 0 INTERCEPTS: each frame it slides to where the next STAR will
+    //     CROSS the catch line and bails late off a converging bomb — reading the
+    //     crossing, the entire new skill.
+    //   * Player 1 FLAILS: it ignores every item and sweeps its basket back and
+    //     forth blindly (the "spam" play), so a star is caught only by coincidence
+    //     AND it routinely drifts under the converging crossing bombs.
+    // For EVERY seed the intercepter must win by a clear margin, and — the proof
+    // the crossings are a real read — the flailer must eat STRICTLY MORE bombs
+    // than the intercepter (and several of them), so success cannot be accidental.
+    for (final seed in [7, 1, 21, 42, 99]) {
+      final g = CatchTheStar()
+        ..init(MiniGameContext(
+          players: [
+            PlayerSlot.defaults(0), // human intercepter
+            PlayerSlot.defaults(1), // human flailer
+          ],
+          arena: const Size(800, 1200),
+          rng: SeededRng(seed),
+          zones: ZoneLayout.forPlayers(2),
+        ));
 
-    var frames = 0;
-    var flailerBombHits = 0;
-    num flailerPrev = 0;
-    while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
-      g.update(1 / 60);
-      _trackStarsDodgeBombs(g, 0); // P0: deliberate skill
-      _flailBlindly(g, 1, frames); // P1: blind spam sweep
-      // Count frames where the flailer's score DROPS — i.e. it just ate a bomb.
-      final now = g.scores.of(1);
-      if (now < flailerPrev) flailerBombHits++;
-      flailerPrev = now;
+      var frames = 0;
+      var flailerBombHits = 0;
+      var trackerBombHits = 0;
+      num flailerPrev = 0;
+      num trackerPrev = 0;
+      while (g.status != MiniGameStatus.finished && frames++ < 60 * 60) {
+        g.update(1 / 60);
+        _trackStarsDodgeBombs(g, 0); // P0: read + intercept
+        _flailBlindly(g, 1, frames); // P1: blind spam sweep
+        // A score DROP means that player just ate a bomb (penalty).
+        final fNow = g.scores.of(1);
+        if (fNow < flailerPrev) flailerBombHits++;
+        flailerPrev = fNow;
+        final tNow = g.scores.of(0);
+        if (tNow < trackerPrev) trackerBombHits++;
+        trackerPrev = tNow;
+      }
+
+      expect(g.status, MiniGameStatus.finished, reason: 'seed=$seed must finish');
+      final tracker = g.scores.of(0);
+      final flailer = g.scores.of(1);
+      expect(tracker, greaterThan(flailer),
+          reason: 'seed=$seed: reading the crossings ($tracker) must beat blind '
+              'flailing ($flailer)');
+      // A comfortable margin so it is skill, not noise.
+      expect(tracker, greaterThanOrEqualTo(flailer + 4),
+          reason: 'seed=$seed: the intercepter must win by a clear margin');
+      // The flailer is the one the crossings punish: it must eat several bombs…
+      expect(flailerBombHits, greaterThanOrEqualTo(3),
+          reason: 'seed=$seed: a flailer that ignores the crossings must eat '
+              'several bombs');
+      // …and STRICTLY more than the player who actually reads the crossing.
+      expect(trackerBombHits, lessThan(flailerBombHits),
+          reason: 'seed=$seed: reading the crossing ($trackerBombHits) must eat '
+              'fewer bombs than flailing ($flailerBombHits)');
+      // The winner is the intercepter.
+      expect(g.winResult!.ranking.first, 0,
+          reason: 'seed=$seed: the skilled player must win the round');
     }
-
-    expect(g.status, MiniGameStatus.finished);
-    final tracker = g.scores.of(0);
-    final flailer = g.scores.of(1);
-    expect(tracker, greaterThan(flailer),
-        reason: 'reading + positioning ($tracker) must beat blind flailing '
-            '($flailer)');
-    // A comfortable margin so it is skill, not noise.
-    expect(tracker, greaterThanOrEqualTo(flailer + 3),
-        reason: 'the tracker must win by a clear margin');
-    // The flailer must actually be punished by bombs at least once — proof the
-    // bombs interpose and that ignoring positioning costs you.
-    expect(flailerBombHits, greaterThan(0),
-        reason: 'a flailing player who ignores bombs must eat at least one');
-    // The winner is the tracker.
-    expect(g.winResult!.ranking.first, 0,
-        reason: 'the skilled player must win the round');
   });
 
   test('a basket stays clamped to its own lane even when dragged outside it', () {
@@ -226,24 +239,36 @@ void main() {
   });
 }
 
-/// Skilled play for [id]: slide the basket toward the nearest descending STAR;
-/// if a bomb is the more imminent threat near the basket, slide OFF it instead.
-/// Fed every frame so the inertial basket eases onto the target. Uses only the
-/// test-only x views — deterministic, not luck.
+/// Skilled play for [id]: READ THE CROSSING and INTERCEPT. Each frame it steers
+/// the basket toward where the next STAR will cross the catch line (its intercept
+/// x, not its spawn x — paths are angled). When a converging BOMB's intercept is
+/// about to arrive over the basket and the star is not the nearer thing, it BAILS
+/// off the bomb — the "commit early, bail late" thread the rework demands. Fed
+/// every frame so the inertial basket eases onto the target. Uses only the
+/// test-only INTERCEPT views — deterministic, not luck.
 void _trackStarsDodgeBombs(CatchTheStar g, int id) {
   final lineY = g.catchLineYForTest(id);
   if (lineY == null) return;
-  final starX = g.nextStarXForTest(id);
-  final bombX = g.nextBombXForTest(id);
+  final starX = g.nextStarXForTest(id); // intercept x of the next star
+  final bombX = g.nextBombXForTest(id); // intercept x of the next bomb
   final basket = g.basketXForTest(id) ?? 0.5;
 
-  // Pursue the next STAR first — chasing stars is the skill and naturally keeps
-  // the basket mostly clear of bombs without thrashing between targets.
+  // A converging bomb's intercept is sitting on the basket and the star is NOT
+  // the nearer target → bail late off the bomb (the read that threads the cross).
+  final bombOnBasket = bombX != null && (bombX - basket).abs() < 0.10;
+  final starNearer =
+      starX != null && bombX != null && (starX - basket).abs() <= (bombX - basket).abs();
+  if (bombOnBasket && !starNearer) {
+    final dodge = bombX < 0.5 ? bombX + 0.26 : bombX - 0.26;
+    g.onInput(PlayerInput.down(id, Offset(dodge.clamp(0.02, 0.98), lineY)));
+    return;
+  }
+  // Otherwise commit to the next STAR's intercept — the core interception skill.
   if (starX != null) {
     g.onInput(PlayerInput.down(id, Offset(starX, lineY)));
     return;
   }
-  // No star to chase: if a bomb sits under the basket, step aside.
+  // No star to chase: if a bomb's intercept sits under the basket, step aside.
   if (bombX != null && (bombX - basket).abs() < 0.14) {
     final dodge = bombX < 0.5 ? bombX + 0.24 : bombX - 0.24;
     g.onInput(PlayerInput.down(id, Offset(dodge.clamp(0.02, 0.98), lineY)));

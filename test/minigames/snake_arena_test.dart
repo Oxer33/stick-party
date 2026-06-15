@@ -307,6 +307,112 @@ void main() {
     // One more render after finish (winner cheer / confetti still settling).
     expect(() => g.render(canvas, const Size(800, 1200)), returnsNormally);
   });
+
+  // ── NEW MECHANIC: a takedown is a DELIBERATE cut-off, not any crash ───────────
+
+  test('DELIBERATE CUT-OFF: a fresh intercept credits the blocker', () {
+    // Stage the exact "I read ahead and cut you off" beat: snake 0 has just laid
+    // a FRESH body cell on (10,11) and slides its head off to the right; snake 1
+    // is driving UP straight into (10,11). Snake 1 crashes into the cut line →
+    // snake 0 (alive) is credited the cut-off; snake 1 dies.
+    final g = SnakeArena()..init(ctxFor(2, 1));
+    // Killer: head at (10,11) with a short fresh tail, heading RIGHT (1) so it
+    // vacates the cut cell and survives the step.
+    g.stageSnakeForTest(0, const [
+      [10, 11],
+      [9, 11],
+      [8, 11],
+    ], 1);
+    // Victim: head at (10,12) heading UP (0) → next head is exactly (10,11).
+    g.stageSnakeForTest(1, const [
+      [10, 12],
+      [10, 13],
+      [10, 14],
+    ], 0);
+
+    g.stepOnceForTest();
+
+    expect(g.takedownsOf(0), 1, reason: 'a fresh cut across the path must pay');
+    expect(g.aliveOf(1), isFalse, reason: 'the cut-off victim crashes and dies');
+    expect(g.aliveOf(0), isTrue, reason: 'the blocker survives its own step');
+  });
+
+  test('ACCIDENTAL CRASH: running into an OLD body credits NO ONE', () {
+    // Identical geometry, but snake 0's body is OLD (laid down long ago, not a
+    // fresh cut). Snake 1 still dies running into it — but that is snake 1's own
+    // misplay, so NO takedown is credited. This is the difference the rework
+    // exists to make: a lucky/stale crash must feel like nothing.
+    final g = SnakeArena()..init(ctxFor(2, 1));
+    g.stageSnakeForTest(0, const [
+      [10, 11],
+      [9, 11],
+      [8, 11],
+    ], 1, freshHead: false); // OLD body — not a deliberate cut
+    g.stageSnakeForTest(1, const [
+      [10, 12],
+      [10, 13],
+      [10, 14],
+    ], 0);
+
+    g.stepOnceForTest();
+
+    expect(g.takedownsOf(0), 0,
+        reason: 'a crash into a stale body is the victim\'s misplay, not a cut');
+    expect(g.aliveOf(1), isFalse, reason: 'the victim still dies on the body');
+  });
+
+  test('MUTUAL head-on credits NO ONE (only a clean cut-off pays)', () {
+    // Two snakes drive head-on into the SAME cell on the same step (a mutual
+    // trade). Both die; neither is credited a cut-off — a takedown is reserved
+    // for a one-sided, deliberate intercept.
+    final g = SnakeArena()..init(ctxFor(2, 1));
+    // Both aim at (10,11): snake 0 from the left heading RIGHT, snake 1 from
+    // below heading UP. Same target → both die in the same step.
+    g.stageSnakeForTest(0, const [
+      [9, 11],
+      [8, 11],
+      [7, 11],
+    ], 1);
+    g.stageSnakeForTest(1, const [
+      [10, 12],
+      [10, 13],
+      [10, 14],
+    ], 0);
+
+    g.stepOnceForTest();
+
+    expect(g.aliveOf(0), isFalse, reason: 'mutual trade kills both');
+    expect(g.aliveOf(1), isFalse, reason: 'mutual trade kills both');
+    expect(g.takedownsOf(0), 0, reason: 'a mutual crash pays no one');
+    expect(g.takedownsOf(1), 0, reason: 'a mutual crash pays no one');
+  });
+
+  test('hard bots actively CUT RIVALS OFF (skill reads as takedowns)', () {
+    // The deliberate-cut-off mechanic must be EXERCISED by the AI: across seeds,
+    // a field of hard bots should bank cut-offs (they read ahead and intercept),
+    // not just graze food and self-crash. We require at least a few cut-offs in
+    // total so the mechanic is demonstrably live at the top difficulty.
+    var totalCutOffs = 0;
+    for (final seed in const [1, 7, 13, 21, 34, 42]) {
+      final ctx = MiniGameContext(
+        players: [for (var i = 0; i < 4; i++) PlayerSlot.defaults(i, isBot: true)],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(4),
+        difficulty: BotDifficulty.hard,
+      );
+      final g = SnakeArena()..init(ctx);
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+        g.update(1 / 60);
+      }
+      for (var id = 0; id < 4; id++) {
+        totalCutOffs += g.takedownsOf(id);
+      }
+    }
+    expect(totalCutOffs, greaterThan(0),
+        reason: 'hard bots must land deliberate cut-offs ($totalCutOffs total)');
+  });
 }
 
 /// A 1-player human (non-bot) context — used to measure how a blind random-turner

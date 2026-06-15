@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,8 +12,8 @@ import 'package:stick_party/minigames/one_touch_soccer/one_touch_soccer.dart';
 import 'package:stick_party/minigames/one_touch_soccer/soccer_fx.dart';
 import 'package:stick_party/minigames/one_touch_soccer/striker.dart';
 
-/// Builds an all-bot 4-player soccer round and advances it at a fixed 60 fps
-/// step until it finishes (or a hard cap is hit), returning the elapsed seconds.
+/// Advances a round at a fixed 60 fps step until it finishes (or a hard cap is
+/// hit), returning the elapsed seconds.
 double _runToFinish(OneTouchSoccer g, {int maxFrames = 60 * 80}) {
   const step = 1 / 60;
   var frames = 0;
@@ -33,6 +34,46 @@ OneTouchSoccer _buildAllBots(int seed) {
     zones: ZoneLayout.forPlayers(4),
   );
   return OneTouchSoccer()..init(ctx);
+}
+
+OneTouchSoccer _buildSolo(int seed, {bool isBot = false, BotDifficulty? diff}) {
+  final player = isBot
+      ? PlayerSlot.defaults(0, isBot: true)
+      : const PlayerSlot(id: 0, name: 'P1', colorArgb: 0xFFFFFFFF);
+  final ctx = MiniGameContext(
+    players: [player],
+    arena: const Size(800, 1200),
+    rng: SeededRng(seed),
+    zones: ZoneLayout.forPlayers(1),
+    difficulty: diff ?? BotDifficulty.medium,
+  );
+  return OneTouchSoccer()..init(ctx);
+}
+
+/// Steer human seat [id] toward the live ball through the REAL input path with a
+/// gentle deflection (a held drag — a MOVE, not a tap), for [frames] frames. The
+/// ball is not trapped (a drag never claims).
+void _driveTowardBall(OneTouchSoccer g, int id, int frames) {
+  const step = 1 / 60;
+  const anchor = Offset(0.5, 0.5);
+  g.onInput(const PlayerInput(
+      playerId: 0, phase: InputPhase.down, normPos: anchor));
+  for (var i = 0; i < frames; i++) {
+    final to = g.ballPosNormForTest() - g.strikerPosNormForTest(id);
+    final d = to.distance;
+    final dir = d < 1e-6 ? const Offset(0, -1) : to / d;
+    // A real steer drag well past the tap-drag threshold so it reads as a MOVE.
+    g.onInput(PlayerInput(
+        playerId: id, phase: InputPhase.holdTick, normPos: anchor + dir * 0.16));
+    g.update(step);
+  }
+}
+
+/// Issue a clean stationary TAP for seat [id] (down then up at the same anchor
+/// within the tap window) — the active TRAP / SHOOT gesture.
+void _tap(OneTouchSoccer g, int id, {Offset anchor = const Offset(0.5, 0.5)}) {
+  g.onInput(PlayerInput(playerId: id, phase: InputPhase.down, normPos: anchor));
+  g.onInput(PlayerInput(playerId: id, phase: InputPhase.up, normPos: anchor));
 }
 
 void main() {
@@ -63,12 +104,12 @@ void main() {
     }
   });
 
-  test('bots trap-then-shoot, so an all-bot match still puts the ball in a net',
-      () {
-    // BEHAVIOR guard for the TRAP/KICK rework: bots never tap, so the game arms
-    // their kick directly. Across seeds at least one all-bot round must actually
-    // SCORE (some side ends above zero) — proof the trap-then-shoot bot path
-    // still drives the ball into a goal, not just times out at 0–0.
+  test('bots actively trap-then-shoot, so an all-bot match still scores', () {
+    // BEHAVIOR guard for the ACTIVE-TRAP rework: bots claim a loose ball with the
+    // same active trap a human reads (timed by accuracy), then carry + shoot.
+    // Across seeds at least one all-bot round must actually SCORE (some side ends
+    // above zero) — proof the trap-then-shoot bot path still drives the ball into
+    // a goal, not just times out at 0–0.
     var anyScored = false;
     for (final seed in const [1, 3, 7, 13, 21, 42, 99]) {
       final g = _buildAllBots(seed);
@@ -80,28 +121,18 @@ void main() {
       }
     }
     expect(anyScored, isTrue,
-        reason: 'bot trap-then-shoot never scored across seeds');
+        reason: 'bot active-trap-then-shoot never scored across seeds');
   });
 
   test('a quick TAP keeps the round running and never crashes (shoot path)', () {
-    // AGENCY guard: a single human striker presses (a TAP arms a shot for the
-    // next ball contact), releases, then runs on. A lone player cannot end the
-    // round on their own before the timer, so the game must still be running and
-    // must accept the tap without error and never drive the score negative.
-    final ctx = MiniGameContext(
-      players: const [PlayerSlot(id: 0, name: 'P1', colorArgb: 0xFFFFFFFF)],
-      arena: const Size(800, 1200),
-      rng: SeededRng(5),
-      zones: ZoneLayout.forPlayers(1),
-    );
-    final g = OneTouchSoccer()..init(ctx);
+    // AGENCY guard: a single human striker taps (an active intent — a trap claim
+    // or a shoot), then runs on. A lone player cannot end the round on their own
+    // before the timer, so the game must still be running and must accept the tap
+    // without error and never drive the score negative.
+    final g = _buildSolo(5);
 
     g.update(1 / 60); // a beat before acting
-    // Tap toward the top goal: down then an immediate up (a snap tap = shoot).
-    g.onInput(const PlayerInput(
-        playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.45)));
-    g.onInput(const PlayerInput(
-        playerId: 0, phase: InputPhase.up, normPos: Offset(0.5, 0.45)));
+    _tap(g, 0, anchor: const Offset(0.5, 0.45));
     for (var i = 0; i < 60; i++) {
       g.update(1 / 60);
     }
@@ -110,72 +141,107 @@ void main() {
     expect(g.scores.of(0), greaterThanOrEqualTo(0));
   });
 
-  test('a held joystick steers + dribbles, keeps running and never crashes', () {
-    // The dribble half of the rework: HOLDING the joystick (well past the tap
-    // threshold) steers the striker up-field and any ball it reaches is TRAPPED
-    // and carried, not booted. A lone player cannot end the round early, so it
-    // must still be running and the score must never go negative.
-    final ctx = MiniGameContext(
-      players: const [PlayerSlot(id: 0, name: 'P1', colorArgb: 0xFFFFFFFF)],
-      arena: const Size(800, 1200),
-      rng: SeededRng(5),
-      zones: ZoneLayout.forPlayers(1),
-    );
-    final g = OneTouchSoccer()..init(ctx);
-
+  test('a held joystick steers + carries, keeps running and never crashes', () {
+    // The MOVE half of the rework: HOLDING the joystick (a real drag, never a
+    // tap) steers the striker up-field. It never traps (a drag is a move), so the
+    // ball is not claimed by merely running at it. A lone player cannot end the
+    // round early, so it must still be running and the score never go negative.
+    final g = _buildSolo(5);
     g.update(1 / 60);
-
-    // Steer hard UP for ~1 second (a sustained hold ⇒ a dribble, not a shot).
-    g.onInput(const PlayerInput(
-        playerId: 0, phase: InputPhase.down, normPos: Offset(0.5, 0.8)));
-    for (var i = 0; i < 60; i++) {
-      g.onInput(const PlayerInput(
-          playerId: 0, phase: InputPhase.holdTick, normPos: Offset(0.5, 0.5)));
-      g.update(1 / 60);
-    }
+    _driveTowardBall(g, 0, 60);
 
     expect(g.status, MiniGameStatus.running);
     expect(g.scores.of(0), greaterThanOrEqualTo(0));
   });
 
-  group('Joystick (TRAP vs KICK decision)', () {
-    test('a press arms a kick for the next contact', () {
+  group('Joystick (steering + trail primitive)', () {
+    test('press anchors origin/current and activates; release deactivates', () {
       final joy = Joystick();
-      expect(joy.kickArmed, isFalse);
-      joy.press(const Offset(0.5, 0.5));
-      expect(joy.kickArmed, isTrue, reason: 'a tap queues a shot');
+      expect(joy.active, isFalse);
+      joy.press(const Offset(0.4, 0.6));
       expect(joy.active, isTrue);
+      expect(joy.origin, const Offset(0.4, 0.6));
+      expect(joy.current, const Offset(0.4, 0.6));
+      joy.release();
+      expect(joy.active, isFalse);
     });
 
-    test('holding past the tap threshold lapses the kick into a dribble', () {
+    test('steer maps deflection to a 0..1 magnitude in the drag direction', () {
       final joy = Joystick()..press(const Offset(0.5, 0.5));
-      // A short hold (under threshold) keeps the shot armed.
-      joy.tick(0.1, tapHoldSec: 0.22);
-      expect(joy.kickArmed, isTrue);
-      // Held longer than the threshold ⇒ it is a steer-hold, so it disarms and
-      // the next contact will TRAP instead of shoot.
-      joy.tick(0.2, tapHoldSec: 0.22);
-      expect(joy.kickArmed, isFalse);
+      // Inside the dead zone → no steer.
+      joy.drag(const Offset(0.505, 0.5));
+      expect(joy.steer(maxRadius: 0.16, deadZone: 0.02), Offset.zero);
+      // Full deflection right → unit-ish vector pointing +x at full strength.
+      joy.drag(const Offset(0.5 + 0.2, 0.5));
+      final s = joy.steer(maxRadius: 0.16, deadZone: 0.02);
+      expect(s.dx, greaterThan(0.9));
+      expect(s.dy.abs(), lessThan(1e-9));
     });
 
-    test('consumeKick clears the arm; armNextKick re-arms (the bot path)', () {
-      final joy = Joystick()..press(const Offset(0.5, 0.5));
-      joy.consumeKick();
-      expect(joy.kickArmed, isFalse, reason: 'a fired shot reverts to trapping');
-      joy.armNextKick(); // bots never tap; the game arms them directly
-      expect(joy.kickArmed, isTrue);
+    test('tick retires the kick trail once its life is spent', () {
+      final joy = Joystick()
+        ..trail = DashTrail(from: Offset.zero, dir: const Offset(0, -1), life: 0.1);
+      joy.tick(0.05);
+      expect(joy.trail, isNotNull);
+      joy.tick(0.1);
+      expect(joy.trail, isNull, reason: 'a spent trail clears');
     });
+  });
 
-    test('touch charge ramps from ~0 right after a touch toward 1 when settled',
-        () {
-      final joy = Joystick()..armKick(0.18); // marks a touch (charge reset)
-      expect(joy.touchChargeFrac(0.9), closeTo(0.0, 1e-9));
-      // Let time pass without another touch: the shot charge climbs to full.
-      for (var i = 0; i < 60; i++) {
-        joy.tick(1 / 60, tapHoldSec: 0.22);
+  group('active trap (the claim is taken, never gifted)', () {
+    test('a clean tap CLAIMS a loose ball once positioned on it', () {
+      // The heart of the rework: position a human onto the dead kickoff ball with
+      // a steer (a MOVE — which does NOT claim), then issue a clean stationary
+      // TAP. Only the tap claims, so possession flips to the tapper.
+      final g = _buildSolo(5);
+      g.update(1 / 60);
+      // Steer onto the ball but do NOT trap (a drag is a move).
+      _driveTowardBall(g, 0, 90);
+      expect(g.possessorForTest(), isNull,
+          reason: 'running at the ball must NOT auto-claim it');
+      // Now an active tap claims it (give a couple frames for the window).
+      _tap(g, 0);
+      for (var i = 0; i < 4; i++) {
+        g.update(1 / 60);
       }
-      expect(joy.touchChargeFrac(0.9), closeTo(1.0, 1e-9),
-          reason: 'a long-settled ball reaches full shot power');
+      expect(g.possessorForTest(), 0,
+          reason: 'a clean tap on the ball in range claims it');
+    });
+
+    test('a tap with NO ball in range whiffs — nothing is claimed', () {
+      // A lone striker spawns far from the dead center ball. A tap there finds no
+      // ball in range, so the trap whiffs and possession stays null (a turnover
+      // risk, never a free claim).
+      final g = _buildSolo(5);
+      g.update(1 / 60);
+      expect(
+          (g.ballPosNormForTest() - g.strikerPosNormForTest(0)).distance,
+          greaterThan(0.1),
+          reason: 'sanity: the striker starts well off the ball');
+      _tap(g, 0);
+      for (var i = 0; i < 6; i++) {
+        g.update(1 / 60);
+      }
+      expect(g.possessorForTest(), isNull,
+          reason: 'a tap with no ball in range claims nothing');
+    });
+
+    test('a tap WHILE possessing SHOOTS — the ball goes loose again', () {
+      // Once owned, a tap fires the ball: possession returns to null (the shot is
+      // travelling) and the round keeps running.
+      final g = _buildSolo(5);
+      g.update(1 / 60);
+      _driveTowardBall(g, 0, 90);
+      _tap(g, 0); // trap
+      for (var i = 0; i < 4; i++) {
+        g.update(1 / 60);
+      }
+      expect(g.possessorForTest(), 0, reason: 'precondition: trapped');
+      _tap(g, 0); // shoot
+      g.update(1 / 60);
+      expect(g.possessorForTest(), isNull,
+          reason: 'a tap while possessing shoots the ball loose');
+      expect(g.status, MiniGameStatus.running);
     });
   });
 
@@ -321,59 +387,46 @@ void main() {
     });
   });
 
-  group('spam-proofing (objective + interposing skill)', () {
-    test('the EARNED shot economy: shot power climbs only with dribble possession',
+  group('spam-proofing (objective + active-trap skill)', () {
+    test('the EARNED shot economy: shot power climbs only with settled possession',
         () {
-      // The core lever. A panic tap with no banked dribble possession sits at the
-      // powerless floor (and dies on the goal-speed gate); a controlled run-up
-      // reaches full power. So a measured dribble-and-shoot out-shoots a frantic
-      // tap by construction — proven deterministically, no noisy match needed.
+      // The core lever. A shot fired the instant you trap (no settled possession)
+      // sits at the powerless floor (and dies on the goal-speed gate); a carried,
+      // settled ball reaches full power. So a measured trap-carry-shoot out-shoots
+      // a panic re-tap by construction — proven deterministically, no noisy match.
       // (Aim is a fixed, readable HYBRID — mostly at the goal, bent by run dir —
       // not a possession-scaled assist, so it is verified in play, not here.)
-      final g = OneTouchSoccer()
-        ..init(MiniGameContext(
-          players: const [PlayerSlot(id: 0, name: 'P1', colorArgb: 0xFFFFFFFF)],
-          arena: const Size(800, 1200),
-          rng: SeededRng(1),
-          zones: ZoneLayout.forPlayers(1),
-        ));
+      final g = _buildSolo(1);
 
       final floorPower = g.shotPowerFracForTest(0);
-      final fullPower = g.shotPowerFracForTest(10); // long-controlled
+      final fullPower = g.shotPowerFracForTest(10); // long-settled
       expect(floorPower, lessThan(0.2), reason: 'a no-possession tap is feeble');
-      expect(fullPower, greaterThan(0.9), reason: 'a controlled run-up blasts');
+      expect(fullPower, greaterThan(0.9), reason: 'a settled carry blasts');
       expect(fullPower, greaterThan(floorPower * 3),
-          reason: 'dribble control multiplies shot power several-fold');
+          reason: 'settled possession multiplies shot power several-fold');
     });
 
     test('a lone player CAN score (goal credited to the side that attacks it)',
         () {
-      // Guards the scoring-attribution fix: previously a goal in a net was
-      // credited to the WRONG side, so a solo player (or any side shooting at the
-      // net it actually attacks) could never put a goal on its own board. A lone
-      // all-bot striker trap-dribble-shoots into the net it attacks and must end
-      // with a positive score.
-      final g = OneTouchSoccer()
-        ..init(MiniGameContext(
-          players: [PlayerSlot.defaults(0, isBot: true)],
-          arena: const Size(800, 1200),
-          rng: SeededRng(7),
-          zones: ZoneLayout.forPlayers(1),
-          difficulty: BotDifficulty.hard,
-        ));
+      // Guards the scoring-attribution fix: a lone all-bot striker actively traps,
+      // carries and shoots into the net it attacks and must end with a positive
+      // score — proof the active-trap bot path can put a goal on its own board.
+      final g = _buildSolo(7, isBot: true, diff: BotDifficulty.hard);
       _runToFinish(g);
       expect(g.scores.of(0), greaterThan(0),
           reason: 'a solo striker must be able to score in the net it attacks');
     });
 
-    test('a chase-and-mash spammer can never score and loses to a hard bot', () {
-      // The decisive proof of the law. Seat 0 is a realistic button-masher:
-      // it chases the live ball (with human-like lag + wobble) and re-taps every
-      // ~0.08 s, so it NEVER traps/controls the ball — only floor pokes. Seat 1
-      // is a hard bot that traps, dribbles and shoots. Across many seeds the
-      // masher must score ZERO (its pokes never reach goal speed) and must lose
-      // the vast majority (a 0–0 is broken by possession, which the masher has
-      // none of), confirming: skill beats spam, and spam cannot win by mashing.
+    test('a chase-and-mash spammer never scores and loses to a hard bot', () {
+      // The decisive proof of the law. Seat 0 is a realistic button-masher: it
+      // chases the live ball (with human-like lag + wobble) and mashes rapid TAPS
+      // (down/up every ~0.08 s). Under the active-trap model those taps almost
+      // never line up with the ball loose + in range + slow, so it rarely claims;
+      // and any accidental claim is THROWN AWAY by the very next mash tap (a shot
+      // at ~zero charge). Seat 1 is a hard bot that traps, carries and shoots.
+      // Across many seeds the masher must score ZERO (its pokes never reach goal
+      // speed) and must lose the vast majority (a 0–0 is broken by possession,
+      // which the masher banks ~none of): skill beats spam, spam cannot mash a win.
       const step = 1 / 60;
       var masherGoals = 0;
       var botWins = 0;
@@ -405,6 +458,8 @@ void main() {
             dir = nd;
           }
           const anchor = Offset(0.5, 0.5);
+          // Mash rapid taps: a down+up burst (the spam claim/shoot attempt) plus a
+          // steer toward the ball — the realistic "chase and hammer the button".
           if (f % 5 == 0) {
             g.onInput(const PlayerInput(
                 playerId: 0, phase: InputPhase.up, normPos: anchor));

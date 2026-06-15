@@ -2,6 +2,8 @@
 // so the gameplay module stays under the file-size budget. Pure logic: it reads
 // the shared snake/food snapshots and two collision predicates the game owns,
 // and mutates only the steered bot's heading. No rendering, no state of its own.
+import 'dart:math' as math;
+
 import '../../core/rng.dart';
 import '../../engine/bots.dart';
 import 'snake_arena_types.dart';
@@ -30,6 +32,12 @@ class SnakeBot {
   final double spaceWeight;
   final double headOnPenalty;
 
+  /// How hard this bot tries to CUT A RIVAL OFF: a bonus for a (safe) move that
+  /// drops the bot's head onto a cell the rival is about to enter — a deliberate
+  /// intercept. Scaled by [BotProfile.accuracy] at the call site, so hard bots
+  /// set up cut-offs while easy bots barely bother (and just wander/self-crash).
+  final double interceptWeight;
+
   SnakeBot({
     required this.snakes,
     required this.food,
@@ -44,6 +52,7 @@ class SnakeBot {
     required this.floodCap,
     required this.spaceWeight,
     required this.headOnPenalty,
+    this.interceptWeight = 0,
   });
 
   /// Choose [s]'s heading from straight + both turns (reverse is illegal): the
@@ -76,16 +85,49 @@ class SnakeBot {
   }
 
   /// Higher is better: reachable open space after the step (dominant, so it
-  /// avoids self-traps), plus a pull toward [target] when food bias fires, minus
-  /// a penalty for a cell a rival head could also enter (a fatal head-on).
+  /// avoids self-traps), plus a pull toward [target] when food bias fires, plus a
+  /// CUT-OFF bonus for sliding the head across a rival's near path (a deliberate
+  /// intercept), minus a penalty for a cell a rival head could also enter (a
+  /// fatal head-on). The cut-off only fires when the move is itself safe, so a
+  /// strong bot blocks rivals without throwing itself away.
   double _headingScore(Snake s, Heading h, Cell? target) {
     final next = s.head.plus(kStep[h]!);
-    var score = _reachableSpace(next, s).toDouble() * spaceWeight;
+    final space = _reachableSpace(next, s);
+    var score = space.toDouble() * spaceWeight;
     if (target != null && rng.chance(foodBias)) {
       score += (cols + rows) - _manhattan(next, target);
     }
+    // Only chase an intercept from a move that keeps real room to live — a strong
+    // cut-off, not a suicide. (Boxed-in moves never earn the cut-off bonus.)
+    if (interceptWeight > 0 && space > lookahead) {
+      score += interceptWeight * _interceptBonus(next, s);
+    }
     if (_rivalCanEnter(next, s)) score -= headOnPenalty;
     return score;
+  }
+
+  /// Cut-off signal for moving to [self]'s candidate cell [next]: 1.0 if [next]
+  /// sits ON a rival's near-future LINE (the cell 2 ahead along the rival's
+  /// heading — i.e. just in front of where it is about to be), so [self] lays a
+  /// fresh body segment across the rival's path and the rival drives into it.
+  /// Excludes the rival's IMMEDIATE next cell (that is a mutual head-on, handled
+  /// by the head-on penalty), so this rewards a clean intercept, not a trade. 0
+  /// when no rival's line passes through [next].
+  double _interceptBonus(Cell next, Snake self) {
+    var best = 0.0;
+    for (final o in snakes) {
+      if (!o.alive || identical(o, self)) continue;
+      final oneAhead = o.head.plus(kStep[o.heading]!);
+      final twoAhead = oneAhead.plus(kStep[o.heading]!);
+      if (next == oneAhead) continue; // head-on trade, not a cut-off
+      if (next == twoAhead) {
+        // Closer rivals are juicier (the cut lands sooner) — scale by proximity.
+        final d = _manhattan(self.head, o.head);
+        final prox = (6 - d).clamp(0, 6) / 6.0;
+        best = math.max(best, 0.5 + 0.5 * prox);
+      }
+    }
+    return best;
   }
 
   /// True if some OTHER living snake's head is one cell from [cell] (it could

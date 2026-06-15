@@ -270,13 +270,44 @@ class SoccerFx {
 
   static const Color _trapTint = Color(0xFFBFE9FF);
 
-  /// React to a TRAP (the un-tapped default contact): a soft puff of dust at the
-  /// striker's [feet], so a kid sees the ball was caught and stuck to the feet
-  /// rather than booted. Pure feedback (no sim mutation).
-  static void fireTrapFeedback(Juice juice, {required Offset feet}) {
+  /// React to an ACTIVE TRAP (a tap that CLAIMED the loose ball): a crisp little
+  /// pop at the ball — a bright spark ring snapping inward to the feet, tinted by
+  /// the trapping player's [color] — plus a soft dust puff at the [feet], so the
+  /// moment of claiming reads as a deliberate catch (not a passive stick). A light
+  /// shake + tiny hit-stop sell the "thock" of a clean trap. Pure feedback (no sim
+  /// mutation).
+  static void fireTrapFeedback(
+    Juice juice, {
+    required Offset feet,
+    required Offset ballPos,
+    required double ballRadius,
+    required Color color,
+  }) {
+    // Inward spark ring at the ball: particles fired AT the ball center from a
+    // ring so they read as the ball being "caught" and pulled to the feet.
+    juice.particles.burst(
+        at: ballPos, count: 9, color: color, speed: 150, size: 4, life: 0.26);
+    juice.particles.burst(
+        at: ballPos, count: 5, color: _trapTint, speed: 90, size: 3, life: 0.22);
     juice.particles.burst(
         at: feet, count: 4, color: _trapTint, speed: 80, size: 3,
         gravity: 160, life: 0.24);
+    juice.shake.light();
+    juice.hitStop.trigger(0.04);
+  }
+
+  static const Color _turnover = Color(0xFFFF7A4D);
+
+  /// React to a WHIFFED trap (a tap that found no ball in range, or a turnover):
+  /// a brief orange 'TURNOVER' pop above the striker's [feet] + a thin scatter,
+  /// so a missed claim is visibly punished. Pure feedback (no sim mutation).
+  static void fireWhiffFeedback(Juice juice,
+      {required Offset feet, required double radius}) {
+    juice.particles.burst(
+        at: feet, count: 5, color: _turnover, speed: 120, size: 3,
+        gravity: 220, life: 0.3);
+    juice.popup(feet.translate(0, -radius * 2.2), 'MISS!', _turnover,
+        size: radius * 1.4);
   }
 
   /// Fire the speed-pad pickup juice: a forward spark fan + light shake + a
@@ -297,6 +328,76 @@ class SoccerFx {
     juice.shake.light();
     juice.popup(pad.pos.translate(0, -pad.radius * 1.6), 'SPEED!', _padCore,
         size: ballRadius * 1.8);
+  }
+
+  /// The POSSESSION read: drawn ONLY while a striker owns the ball. A soft glow
+  /// halo around the ball + a thin tether from the owner's [feet] to the ball, in
+  /// the owner's [color], so it is instantly obvious who is carrying — and, by its
+  /// absence, that a loose ball belongs to no one (it must be TRAPPED). [phase]
+  /// (the shared frame phase) gently breathes the halo. Pure drawing.
+  static void drawPossessionTether(
+    Canvas canvas, {
+    required Offset feet,
+    required Offset ballPos,
+    required double ballRadius,
+    required Color color,
+    required double phase,
+  }) {
+    final breathe = 0.5 + 0.5 * math.sin(phase * 4.0);
+    // Tether: a faint dashed-feel line (two stacked strokes) foot → ball.
+    canvas.drawLine(
+      feet,
+      ballPos,
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.5, ballRadius * 0.22)
+        ..color = color.withValues(alpha: 0.22 + 0.10 * breathe),
+    );
+    // Possession halo: stacked translucent rings around the ball (no MaskFilter).
+    for (var i = 3; i >= 1; i--) {
+      final f = i / 3.0;
+      canvas.drawCircle(
+        ballPos,
+        ballRadius * (1.3 + 0.7 * f) * (1.0 + 0.06 * breathe),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, ballRadius * 0.16)
+          ..color = color.withValues(alpha: 0.16 * (1.2 - f)),
+      );
+    }
+  }
+
+  /// The TRAP POP: a bright ring snapping outward at [at] the instant a claim
+  /// lands, fading over its life ([t] 1→0). A crisp "caught it!" flourish in the
+  /// trapping player's [color] over the soft inward sparks. Pure drawing.
+  static void drawTrapPop(
+    Canvas canvas, {
+    required Offset at,
+    required double radius,
+    required Color color,
+    required double t,
+  }) {
+    final k = t.clamp(0.0, 1.0);
+    if (k <= 0.01) return;
+    final grow = 1.0 - k; // 0 at spawn → 1 at fade
+    final r = radius * (1.2 + 2.6 * grow);
+    final hot = Color.lerp(color, _white, 0.4) ?? color;
+    canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, radius * 0.5 * k)
+        ..color = hot.withValues(alpha: 0.85 * k),
+    );
+    canvas.drawCircle(
+      at,
+      r * 0.7,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, radius * 0.3 * k)
+        ..color = _white.withValues(alpha: 0.6 * k),
+    );
   }
 
   /// A bold pulsing "DOUBLE GOALS!" banner across the pitch in the final

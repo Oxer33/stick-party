@@ -195,6 +195,7 @@ class TrackFx {
   double hopHold = 0; // brief jump-pose timer after a hop
   int grazeChain = 0; // consecutive EARNED-dodge streak (resets on over-fleeing)
   int grazeBannerAt = 0; // highest chain that has fired a STREAK banner (latch)
+  double grazeFlash = 0; // 0..1 one-shot badge flare on each new link (decays)
   double respawnTimer = 0; // seconds until a crushed runner returns (0 = none)
   double invuln = 0; // post-respawn grace: can't be crushed (seconds)
   double aliveSec = 0; // cumulative seconds spent alive this run (tiebreaker)
@@ -233,6 +234,40 @@ class TrackFx {
     return (1.0 - remaining / fall).clamp(0.0, 1.0);
   }
 
+  /// Seconds until [h] reaches the runner line at the given live [fallSpeed]
+  /// (which already excludes the per-kind multiplier). Negative/zero speed or a
+  /// hazard already past the line → infinity (no longer a threat). This is the
+  /// SAME ETA the gameplay uses to gate the WARM/HOT windows, so the rendered
+  /// shadow's shrink-and-flip-hot exactly matches the scoring rule.
+  double hazardEtaSec(HazardFx h, double fallSpeed) {
+    if (h.y > runnerY) return double.infinity;
+    final speed = fallSpeed * h.speedMul;
+    if (speed <= 0) return double.infinity;
+    return (runnerY - h.y) / speed;
+  }
+
+  /// 0..1 lateness of [h] inside the HOT window: 0 at the moment it goes hot
+  /// (eta == [hotLeadSec]), 1 right as it reaches the line. Below the hot
+  /// threshold (still merely warm) it is 0.
+  double hotFrac(HazardFx h, double fallSpeed, double hotLeadSec) {
+    if (hotLeadSec <= 0) return 0;
+    final eta = hazardEtaSec(h, fallSpeed);
+    if (!eta.isFinite || eta > hotLeadSec) return 0;
+    return (1.0 - eta / hotLeadSec).clamp(0.0, 1.0);
+  }
+
+  /// 0..1 "approach" of [h] across the WARM band, used to CONTRACT the warm
+  /// shadow as it nears the hot threshold: 0 at the moment it enters warm
+  /// (eta == [warmLeadSec]), 1 at the hot threshold (eta == [hotLeadSec]).
+  double warmFrac(HazardFx h, double fallSpeed, double warmLeadSec,
+      double hotLeadSec) {
+    final eta = hazardEtaSec(h, fallSpeed);
+    if (!eta.isFinite || eta > warmLeadSec) return 0;
+    final span = (warmLeadSec - hotLeadSec);
+    if (span <= 0) return 1;
+    return (1.0 - (eta - hotLeadSec) / span).clamp(0.0, 1.0);
+  }
+
   /// 0..1 how close the nearest in-lane hazard is to the runner line; drives the
   /// band frame danger glow.
   double dangerLevel() {
@@ -264,6 +299,9 @@ class FallingTrackPainter {
     required double scroll,
     required double animClock,
     required int laneCount,
+    required double fallSpeed,
+    required double warmLeadSec,
+    required double hotLeadSec,
   }) {
     FallingRenderer.drawBand(canvas, t.band, t.color,
         scroll: scroll, danger: t.dangerLevel(), alive: t.alive);
@@ -277,13 +315,17 @@ class FallingTrackPainter {
           canvas, t.band, t.lanes.coordOf(f.lane), f.strength);
     }
 
-    // Ground telegraphs for every approaching hazard.
+    // Ground telegraphs for every approaching hazard — the VISIBLE late-dodge
+    // window. Each shadow contracts as the hazard nears and FLIPS HOT (red) once
+    // it enters the scoring window, so the player can read the felt "wait… NOW".
     if (t.alive) {
       for (final h in t.hazards) {
         if (h.y > t.runnerY) continue;
+        final warm = t.warmFrac(h, fallSpeed, warmLeadSec, hotLeadSec);
+        final hot = t.hotFrac(h, fallSpeed, hotLeadSec);
         FallingRenderer.drawTelegraph(canvas, t.lanes.coordOf(h.lane),
             t.runnerY, h.size, t.telegraphProgress(h),
-            phase: animClock + h.spinPhase);
+            phase: animClock + h.spinPhase, warmFrac: warm, hotFrac: hot);
       }
     }
 
@@ -340,6 +382,7 @@ class FallingTrackPainter {
         t.grazeChain,
         _chainMaxPips,
         pulse,
+        flash: t.grazeFlash,
       );
     }
 

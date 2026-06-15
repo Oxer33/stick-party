@@ -93,36 +93,45 @@ class _Tuning {
   // its lane still connects — the rendered body physically overlapped the fall.
   static const double hitBodyHalfFrac = 0.34; // runner half-width / lane spacing
 
-  // ── EARNED GRAZE CHAIN (the heart of the rework) ───────────────────────────
+  // ── EARNED GRAZE CHAIN + VISIBLE LATE-DODGE WINDOW (the heart of the rework) ─
   // A graze is NOT mere proximity to any passing hazard (that would pay a STILL
   // player for free and let a flailer collect by accident). A graze is an
-  // EARNED DODGE: a hazard was bearing down on the lane the runner WAS in, the
-  // runner stepped exactly ONE lane off it inside the reaction window, and the
-  // hazard then whistled past the lane just vacated. You must (a) be threatened
-  // and (b) move out in time — reading + timing — to score. Sitting still in an
-  // unthreatened lane banks nothing; flailing rarely lines up the threatened→
-  // adjacent step so it banks almost nothing and gets crushed instead.
+  // EARNED, LATE DODGE with a VISIBLE timing window:
   //
-  // Consecutive earned dodges stack a multiplier, so reading a dense barrage and
-  // threading it pays exponentially. Over-fleeing (jumping 2+ lanes, or bolting
-  // when nothing threatened you) banks nothing AND snaps the chain to zero.
+  //  Each hazard casts a ground SHADOW on the lane it threatens. As the hazard
+  //  nears the runner line the shadow SHRINKS and intensifies, then FLIPS HOT
+  //  (red) for the final stretch — the "late window". Two ETA thresholds gate it:
+  //   * WARM (eta <= [dodgeThreatLeadSec]): the lane is threatened — the shadow
+  //     shows and a reader/bot knows to get ready. A hop off here is SAFE but
+  //     earns NO chain credit (it's an early bail).
+  //   * HOT  (eta <= [dodgeHotLeadSec]): the late window. Stepping OFF a HOT
+  //     lane onto a clear adjacent lane is the EARNED dodge — and the ONLY thing
+  //     that banks a graze. The skill is the felt "wait… wait… NOW".
+  //
+  // Consecutive earned (HOT) dodges stack a multiplier, so reading a dense
+  // barrage and threading it at the last instant pays exponentially. Over-fleeing
+  // (jumping 2+ lanes, or bolting when nothing threatened you) banks nothing AND
+  // snaps the chain to zero. Early (warm-only) hops bank nothing but keep the
+  // chain — they are simply not the scoring play.
   static const double grazeBaseScore = 6; // points for the 1st dodge in a chain
   static const double grazeStep = 0.85; // extra multiplier per chained dodge
   static const int grazeMaxMult = 6; // multiplier cap (keeps scores sane)
   static const int grazeStreakMilestone = 4; // chain length that earns a banner
+  static const double grazeFlashDecay = 5.0; // streak-badge flare decay rate (/s)
 
-  // A dodge only counts as EARNED if the hazard that ends up adjacent was a real,
-  // imminent threat to the lane the runner just left, at the moment it left. We
-  // record, per runner, the lane it was threatened in and how recently it hopped
-  // off a threatened lane; a graze must cash in within this window or it is just
-  // ambient proximity (no score). The threat lead is set a hair WIDER than the
-  // sharpest bot's reaction lead (~0.77s at accuracy 1) so any legitimate
-  // reactive dodge — human OR bot — is recognized and credited; the CLAIM WINDOW
-  // (the real timing gate) is just as wide so a hazard read early still cashes
-  // when it finally crosses, while a premature flee (hazard not yet a threat)
-  // stamps nothing and loitering one lane over never qualifies.
-  static const double dodgeThreatLeadSec = 0.85; // lookahead that marks a "threat"
-  static const double dodgeClaimWindowSec = 0.85; // grace to cash a dodge after hopping
+  // The two windows that make the dodge a VISIBLE timing test. WARM is the wide
+  // "danger here" lookahead (drives the shadow appearing, the bot/reader read,
+  // and the idle-hunt). HOT is the narrow late window: a hop only stamps a
+  // claimable dodge when the vacated lane was HOT at that instant, so an early
+  // bail (warm but not yet hot) is safe-but-unscored and last-instant reads are
+  // the whole skill. HOT is set a hair WIDER than the sharpest bot's reaction
+  // lead (~0.33s at accuracy 1, see [botLeadBase]/[botLeadPerAccuracy]) so a
+  // legitimate hard-bot late-dodge still cashes. The CLAIM WINDOW only needs to
+  // outlast the hot lead by a frame or two: once you step off a HOT lane the
+  // hazard is <= hot-lead away, so it crosses the vacated lane almost immediately.
+  static const double dodgeThreatLeadSec = 0.85; // WARM: lookahead that shows the shadow
+  static const double dodgeHotLeadSec = 0.36; // HOT: the late window that scores
+  static const double dodgeClaimWindowSec = 0.45; // grace to cash a HOT dodge after hopping
 
   // Survival is only a gentle tiebreaker so EARNED dodges dominate the ranking:
   // a chicken who survives but never dodges-under-threat still loses to a bold
@@ -154,10 +163,18 @@ class _Tuning {
   static const double flingX = 150; // horizontal fling / figure scale
   static const double flingY = 120; // upward fling / figure scale
 
-  // Bot reactivity. A bot commits a dodge when the nearest threat in its lane
-  // is within this lead time (scaled by accuracy: better bots react earlier).
-  static const double botLeadBase = 0.22; // base lead seconds
-  static const double botLeadPerAccuracy = 0.55; // extra lead at accuracy 1
+  // Bot reactivity — INVERTED for the late-dodge window. A bot commits a dodge
+  // when the nearest threat in its lane is within this lead time, and BETTER
+  // accuracy reacts with LESS lead (i.e. LATER): the skill being modeled is
+  // nerve, so a hard bot waits until the shadow is HOT and banks the graze chain,
+  // while a jumpy easy bot bails early (warm-only) and scores nothing. Tuned so
+  //   easy  (acc 0.55) -> ~0.70s lead  (WARM: early bail, no chain)
+  //   medium(acc 0.78) -> ~0.46s lead  (mostly early, the odd chain)
+  //   hard  (acc 0.93) -> ~0.30s lead  (HOT: a late dodge that chains)
+  // The lead is clamped so it can never dip so low the bot can't physically clear
+  // the lane in time (it would just eat the hazard).
+  static const double botLeadBase = 1.28; // base lead seconds (low accuracy)
+  static const double botLeadPerAccuracy = 1.05; // lead REMOVED per accuracy point
   // Grace before any bot reacts, mirroring the human's read time so bots never
   // dodge a hazard the player has not even seen yet (keeps them beatable).
   static const double botWarmupSec = 1.5;
@@ -352,19 +369,25 @@ class FallingDodge extends MiniGameBase {
     t.hopper.hop(dir);
     t.hopDir = dir;
     if (t.hopper.lane == before) return;
-    // Earned-dodge stamp: if the lane we just LEFT had an imminent hazard, mark
-    // it as a claimable dodge. A graze only banks if a hazard then crosses THAT
-    // vacated-under-threat lane within the claim window — so points require a
-    // real read+step, never loitering one lane away from an unrelated hazard.
-    if (_laneThreatened(t, before)) {
+    // Earned-dodge stamp — gated on the HOT (late) window, not mere proximity.
+    // A claimable dodge is stamped ONLY if the lane we just left had a hazard
+    // that was already HOT (inside [dodgeHotLeadSec]) at this instant: that is
+    // the felt "wait… NOW" late step. A graze then banks when that hazard crosses
+    // the vacated lane within the claim window. An EARLY bail (the lane was warm
+    // but not yet hot) is safe but stamps NOTHING — it keeps the chain (it isn't
+    // a reset, just not the scoring play). Hopping with no threat at all also
+    // stamps nothing and clears any stale claim.
+    if (_laneHotThreatened(t, before)) {
       t.dodgeFromLane = before;
       t.dodgeClaimSec = _Tuning.dodgeClaimWindowSec;
-    } else {
-      // Hopping when nothing threatened the old lane is not a dodge — and
-      // jumping around for no reason should not keep a stale claim alive.
+    } else if (!_laneThreatened(t, before)) {
+      // No threat on the old lane: clear any stale claim so idle jumping never
+      // keeps a live stamp around.
       t.dodgeFromLane = -1;
       t.dodgeClaimSec = 0;
     }
+    // (Warm-but-not-hot: leave any existing claim untouched; this hop simply
+    // doesn't qualify as the earned, late dodge.)
     // Lean/hop pose + a take-off dust kick at the source lane.
     t.hopHold = _Tuning.hopHoldSec;
     t.figure.facing = dir >= 0 ? 1.0 : -1.0;
@@ -459,6 +482,7 @@ class FallingDodge extends MiniGameBase {
     t.invuln = _Tuning.respawnInvulnSec;
     t.grazeChain = 0;
     t.grazeBannerAt = 0;
+    t.grazeFlash = 0;
     t.hopHold = 0;
     t.hopper.hopTo(lane);
     t.hopper.snapVisual();
@@ -721,6 +745,7 @@ class FallingDodge extends MiniGameBase {
     t.dodgeClaimSec = 0;
 
     t.grazeChain += 1;
+    t.grazeFlash = 1.0; // one-shot badge flare so each new link visibly "levels up"
     final mult = t.grazeChain.clamp(1, _Tuning.grazeMaxMult);
     final award =
         _Tuning.grazeBaseScore * (1 + (mult - 1) * _Tuning.grazeStep);
@@ -771,11 +796,15 @@ class FallingDodge extends MiniGameBase {
       );
     }
 
-    // Signature beat: crossing a big streak milestone earns a one-shot banner +
-    // zoom-punch toward this runner. Latched per-track so it fires once per
-    // milestone reached (and re-arms only after a fresh chain climbs back up).
-    if (t.grazeChain >= _Tuning.grazeStreakMilestone &&
-        t.grazeChain > t.grazeBannerAt) {
+    // Signature beat: an ESCALATING streak banner. It first fires at the
+    // milestone, then again every +2 links beyond it, so a long thread keeps
+    // visibly mounting (STREAK x4 → x6 → x8…) instead of celebrating just once.
+    // Latched per-track via [grazeBannerAt] so a given peak only fires once.
+    final hitsMilestone = t.grazeChain >= _Tuning.grazeStreakMilestone &&
+        t.grazeChain > t.grazeBannerAt &&
+        (t.grazeChain == _Tuning.grazeStreakMilestone ||
+            (t.grazeChain - _Tuning.grazeStreakMilestone).isEven);
+    if (hitsMilestone) {
       t.grazeBannerAt = t.grazeChain;
       final runnerPos = Offset(
           t.lanes.coordOfVisual(t.hopper.visualLane), t.runnerY - t.figureLift);
@@ -796,6 +825,10 @@ class FallingDodge extends MiniGameBase {
   }
 
   void _tickFlashes(TrackFx t, double dt) {
+    // Decay the one-shot streak-badge flare (set on each new graze link).
+    if (t.grazeFlash > 0) {
+      t.grazeFlash = math.max(0, t.grazeFlash - dt * _Tuning.grazeFlashDecay);
+    }
     if (t.flashes.isEmpty) return;
     for (final f in t.flashes) {
       f.life -= dt;
@@ -833,10 +866,14 @@ class FallingDodge extends MiniGameBase {
   }
 
   /// True when a hazard is bearing down on the bot's current lane within its
-  /// (accuracy-scaled) lead window — i.e. the moment a real player would react.
+  /// (accuracy-scaled) lead window. Better accuracy REMOVES lead, so a sharp bot
+  /// holds its nerve into the HOT window and banks the graze, while a jumpy bot
+  /// fires early in the WARM band and scores nothing. Clamped so the lead can
+  /// never drop below a physically-clearable floor (else it would just eat it).
   bool _botThreatImminent(TrackFx t) {
-    final lead = _Tuning.botLeadBase +
-        _Tuning.botLeadPerAccuracy * ctx.botProfile.accuracy.clamp(0.0, 1.0);
+    final lead = (_Tuning.botLeadBase -
+            _Tuning.botLeadPerAccuracy * ctx.botProfile.accuracy.clamp(0.0, 1.0))
+        .clamp(_Tuning.dodgeHotLeadSec * 0.7, _Tuning.dodgeThreatLeadSec);
     return _laneThreatened(t, t.hopper.lane, lead: lead);
   }
 
@@ -857,6 +894,12 @@ class FallingDodge extends MiniGameBase {
     return false;
   }
 
+  /// True when [lane] has a hazard inside the narrow HOT window
+  /// ([dodgeHotLeadSec]) — the late "now!" stretch. Stepping OFF a HOT lane is
+  /// the ONLY hop that stamps a claimable, score-earning dodge.
+  bool _laneHotThreatened(TrackFx t, int lane) =>
+      _laneThreatened(t, lane, lead: _Tuning.dodgeHotLeadSec);
+
   // ── Elimination / outcome ────────────────────────────────────────────────────
 
   /// A hazard crushes a runner: it ragdolls + KOs, but this is NOT a permanent
@@ -870,6 +913,7 @@ class FallingDodge extends MiniGameBase {
     t.hazards.clear();
     t.grazeChain = 0; // a crush ends the streak (no posthumous links)
     t.grazeBannerAt = 0; // re-arm for the streak banner on the next run
+    t.grazeFlash = 0;
     final runnerX = t.lanes.coordOfVisual(t.hopper.visualLane);
     final at = Offset(runnerX, t.runnerY);
     // Crush: fling away from the impact lane, with an upward stomp component.
@@ -960,6 +1004,9 @@ class FallingDodge extends MiniGameBase {
         scroll: scroll,
         animClock: _animClock,
         laneCount: _Tuning.laneCount,
+        fallSpeed: _fallSpeed,
+        warmLeadSec: _Tuning.dodgeThreatLeadSec,
+        hotLeadSec: _Tuning.dodgeHotLeadSec,
       );
     }
 
@@ -995,26 +1042,52 @@ class FallingDodge extends MiniGameBase {
   // pilot a genuinely-reading "measured dodger" and prove a blind flailer ends
   // below it. Read-only; never mutate the sim.
 
-  /// The hop direction (-1 left / +1 right) that steps [id] OFF a threatened
-  /// lane onto an ADJACENT lane that is itself currently clear — exactly the
-  /// skilled "read the telegraph and dodge the right way" choice, which also
-  /// banks an earned graze. Returns 0 when not threatened (no need to move) or
-  /// when no adjacent lane is safe (pinned — any step is a gamble). Read-only.
+  /// The hop direction (-1 left / +1 right) that steps [id] OFF its lane in the
+  /// HOT (late) window onto an adjacent lane that is itself not also HOT — i.e.
+  /// the skilled "hold your nerve, then dodge at the last instant" play that
+  /// banks an earned graze. It deliberately WAITS: it returns 0 while the lane is
+  /// only WARM (an early bail would score nothing), firing only once the shadow
+  /// goes HOT. Returns 0 when not in the hot window, or when no adjacent lane is
+  /// a safe landing (pinned — any step is a gamble). Read-only.
   @visibleForTesting
   int debugSafeHopDir(int id) {
     final t = _trackOf(id);
     if (t == null || !t.alive) return 0;
     final lane = t.hopper.lane;
-    if (!_laneThreatened(t, lane)) return 0; // nothing to dodge right now
-    // Prefer a clear neighbour; if both are clear, keep the lean direction so
-    // the runner weaves naturally instead of dithering.
+    // Hold until the late window: only a HOT lane is worth (and scores) a dodge.
+    if (!_laneHotThreatened(t, lane)) return 0;
+    // A landing lane is safe if it isn't ALSO about to be hit (not hot). A warm
+    // neighbour is fine — you'll read and dodge that one when it goes hot.
+    final canLeft = lane > 0 && !_laneHotThreatened(t, lane - 1);
+    final canRight =
+        lane < _Tuning.laneCount - 1 && !_laneHotThreatened(t, lane + 1);
+    if (canLeft && canRight) return t.hopDir != 0 ? t.hopDir : 1;
+    if (canLeft) return -1;
+    if (canRight) return 1;
+    return 0; // pinned this frame
+  }
+
+  /// The EARLY-PANIC read: the hop direction that bails OFF a merely-WARM lane
+  /// (threatened but NOT yet in the HOT scoring window) onto a clear neighbour —
+  /// i.e. a jumpy player who flees the instant the shadow appears and never holds
+  /// for the late window. It fires while the lane is warm-but-not-hot and returns
+  /// 0 otherwise, so a test can pilot a genuine early-bailer and prove it banks
+  /// far fewer chains than the HOT-timed reader ([debugSafeHopDir]). Read-only.
+  @visibleForTesting
+  int debugWarmHopDir(int id) {
+    final t = _trackOf(id);
+    if (t == null || !t.alive) return 0;
+    final lane = t.hopper.lane;
+    // Only the WARM (early) band — if it's already HOT, this read declines so it
+    // can never accidentally land the scoring window.
+    if (!_laneThreatened(t, lane) || _laneHotThreatened(t, lane)) return 0;
     final canLeft = lane > 0 && !_laneThreatened(t, lane - 1);
     final canRight =
         lane < _Tuning.laneCount - 1 && !_laneThreatened(t, lane + 1);
     if (canLeft && canRight) return t.hopDir != 0 ? t.hopDir : 1;
     if (canLeft) return -1;
     if (canRight) return 1;
-    return 0; // pinned this frame
+    return 0;
   }
 
   /// A full-screen normalized touch x that [_dirFromTouch] resolves to [dir],

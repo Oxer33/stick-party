@@ -294,6 +294,74 @@ void main() {
     }
   });
 
+  test('DESIGN LAW: the LATE-window read beats EARLY panic '
+      '(waiting for HOT is the skill, not merely reacting)', () {
+    // The heart of the rework: a graze is earned ONLY by stepping off a lane in
+    // its HOT (late, red) window, never on the early WARM telegraph. We pit two
+    // genuinely-reading players on the SAME board per seed (both human-driven via
+    // ctx.rng, so the sim is deterministic) who differ ONLY in WHEN they dodge:
+    //
+    //  * P0 LATE READER: holds its nerve and steps off only once the shadow goes
+    //    HOT ([debugSafeHopDir]). Every dodge lands the scoring window → it banks
+    //    a real, mounting graze chain.
+    //  * P1 EARLY PANIC: bails the instant a lane merely goes WARM and never waits
+    //    for HOT ([debugWarmHopDir]). Its hops are safe but score NOTHING — it can
+    //    only ever scrape the odd token + the tiny survival sliver.
+    //
+    // So on EVERY seed the late reader must MORE THAN DOUBLE the early bailer and
+    // rank first, while the bailer stays pinned near the survival-only floor —
+    // requiring it across many seeds makes the proof robust, not a lucky board.
+    for (final seed in [31, 12, 57, 88, 3, 8, 21, 50, 70, 19, 64]) {
+      final players = [
+        PlayerSlot.defaults(0), // late reader (human-driven)
+        PlayerSlot.defaults(1), // early-panic bailer (human-driven)
+      ];
+      final ctx = MiniGameContext(
+        players: players,
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+      );
+      final g = FallingDodge()..init(ctx);
+
+      var n = 0;
+      while (g.status != MiniGameStatus.finished && n++ < 60 * 80) {
+        // Late: act only once the lane is HOT, and only in a safe direction.
+        final late = g.debugSafeHopDir(0);
+        if (late != 0) g.onInput(PlayerInput.down(0, g.debugTouchForDir(late)));
+        // Early panic: bail on the WARM telegraph, never waiting for HOT.
+        final early = g.debugWarmHopDir(1);
+        if (early != 0) {
+          g.onInput(PlayerInput.down(1, g.debugTouchForDir(early)));
+        }
+        g.update(1 / 60);
+      }
+
+      expect(g.status, MiniGameStatus.finished, reason: 'seed $seed');
+      final win = g.winResult!;
+      final lateScore = (win.finalScores[0] ?? 0).toDouble();
+      final earlyScore = (win.finalScores[1] ?? 0).toDouble();
+
+      // The decisive margin: timing the HOT window pays multiples of bailing
+      // early. (Empirically 3.3x–100x across these seeds; assert a safe >=2x.)
+      expect(lateScore, greaterThan(earlyScore * 2),
+          reason: 'seed $seed: the late-window read must crush early panic '
+              '(late=$lateScore early=$earlyScore)');
+      // The early bailer never earns a chain, so it is pinned near the
+      // survival-only ceiling (~26s * 0.4 ≈ 10.4) plus at most a token or two.
+      expect(earlyScore, lessThan(30.0),
+          reason: 'seed $seed: an early-only bailer banked a chain it should '
+              'not have (early=$earlyScore)');
+      // The reader, by contrast, banks a real chain well above that ceiling.
+      expect(lateScore, greaterThan(40.0),
+          reason: 'seed $seed: the late reader failed to bank a real chain '
+              '(late=$lateScore)');
+      // And it ranks first.
+      expect(win.ranking.indexOf(0), lessThan(win.ranking.indexOf(1)),
+          reason: 'seed $seed: the late reader must rank above the early bailer');
+    }
+  });
+
   test('DESIGN LAW: a STILL player scores ~nothing (no free proximity grazes)',
       () {
     // A runner that NEVER moves earns no grazes: a graze requires a deliberate

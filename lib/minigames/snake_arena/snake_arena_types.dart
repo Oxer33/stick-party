@@ -44,6 +44,23 @@ class Snake {
   int pendingGrowth = 0; // segments still to grow (skips tail removal)
   int score = 0; // pellets eaten (HUD readout)
 
+  /// Logical step on which each [body] segment was LAID DOWN, head-aligned with
+  /// [body] (so `bodyTick[0]` is the current head's birth step). A young, near-
+  /// head segment means the snake just cut a fresh line THERE — the signal that
+  /// a rival crashing into it was deliberately INTERCEPTED, not a stale-tail or
+  /// self-driving accident. Kept exactly the same length as [body].
+  final List<int> bodyTick;
+
+  /// Logical step the snake last TURNED on (a committed heading change). Drives
+  /// a brief, player-colored "new line" flash so a one-tap turn lands with an
+  /// instant, readable, felt payoff. -1 until the first turn.
+  int lastTurnTick = -1;
+
+  /// Heading the snake committed its last turn FROM (the line it just left), so
+  /// a turn reads as a visible line CHANGE, not a silent re-point. Null until
+  /// the first turn.
+  Heading? prevHeading;
+
   // Bot steering only.
   final ReactionClock? clock;
 
@@ -53,7 +70,8 @@ class Snake {
     required Cell head,
     required this.heading,
     this.clock,
-  }) : body = [head];
+  })  : body = [head],
+        bodyTick = [0];
 
   Cell get head => body.first;
   int get length => body.length;

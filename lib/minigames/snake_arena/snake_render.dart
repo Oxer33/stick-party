@@ -515,78 +515,201 @@ class SnakeRenderer {
     }
   }
 
-  /// The "tap LEFT = turn left, tap RIGHT = turn right" affordance: two arrows
-  /// flanking the head, each pointing where that tap would send the snake, plus a
-  /// faint landing dot on the cell each turn would step into. Drawn over every
-  /// snake so the one rule of the game is unmistakable. [forward] is the current
-  /// unit heading (accepted for API symmetry / future use); [left] and [right]
-  /// are the unit headings after a left / right turn. [pulse] (0..1) breathes the
-  /// brightness; [emphasis] (0..1) fades it in at the round start then settles to
-  /// a calm idle level.
-  static void drawTurnHint(
+  /// The heading READOUT over a snake's head, so the line it is committed to is
+  /// always visible and a turn reads as a deliberate line CHOICE:
+  ///   * a bright forward CHEVRON at the head pointing along [forward];
+  ///   * a short PROJECTED PATH — [pathPixels] are the pixel centers of the next
+  ///     cells the head will occupy if it holds course (collision-clipped by the
+  ///     caller, so the path visibly runs short into a hazard) — drawn as a neon
+  ///     spine + fading footprints, the tip footprint hottest so "where I'm
+  ///     going" pops;
+  ///   * faint left/right next-turn landing dots ([left]/[right] unit headings)
+  ///     so the one-tap steer stays discoverable without dominating.
+  /// [turnFlash] (0..1) is how freshly the snake just turned: it lights the whole
+  /// readout up and draws a small swing arc from the old line to the new one, so
+  /// a one-tap turn lands with an instant, felt payoff. [pulse] breathes it;
+  /// [emphasis] fades it in at the round start then settles to a calm idle level.
+  static void drawHeadingPath(
     Canvas canvas,
     Offset head,
     Offset forward,
+    List<Offset> pathPixels,
     Offset left,
     Offset right,
     double cell,
     Color color, {
     double pulse = 1.0,
     double emphasis = 1.0,
+    double turnFlash = 0.0,
   }) {
     if (cell <= 0) return;
     final em = emphasis.clamp(0.0, 1.0);
     if (em <= 0.01) return;
-    final a = ((0.30 + 0.45 * pulse.clamp(0.0, 1.0)) * em).clamp(0.0, 1.0);
+    final flash = turnFlash.clamp(0.0, 1.0);
+    // A fresh turn brightens the whole readout so the new line pops.
+    final boost = 1.0 + 0.8 * flash;
+    final a = ((0.30 + 0.45 * pulse.clamp(0.0, 1.0)) * em * boost).clamp(0.0, 1.0);
+    final lit = (Color.lerp(color, _white, 0.25 + 0.4 * flash) ?? color);
 
-    _drawTurnArrow(canvas, head, left, cell, color, a, em);
-    _drawTurnArrow(canvas, head, right, cell, color, a, em);
+    _drawProjectedPath(canvas, head, pathPixels, cell, color, em, flash);
+    _drawNextTurnDot(canvas, head, left, cell, color, em);
+    _drawNextTurnDot(canvas, head, right, cell, color, em);
+    _drawHeadingChevron(canvas, head, forward, cell, lit, a, flash);
+
+    // SWING ARC: on a fresh turn, sweep a short bright arc around the head toward
+    // the new heading — a visible "I cut THIS way".
+    if (flash > 0.02) {
+      _drawTurnSwing(canvas, head, forward, cell, lit, flash);
+    }
   }
 
-  /// One steering arrow: a chevron sitting just beyond the head along [dir] (the
-  /// heading that tap produces) and pointing that way, with a faint landing dot
-  /// on the cell the snake would move into.
-  static void _drawTurnArrow(
+  /// The forward heading chevron at the head, pointing along [dir]. Grows + heats
+  /// on a fresh turn ([flash]) so the committed line is unmistakable.
+  static void _drawHeadingChevron(
     Canvas canvas,
     Offset head,
     Offset dir,
     double cell,
     Color color,
     double a,
-    double em,
+    double flash,
   ) {
     var d = dir;
     if (d.distance < 1e-3) d = const Offset(1, 0);
     d = d / d.distance;
     final perp = Offset(-d.dy, d.dx);
-
-    // Landing dot: the cell the head reaches after this turn (one cell along d).
-    final ghost = head + d * cell;
-    final ghostR = cell * _turnGhostFactor;
-    canvas.drawCircle(ghost, ghostR * 1.3,
-        Paint()..color = color.withValues(alpha: (0.10 * em).clamp(0.0, 1.0)));
-    canvas.drawCircle(ghost, ghostR,
-        Paint()..color = color.withValues(alpha: (0.20 * em).clamp(0.0, 1.0)));
-    canvas.drawCircle(ghost, ghostR * 0.5,
-        Paint()..color = _white.withValues(alpha: (0.30 * em).clamp(0.0, 1.0)));
-
-    // Chevron pointing along d, placed just beyond the head.
     final tip = head + d * (cell * _turnArrowGapFactor);
-    final size = cell * _turnArrowSizeFactor;
+    final size = cell * _turnArrowSizeFactor * (1.0 + 0.25 * flash);
     final back = tip - d * size;
     final path = Path()
-      ..moveTo((back + perp * size * 0.5).dx, (back + perp * size * 0.5).dy)
+      ..moveTo((back + perp * size * 0.55).dx, (back + perp * size * 0.55).dy)
       ..lineTo(tip.dx, tip.dy)
-      ..lineTo((back - perp * size * 0.5).dx, (back - perp * size * 0.5).dy);
+      ..lineTo((back - perp * size * 0.55).dx, (back - perp * size * 0.55).dy);
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
-        ..strokeWidth = math.max(1.5, cell * 0.12)
-        ..color = (Color.lerp(color, _white, 0.25) ?? color)
-            .withValues(alpha: (a * 1.1).clamp(0.0, 1.0)),
+        ..strokeWidth = math.max(1.5, cell * (0.13 + 0.05 * flash))
+        ..color = color.withValues(alpha: (a * 1.1).clamp(0.0, 1.0)),
+    );
+  }
+
+  /// The projected path: a fading neon spine through [pathPixels] plus a small
+  /// footprint per cell (brightest near the head, the TIP footprint hottest), so
+  /// "the next few cells I'll occupy" reads at a glance. [flash] heats it on a
+  /// fresh turn. Empty path (about to die into a hazard) draws nothing.
+  static void _drawProjectedPath(
+    Canvas canvas,
+    Offset head,
+    List<Offset> pathPixels,
+    double cell,
+    Color color,
+    double em,
+    double flash,
+  ) {
+    if (pathPixels.isEmpty) return;
+    final n = pathPixels.length;
+    final lit = Color.lerp(color, _white, 0.2 + 0.4 * flash) ?? color;
+
+    // Spine: head → each projected cell, tapering + fading toward the tip.
+    final spine = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    var from = head;
+    for (var i = 0; i < n; i++) {
+      final f = 1.0 - i / (n + 1); // 1 near head → smaller toward tip
+      spine
+        ..strokeWidth = math.max(1.2, cell * (0.14 + 0.05 * flash) * f)
+        ..color = lit.withValues(
+            alpha: ((0.10 + 0.22 * f) * (0.7 + 0.5 * flash)).clamp(0.0, 1.0));
+      canvas.drawLine(from, pathPixels[i], spine);
+      from = pathPixels[i];
+    }
+
+    // Footprints: a faint ring per projected cell; the tip gets a hotter dot so
+    // the END of the committed line — where a cut-off lands — pops.
+    for (var i = 0; i < n; i++) {
+      final isTip = i == n - 1;
+      final f = 1.0 - i / (n + 1);
+      final r = cell * _turnGhostFactor * (isTip ? 1.15 : 0.9);
+      canvas.drawCircle(
+        pathPixels[i],
+        r * 1.25,
+        Paint()
+          ..color = lit.withValues(
+              alpha: ((0.06 + 0.10 * f) * (0.8 + 0.6 * flash)).clamp(0.0, 1.0)),
+      );
+      canvas.drawCircle(
+        pathPixels[i],
+        r,
+        Paint()
+          ..color = lit.withValues(
+              alpha: ((0.12 + 0.18 * f) * (0.8 + 0.6 * flash)).clamp(0.0, 1.0)),
+      );
+      if (isTip) {
+        canvas.drawCircle(
+          pathPixels[i],
+          r * 0.5,
+          Paint()
+            ..color = _white.withValues(
+                alpha: (0.28 + 0.45 * flash).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  /// A faint landing dot one cell along [dir] — where a left/right tap would send
+  /// the head — keeping the one-tap steer discoverable beneath the bolder path.
+  static void _drawNextTurnDot(
+    Canvas canvas,
+    Offset head,
+    Offset dir,
+    double cell,
+    Color color,
+    double em,
+  ) {
+    var d = dir;
+    if (d.distance < 1e-3) d = const Offset(1, 0);
+    d = d / d.distance;
+    final ghost = head + d * cell;
+    final ghostR = cell * _turnGhostFactor * 0.7;
+    canvas.drawCircle(ghost, ghostR,
+        Paint()..color = color.withValues(alpha: (0.10 * em).clamp(0.0, 1.0)));
+    canvas.drawCircle(ghost, ghostR * 0.45,
+        Paint()..color = _white.withValues(alpha: (0.16 * em).clamp(0.0, 1.0)));
+  }
+
+  /// A short swing arc around the head ending at the new [forward] heading, so a
+  /// fresh turn reads as an active cut (a confident sweep into the new line).
+  static void _drawTurnSwing(
+    Canvas canvas,
+    Offset head,
+    Offset forward,
+    double cell,
+    Color color,
+    double flash,
+  ) {
+    var f = forward;
+    if (f.distance < 1e-3) f = const Offset(1, 0);
+    f = f / f.distance;
+    final aFwd = math.atan2(f.dy, f.dx);
+    final r = cell * (0.7 + 0.2 * flash);
+    const sweep = math.pi * 0.5;
+    final start = aFwd - sweep; // trailing edge → forward
+    final rect = Rect.fromCircle(center: head, radius: r);
+    canvas.drawArc(
+      rect,
+      start,
+      sweep,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(1.5, cell * 0.10)
+        ..color = color.withValues(alpha: (0.5 * flash).clamp(0.0, 1.0)),
     );
   }
 

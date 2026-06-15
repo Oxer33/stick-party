@@ -9,46 +9,57 @@ import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'catch_render.dart';
 
-/// Star Catcher — CATCH FALLING STARS, DODGE BOMBS.
+/// Star Catcher — INTERCEPT FALLING STARS, READ THE CROSSINGS, DODGE BOMBS.
 ///
-/// OBJECTIVE: catch the MOST stars before the clock runs out (or be first to the
+/// OBJECTIVE: bank the MOST stars before the clock runs out (or be first to the
 /// [_targetScore] target). The HUD shows your live count and the objective.
 ///
-/// CORE (one-touch, position-is-everything): you DRAG inside your own zone to
-/// slide your basket left-right along a fixed catch line near the bottom of your
-/// lane. Stars, golden stars and BOMBS rain down your column. A catch is PURELY a
-/// physical overlap: the item is caught only if it crosses the catch line while
-/// your basket mouth is actually under it. There is NO tap-to-grab — you cannot
-/// luck into a star by tapping; you must BE under it.
+/// CORE (one-touch, position-is-everything — but now it is INTERCEPTION):
+/// items no longer fall straight down a fixed column. Each one spawns at the TOP
+/// of your lane and travels on an ANGLED path — it slides diagonally across the
+/// lane as it falls. So you cannot camp under a spawn point: you must read where
+/// a star WILL cross the catch line and slide your basket to that INTERCEPT POINT
+/// in time. A catch is still PURE OVERLAP at the catch line — the item is caught
+/// only if your basket mouth is under it as it crosses — so there is no
+/// tap-to-grab and no luck.
 ///
-/// INTERPOSING DIFFICULTY (the rework — bombs literally get between you and the
-/// stars):
-///  * BOMBS fall mixed with the stars. Catch one and you are PENALIZED: you lose
-///    points, your basket is STUNNED for [_stunSec] (it ignores your drag and
-///    slides to a halt) and it DROPS a star — so eating a bomb both costs points
-///    and leaves you helpless while more stars fall past.
-///  * GOLD stars are rarer and worth [_goldPoints]. Normal stars are worth
-///    [_starPoints].
-///  * The field RAMPS: items fall FASTER, spawn DENSER and the BOMB ratio climbs
-///    as the round wears on (calibrated so the open is readable and the finish is
-///    a frantic gauntlet). A basket has movement INERTIA (it accelerates toward
-///    your finger and decelerates, capped at [_basketMaxSpeed]) so snapping
-///    between a far star and a near bomb is a real positioning skill, not a tap.
+/// THE READ (the rework — crossing conflicts):
+///  * Items spawn in CROSSING PAIRS. A STAR launches from one wall heading
+///    inward and a BOMB launches from the other, the two angled paths converging
+///    so they reach the catch line near the SAME x at nearly the SAME moment. To
+///    take the star you must commit your basket to that shared intercept early —
+///    then bail late if the bomb is the one that actually arrives over you. Flail
+///    and you mistime the cross and eat the bomb; read it and you thread it.
+///  * A faint TRAJECTORY HINT draws each item's path down to its predicted
+///    intercept marker on the catch line, so the read is legible — you are
+///    threading a telegraphed crossing, not guessing.
+///  * BOMBS punish hard: catching one costs points, STUNS the basket for
+///    [_stunSec] (it ignores your drag and coasts to a halt) and drops a star —
+///    so eating a bomb both bleeds score and leaves you helpless mid-cross.
+///  * GOLD stars are rarer and worth [_goldPoints]; normal stars [_starPoints].
+///  * The field RAMPS: items fall faster, cross steeper, spawn denser and the
+///    bomb ratio climbs as the round wears on (readable open → frantic finish). A
+///    basket has movement INERTIA (accelerates toward your finger, decelerates,
+///    capped at [_basketMaxSpeed]) so committing to a far intercept then bailing
+///    off a converging bomb is a real skill, not a tap.
 ///
-/// ANTI-INCIDENTAL: because catching is overlap-only at the catch line, sitting
-/// still or flailing randomly catches almost nothing AND sits under bombs — that
-/// player loses. You must READ each falling item, position under STARS and slide
-/// AWAY from bombs. Reading + precise positioning is the entire skill.
+/// ANTI-INCIDENTAL: because catching is overlap-only at the line AND the targets
+/// arrive off-axis on crossing paths, sitting still or sweeping blindly catches
+/// almost nothing and walks under bombs. You must READ each crossing, commit to
+/// the star's intercept and slide OFF the bomb's. Reading crossings + precise,
+/// timed positioning is the entire skill.
 ///
-/// 1–4 players: each player owns a vertical lane (their [PlayerZone]) with its own
-/// falling stream of stars + bombs, fed by the SAME calibrated ramp, so it is a
-/// fair simultaneous race. Bombs interpose for everyone.
+/// 1–4 players: each player owns a lane (their [PlayerZone]) with its own angled
+/// stream of crossing stars + bombs, fed by the SAME calibrated ramp, so it is a
+/// fair simultaneous race.
 ///
-/// BOTS steer their basket toward the nearest catchable STAR and AWAY from any
-/// imminent bomb, gated by [BotProfile]: a weak bot reacts late, misreads (targets
-/// the wrong item or fails to flee a bomb) and eats bombs; a strong bot tracks
-/// cleanly. A human who reads better out-catches a weak CPU — a real, beatable
-/// 1+CPU contest.
+/// BOTS play the same interception game: each frame a bot computes the INTERCEPT
+/// x of the nearest catchable star (where it will cross the line) and steers
+/// there, UNLESS a bomb's intercept is the imminent threat near its basket, in
+/// which case it bails. [BotProfile] gates the read: a weak bot reacts late,
+/// MISREADS the crossing (commits to the bomb's intercept, or fails to bail) and
+/// eats bombs; a strong bot threads the cross. A human who reads better
+/// out-catches a weak CPU — a real, beatable 1+CPU contest.
 ///
 /// The round runs to [_timeLimit] (or ends early once someone reaches
 /// [_targetScore]) and resolves via [finishByScore]; it can never stall.
@@ -93,20 +104,43 @@ class CatchTheStar extends MiniGameBase {
   // with elapsed time; the bomb ratio climbs too so the gauntlet thickens.
   static const double _fallSpeedStart = 0.34; // norm/sec at t=0
   static const double _fallSpeedEnd = 0.78; // norm/sec at the end
-  static const double _spawnEveryStart = 1.05; // s between drops (per lane)
-  static const double _spawnEveryEnd = 0.42; // floor on spawn interval
+  static const double _spawnEveryStart = 1.15; // s between crossings (per lane)
+  static const double _spawnEveryEnd = 0.52; // floor on spawn interval
   static const double _spawnWarmupSec = 0.7; // first drop delayed (read time)
-  static const double _bombRatioStart = 0.18; // bomb odds early
-  static const double _bombRatioEnd = 0.42; // bomb odds at the finish
+  static const double _bombRatioStart = 0.18; // lone-drop bomb odds early
+  static const double _bombRatioEnd = 0.42; // lone-drop bomb odds at the finish
   static const double _goldRatio = 0.12; // of the NON-bomb drops, gold odds
-  static const double _spawnXMargin = 0.16; // keep spawns off the lane walls
+  static const double _spawnXMargin = 0.12; // keep spawn launch off the walls
+
+  // ── Angled paths + crossing conflicts (the rework) ───────────────────────────
+  // Each item slides sideways as it falls. The drift is expressed as a target
+  // intercept on the catch line: the item is launched from one side of the lane
+  // and aimed to cross the line at [interceptX], so its horizontal speed follows
+  // from the time it takes to fall. Crossing PAIRS share an intercept so a star
+  // and a bomb converge — the central read.
+  static const double _crossChanceStart = 0.45; // odds a drop is a crossing PAIR
+  static const double _crossChanceEnd = 0.80; // crossings dominate the finish
+  static const double _crossWindowSec = 0.22; // bomb lags the star into the line
+  static const double _interceptInset = 0.22; // keep shared intercepts off walls
+  static const double _minLaunchSpreadFrac = 0.34; // lane-frac between launches
+  // The converging bomb lands THIS far (× the catch overlap) to the side of the
+  // star's intercept: just outside the basket mouth, so a precise reader who is
+  // ON the star's crossing point catches it AND the bomb lands beside them — the
+  // crossing is a tight, legible read, not an unavoidable double-hit. A flailer
+  // who is off the mark is the one who drifts under the converging bomb.
+  static const double _crossBombOffsetFrac = 1.35;
+  // A lone (non-paired) item still slides: it launches off one wall and angles
+  // toward a random interior intercept, so even singles must be intercepted.
+  static const double _loneDriftMin = 0.18; // min interior intercept offset
+  static const double _loneDriftMax = 0.42; // max interior intercept offset
 
   // ── Climax: BOMB STORM finish (the unmistakable peak) ────────────────────────
-  // In the last [_stormSec] the spawn cadence tightens and the bomb ratio is
-  // pinned high — a frantic dodge-heavy finish. A one-shot cue announces it.
+  // In the last [_stormSec] the spawn cadence tightens, crossings are guaranteed
+  // and the bomb ratio is pinned high — a frantic read-heavy finish. A one-shot
+  // cue announces it.
   static const double _stormSec = 7.0;
-  static const double _stormSpawnEvery = 0.34; // very dense drops in the storm
-  static const double _stormBombRatio = 0.5; // half the drops are bombs
+  static const double _stormSpawnEvery = 0.42; // very dense crossings in storm
+  static const double _stormBombRatio = 0.5; // half the lone drops are bombs
 
   // ── Comeback: a subtle catch-up for trailing players ───────────────────────
   // A player below the leader gets a slightly wider effective basket mouth,
@@ -270,6 +304,12 @@ class CatchTheStar extends MiniGameBase {
       ? _stormBombRatio
       : _bombRatioStart + (_bombRatioEnd - _bombRatioStart) * _ramp;
 
+  /// Odds the next drop is a crossing PAIR (star + converging bomb). Ramps up so
+  /// the read-heavy crossings dominate the finish; pinned ON in the storm.
+  double get _crossChance => _inStorm
+      ? 1.0
+      : _crossChanceStart + (_crossChanceEnd - _crossChanceStart) * _ramp;
+
   /// Fire the one-shot BOMB STORM cue the moment the storm begins: a banner, a
   /// shake and a red burst so every kid knows the dodge-heavy finish is on.
   void _maybeAnnounceStorm() {
@@ -293,15 +333,93 @@ class CatchTheStar extends MiniGameBase {
     lane.spawnTimer -= dt;
     if (lane.spawnTimer > 0) return;
     lane.spawnTimer = _spawnEvery;
-    _dropItem(lane);
+    if (ctx.rng.chance(_crossChance)) {
+      _dropCrossing(lane);
+    } else {
+      _dropLone(lane);
+    }
   }
 
-  /// Drop a fresh item at a random x within the lane (off the walls): a bomb at
-  /// the current ramped [_bombRatio], else a star that is GOLD at [_goldRatio].
-  void _dropItem(_Lane lane) {
+  /// Time (s) an item needs to fall from the top of [zone] to the catch line at
+  /// the current ramped fall speed. Drives the sideways speed so a launch lands
+  /// on its chosen intercept exactly at the line.
+  double _timeTopToLine() {
+    final dropFrac = _catchLineFrac; // top→line as a fraction of lane height
+    final speed = _fallSpeed; // lane-heights per second
+    return speed <= 0 ? 1.0 : dropFrac / speed;
+  }
+
+  /// Launch one item that slides from [launchX] (at the lane top) to cross the
+  /// catch line at [interceptX]. Its horizontal velocity is solved from the fall
+  /// time so the geometry is exact and the trajectory hint is honest. A positive
+  /// [extraDelaySec] starts it above the lane so it arrives that much later.
+  void _launch(_Lane lane, _ItemKind kind, double launchX, double interceptX,
+      {double extraDelaySec = 0}) {
     final z = lane.zone;
-    final marginX = z.width * _spawnXMargin;
-    final x = ctx.rng.range(z.left + marginX, z.right - marginX);
+    final tToLine = _timeTopToLine();
+    // Sideways speed in normalized x per second (world units, not lane-relative).
+    final vx = tToLine <= 0 ? 0.0 : (interceptX - launchX) / tToLine;
+    lane.items.add(_Item(
+      kind: kind,
+      x: launchX,
+      // Start higher (above the top) so it reaches the line extraDelaySec later.
+      y: z.top - extraDelaySec * _fallSpeed * z.height,
+      vx: vx,
+      interceptX: interceptX,
+      spin: ctx.rng.range(0, math.pi * 2),
+    ));
+  }
+
+  /// A crossing PAIR: a STAR and a BOMB launched from OPPOSITE walls of the lane,
+  /// their angled paths converging near the SAME point on the catch line so they
+  /// visibly cross (an X). The bomb aims JUST to the side of the star's intercept
+  /// (by [_crossBombOffsetFrac] of the catch overlap — outside the basket mouth)
+  /// and is launched slightly higher so it lags the star into the line by
+  /// [_crossWindowSec]. The read: park on the star's exact crossing point and the
+  /// bomb lands beside you; drift off it and you slide under the bomb instead.
+  void _dropCrossing(_Lane lane) {
+    final z = lane.zone;
+    final inset = z.width * _interceptInset;
+    // The bomb sits this far to one side of the star's intercept (lane-relative
+    // so narrow split lanes scale it down with the rest of the geometry).
+    final offset = _catchOverlap * _crossBombOffsetFrac;
+    // Pick the star's intercept so both it and the offset bomb intercept stay
+    // inside the playable band.
+    final shared = ctx.rng
+        .range(z.left + inset + offset, z.right - inset - offset)
+        .clamp(z.left + inset, z.right - inset);
+    final bombSign = shared <= z.center.dx ? 1.0 : -1.0; // push bomb toward centre
+    final bombIntercept =
+        (shared + bombSign * offset).clamp(z.left + inset, z.right - inset);
+
+    final margin = z.width * _spawnXMargin;
+    final spread = z.width * _minLaunchSpreadFrac;
+    final starLeft = ctx.rng.next() < 0.5;
+    final starLaunch = (starLeft ? shared - spread : shared + spread)
+        .clamp(z.left + margin, z.right - margin);
+    // Bomb launches from the OPPOSITE wall to the star so the paths cross.
+    final bombLaunch = (starLeft ? bombIntercept + spread : bombIntercept - spread)
+        .clamp(z.left + margin, z.right - margin);
+
+    final starKind =
+        ctx.rng.chance(_goldRatio) ? _ItemKind.gold : _ItemKind.star;
+    _launch(lane, starKind, starLaunch, shared);
+    _launch(lane, _ItemKind.bomb, bombLaunch, bombIntercept,
+        extraDelaySec: _crossWindowSec);
+  }
+
+  /// A lone (non-paired) item still ANGLES: it launches off one wall and slides
+  /// to a random interior intercept, so even singles demand interception rather
+  /// than camping. It is a bomb at the ramped [_bombRatio], else a star (gold at
+  /// [_goldRatio]).
+  void _dropLone(_Lane lane) {
+    final z = lane.zone;
+    final margin = z.width * _spawnXMargin;
+    final fromLeft = ctx.rng.next() < 0.5;
+    final launchX = fromLeft ? z.left + margin : z.right - margin;
+    final drift = z.width * ctx.rng.range(_loneDriftMin, _loneDriftMax);
+    final interceptX = (fromLeft ? launchX + drift : launchX - drift)
+        .clamp(z.left + margin, z.right - margin);
     final _ItemKind kind;
     if (ctx.rng.chance(_bombRatio)) {
       kind = _ItemKind.bomb;
@@ -310,17 +428,13 @@ class CatchTheStar extends MiniGameBase {
     } else {
       kind = _ItemKind.star;
     }
-    lane.items.add(_Item(
-      kind: kind,
-      x: x,
-      y: z.top, // spawn at the top of the lane
-      spin: ctx.rng.range(0, math.pi * 2),
-    ));
+    _launch(lane, kind, launchX, interceptX);
   }
 
-  /// Advance every item down its lane, resolving a catch/miss exactly once as it
-  /// crosses the catch line. Catching is PURE OVERLAP at the line — the basket
-  /// mouth must be under the item — so there is no way to luck into a star.
+  /// Advance every item along its ANGLED path, resolving a catch/miss exactly
+  /// once as it crosses the catch line. Catching is PURE OVERLAP at the line — the
+  /// basket mouth must be under the item's actual (drifted) x — so there is no way
+  /// to luck into a star by camping a column.
   void _stepItems(_Lane lane, double dt) {
     final lineY = _catchLineYNorm(lane.zone);
     final survivors = <_Item>[];
@@ -328,6 +442,7 @@ class CatchTheStar extends MiniGameBase {
     for (final item in lane.items) {
       final prevY = item.y;
       item.y += fall * dt;
+      item.x += item.vx * dt; // diagonal translation
 
       if (!item.resolved && prevY <= lineY && item.y >= lineY) {
         item.resolved = true;
@@ -337,6 +452,10 @@ class CatchTheStar extends MiniGameBase {
         }
       }
       if (item.y > lane.zone.bottom + lane.zone.height * 0.1) continue; // gone
+      // Bounce a stray off the side walls so an angled miss doesn't fly out of
+      // the lane before reaching the line (keeps the path inside the column).
+      if (item.x < lane.zone.left && item.vx < 0) item.vx = -item.vx;
+      if (item.x > lane.zone.right && item.vx > 0) item.vx = -item.vx;
       survivors.add(item);
     }
     lane.items
@@ -428,7 +547,7 @@ class CatchTheStar extends MiniGameBase {
   /// target, damp the velocity, cap the speed, and clamp into the lane. A stunned
   /// basket ignores its target (it just coasts to a halt) so eating a bomb really
   /// costs control. Bots get the same physics (their target is set in
-  /// [_driveBots]) so they cannot teleport onto a star either.
+  /// [_driveBots]) so they cannot teleport onto an intercept either.
   void _steerBaskets(double dt) {
     if (dt <= 0) return;
     for (final lane in _lanes) {
@@ -448,14 +567,15 @@ class CatchTheStar extends MiniGameBase {
 
   // ── Bots ──────────────────────────────────────────────────────────────────────
 
-  /// Bots play the SAME positioning game: each frame a bot picks the nearest
-  /// catchable STAR in its lane and steers its basket under it — UNLESS a bomb is
-  /// about to reach the line near the basket, in which case it slides AWAY to
-  /// dodge. [BotProfile] gates skill: the bot only re-reads the field on its
-  /// reaction clock (weak bots react late), an [errorRate] roll makes it MISREAD
-  /// (chase a bomb as if a star, or fail to flee), and below-perfect [accuracy]
-  /// adds aim slop so it can just miss. So a weak bot eats bombs and whiffs while
-  /// a sharp bot tracks cleanly — and a reading human can out-catch a weak CPU.
+  /// Bots play the SAME interception game: each frame a bot computes the INTERCEPT
+  /// x of the nearest catchable star (where it will cross the line) and steers
+  /// there — UNLESS a bomb is about to reach the line near the basket, in which
+  /// case it bails to that bomb's far side. [BotProfile] gates skill: the bot only
+  /// re-reads on its reaction clock (weak bots react late), an [errorRate] roll
+  /// makes it MISREAD the crossing (commit to the bomb's intercept as if a star,
+  /// or fail to bail), and below-perfect [accuracy] adds aim slop so it can just
+  /// miss the cross. So a weak bot eats bombs and whiffs while a sharp bot threads
+  /// — and a reading human can out-catch a weak CPU.
   void _driveBots(double dt) {
     for (final lane in _lanes) {
       final clock = lane.clock;
@@ -471,30 +591,47 @@ class CatchTheStar extends MiniGameBase {
     }
   }
 
-  /// Decide where a bot wants its basket: dodge an imminent bomb if one threatens,
-  /// otherwise track the nearest descending star. Difficulty colors the read.
+  /// Decide where a bot wants its basket: bail an imminent bomb's intercept if one
+  /// threatens, otherwise track the nearest descending star's INTERCEPT.
+  /// Difficulty colors the read of the crossing.
   double _botPickTargetX(_Lane lane) {
     final profile = ctx.botProfile;
     final misread = ctx.rng.chance(profile.errorRate);
 
     final bomb = _nearestThreateningBomb(lane);
-    // A competent read flees an imminent bomb; a misread ignores the danger.
+    // A competent read bails an imminent bomb's intercept; a misread ignores it
+    // (or, in the no-star branch below, even commits to it).
     if (bomb != null && !misread) {
-      return _dodgeXFrom(lane, bomb.x);
+      return _dodgeXFrom(lane, _interceptOf(lane, bomb));
     }
 
     final star = _nearestDescendingStar(lane);
     if (star == null) {
-      // Nothing to chase: a misread bot may even drift toward a bomb (sloppy).
-      if (misread && bomb != null) return _clampX(lane.zone, bomb.x);
+      // Nothing to chase: a misread bot may even drift onto a bomb's intercept.
+      if (misread && bomb != null) {
+        return _clampX(lane.zone, _interceptOf(lane, bomb));
+      }
       return lane.basketX; // hold position
     }
-    // Aim under the star, with accuracy slop so a weak bot can just miss the
-    // overlap, and a misread can send it the wrong way entirely.
+    // Aim at the star's INTERCEPT, with accuracy slop so a weak bot can just miss
+    // the overlap, and a misread can send it the wrong way entirely.
+    final target = _interceptOf(lane, star);
     final slop = (1.0 - profile.accuracy.clamp(0.0, 1.0)) * _catchOverlap * 2.2;
-    var aim = star.x + ctx.rng.jitter(slop);
-    if (misread) aim = star.x + ctx.rng.sign() * _catchOverlap * 3.0;
+    var aim = target + ctx.rng.jitter(slop);
+    if (misread) aim = target + ctx.rng.sign() * _catchOverlap * 3.0;
     return _clampX(lane.zone, aim);
+  }
+
+  /// Where [item] will cross the catch line on its angled path: project its x by
+  /// its horizontal velocity over the time it still needs to reach the line. For
+  /// a (legacy) straight drop this is just its current x.
+  double _interceptOf(_Lane lane, _Item item) {
+    final lineY = _catchLineYNorm(lane.zone);
+    final fall = _fallSpeed * lane.zone.height;
+    if (fall <= 0) return item.x;
+    final tToLine = (lineY - item.y) / fall;
+    if (tToLine <= 0) return item.x;
+    return item.x + item.vx * tToLine;
   }
 
   /// The lowest (closest to the line) star still descending toward the catch line.
@@ -514,8 +651,8 @@ class CatchTheStar extends MiniGameBase {
   }
 
   /// A bomb close enough to the catch line (within [_botBombLeadFrac] of the lane)
-  /// AND near the basket's current x — i.e. the kind of bomb a real player would
-  /// slide to dodge. Returns the most imminent such bomb, or null.
+  /// AND whose INTERCEPT is near the basket's current x — i.e. the kind of bomb a
+  /// real player would slide to bail. Returns the most imminent such bomb, or null.
   _Item? _nearestThreateningBomb(_Lane lane) {
     final lineY = _catchLineYNorm(lane.zone);
     final lead = lane.zone.height * _botBombLeadFrac;
@@ -524,8 +661,10 @@ class CatchTheStar extends MiniGameBase {
     for (final item in lane.items) {
       if (item.kind != _ItemKind.bomb || item.resolved) continue;
       if (item.y > lineY || item.y < lineY - lead) continue;
-      // Only a bomb roughly over the basket is a threat worth dodging.
-      if ((item.x - lane.basketX).abs() > _catchOverlap * 1.4) continue;
+      // Only a bomb whose intercept is roughly over the basket is worth bailing.
+      if ((_interceptOf(lane, item) - lane.basketX).abs() > _catchOverlap * 1.4) {
+        continue;
+      }
       if (item.y > bestY) {
         bestY = item.y;
         best = item;
@@ -534,10 +673,10 @@ class CatchTheStar extends MiniGameBase {
     return best;
   }
 
-  static const double _botBombLeadFrac = 0.55; // lookahead for bomb dodging
+  static const double _botBombLeadFrac = 0.55; // lookahead for bomb bailing
 
   /// Slide to the side of [bombX] that stays inside the lane — far enough that the
-  /// basket mouth clears the bomb.
+  /// basket mouth clears the bomb's intercept.
   double _dodgeXFrom(_Lane lane, double bombX) {
     final z = lane.zone;
     final step = _catchOverlap * 2.2;
@@ -601,7 +740,8 @@ class CatchTheStar extends MiniGameBase {
     final laneCount = _lanes.length;
     for (final lane in _lanes) {
       final zonePx = _rectToPixels(lane.zone);
-      final lineY = _toPixels(Offset(0, _catchLineYNorm(lane.zone))).dy;
+      final lineNormY = _catchLineYNorm(lane.zone);
+      final lineY = _toPixels(Offset(0, lineNormY)).dy;
       CatchRenderer.drawLane(
         canvas,
         zonePx,
@@ -612,8 +752,29 @@ class CatchTheStar extends MiniGameBase {
         multiPlayer: laneCount > 1,
       );
 
+      // Faint trajectory hints FIRST (under the items) so each angled path reads
+      // as a line down to its predicted intercept marker on the catch line — the
+      // legible read that makes the crossing threadable, not guesswork.
+      for (final item in lane.items) {
+        if (item.resolved || item.y > lineNormY) continue;
+        final from = _toPixels(Offset(item.x, item.y));
+        final ix =
+            _interceptOf(lane, item).clamp(lane.zone.left, lane.zone.right);
+        final to = _toPixels(Offset(ix, lineNormY));
+        CatchRenderer.drawTrajectoryHint(
+          canvas,
+          from,
+          to,
+          isBomb: item.kind == _ItemKind.bomb,
+          gold: item.kind == _ItemKind.gold,
+          t: _animClock,
+          minSide: _minSide,
+        );
+      }
+
       // Falling items: clearly distinct + telegraphed (bombs read RED with a fuse,
-      // gold stars glow brighter, normal stars are warm).
+      // gold stars glow brighter, normal stars are warm). Their comet trail
+      // streams opposite their travel direction so the angle reads.
       for (final item in lane.items) {
         final center = _toPixels(Offset(item.x, item.y));
         final r = _itemHalfWidth * _minSide;
@@ -625,12 +786,12 @@ class CatchTheStar extends MiniGameBase {
           gold: item.kind == _ItemKind.gold,
           spin: item.spin + _animClock * 1.4,
           t: _animClock,
+          velDir: _velDirPixels(item),
         );
       }
 
       // The basket at the catch line, sized to its (comeback-scaled) mouth.
-      final basketPx =
-          _toPixels(Offset(lane.basketX, _catchLineYNorm(lane.zone)));
+      final basketPx = _toPixels(Offset(lane.basketX, lineNormY));
       CatchRenderer.drawBasket(
         canvas,
         basketPx,
@@ -646,6 +807,16 @@ class CatchTheStar extends MiniGameBase {
   // ── Small helpers ────────────────────────────────────────────────────────────
 
   double get _minSide => math.min(_lastSize.width, _lastSize.height);
+
+  /// The item's travel direction in PIXEL space (vx is normalized x/sec, the fall
+  /// is normalized y/sec); used to orient its comet trail along the angle.
+  Offset _velDirPixels(_Item item) {
+    final dx = item.vx * _lastSize.width;
+    final dy = _fallSpeed * _lastSize.height; // always downward
+    final len = math.sqrt(dx * dx + dy * dy);
+    if (len <= 0 || !len.isFinite) return const Offset(0, 1);
+    return Offset(dx / len, dy / len);
+  }
 
   /// Normalized y of the catch line within [zone].
   double _catchLineYNorm(Rect zone) => zone.top + zone.height * _catchLineFrac;
@@ -690,30 +861,34 @@ class CatchTheStar extends MiniGameBase {
       );
 
   /// Test-only view of a lane's basket x so deterministic tests can assert it
-  /// stays clamped to its zone and tracks stars. Not used by gameplay/render.
+  /// stays clamped to its zone and tracks intercepts. Not used by gameplay/render.
   @visibleForTesting
   double? basketXForTest(int id) => _laneOf(id)?.basketX;
 
   /// Test-only: the catch line y (normalized) for a player's lane, so a test can
-  /// drive a basket exactly under a star at the line. Not used by gameplay.
+  /// drive a basket exactly onto an intercept at the line. Not used by gameplay.
   @visibleForTesting
   double? catchLineYForTest(int id) {
     final lane = _laneOf(id);
     return lane == null ? null : _catchLineYNorm(lane.zone);
   }
 
-  /// Test-only: the x of the lowest descending STAR (gold or normal) in a lane, or
-  /// null if none — lets a deterministic test position a basket under the next
-  /// star to prove tracking beats sitting still. Not used by gameplay/render.
+  /// Test-only: the INTERCEPT x (where it will cross the catch line) of the lowest
+  /// descending STAR (gold or normal) in a lane, or null if none. Lets a
+  /// deterministic test position a basket on the next star's intercept to prove
+  /// reading beats flailing. Because paths are angled, this is the projected
+  /// crossing x — NOT the spawn x. Not used by gameplay/render.
   @visibleForTesting
   double? nextStarXForTest(int id) {
     final lane = _laneOf(id);
     if (lane == null) return null;
-    return _nearestDescendingStar(lane)?.x;
+    final star = _nearestDescendingStar(lane);
+    return star == null ? null : _interceptOf(lane, star);
   }
 
-  /// Test-only: the x of the lowest descending BOMB in a lane, or null. Lets a
-  /// test confirm a flailing player sits under bombs. Not used by gameplay.
+  /// Test-only: the INTERCEPT x of the lowest descending BOMB in a lane, or null.
+  /// Lets a test confirm a flailing player slides under a bomb's crossing. Not
+  /// used by gameplay.
   @visibleForTesting
   double? nextBombXForTest(int id) {
     final lane = _laneOf(id);
@@ -729,28 +904,38 @@ class CatchTheStar extends MiniGameBase {
         best = item;
       }
     }
-    return best?.x;
+    return best == null ? null : _interceptOf(lane, best);
   }
 }
 
 /// What a falling item is. A bomb PENALIZES; a star/gold rewards.
 enum _ItemKind { star, gold, bomb }
 
-/// A single falling item in a lane. Round-scoped mutable state (allowed by
-/// [MiniGameBase]).
+/// A single falling item in a lane, now travelling on an ANGLED path: it falls at
+/// the lane's fall speed while sliding sideways at [vx] toward [interceptX] on the
+/// catch line. Round-scoped mutable state (allowed by [MiniGameBase]).
 class _Item {
   final _ItemKind kind;
-  final double x; // normalized 0..1 (constant during the fall)
+  double x; // normalized 0..1, drifts sideways as it falls
   double y; // normalized 0..1, increases as it falls
+  double vx; // normalized x per second (sideways drift; +right, -left)
+  final double interceptX; // predicted crossing x on the catch line (render hint)
   final double spin; // render-only base spin phase
   bool resolved = false; // catch/miss decided at the line exactly once
 
-  _Item({required this.kind, required this.x, required this.y, this.spin = 0});
+  _Item({
+    required this.kind,
+    required this.x,
+    required this.y,
+    this.vx = 0,
+    double? interceptX,
+    this.spin = 0,
+  }) : interceptX = interceptX ?? x;
 }
 
-/// Per-player lane: the basket it controls (with inertia), its falling stream,
-/// color, optional bot reaction clock and the round-scoped flash + stun timers.
-/// Mutable for the duration of one round (allowed by [MiniGameBase]).
+/// Per-player lane: the basket it controls (with inertia), its angled falling
+/// stream, color, optional bot reaction clock and the round-scoped flash + stun
+/// timers. Mutable for the duration of one round (allowed by [MiniGameBase]).
 class _Lane {
   final int playerId;
   final int displayNumber;
@@ -762,7 +947,7 @@ class _Lane {
   double basketX; // normalized 0..1 basket centre x
   double targetX; // where the basket is easing toward (clamped to [zone])
   double basketVel = 0; // basket velocity (norm/sec) — gives inertia
-  double spawnTimer; // seconds until the next drop
+  double spawnTimer; // seconds until the next crossing/drop
   double flash = 0; // seconds of catch flash remaining
   double stun = 0; // seconds of bomb stun remaining
 

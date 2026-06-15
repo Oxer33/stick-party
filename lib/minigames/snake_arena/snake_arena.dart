@@ -90,6 +90,20 @@ class SnakeArena extends MiniGameBase {
   static const int _takedownGrow = 2; // bonus segments for a takedown (feeds length)
   static const int _takedownSparks = 12; // celebratory burst on a takedown
 
+  // ── Deliberate INTERCEPT gate (a takedown must be EARNED, not lucky) ─────────
+  // A body-crash only pays the blocker if the victim hit a segment the blocker
+  // CUT IN FRESH across its path: that segment must be near the blocker's HEAD
+  // (within [_interceptHeadSegs] of it — the leading edge it just drove) AND
+  // young (laid down within [_interceptFreshTicks] logical steps). An old tail
+  // the victim happened to run into is the victim's own misplay → no credit, no
+  // banner. This is what makes a cut-off feel like a read, and a lucky crash
+  // feel like nothing.
+  static const int _interceptHeadSegs = 4; // "leading edge" depth from the head
+  static const int _interceptFreshTicks = 5; // max age of the cut segment (steps)
+  // A turn's "fresh line" flash lasts this many logical steps so a one-tap turn
+  // lands with an instant, readable, felt payoff (the new heading lights up).
+  static const int _turnFlashTicks = 3;
+
   // ── Climax: SUDDEN DEATH (the arena closes in) ──────────────────────────────
   // In the final [_suddenDeathSec] the walls march inward one ring at a time
   // (every [_shrinkRingSec]), squeezing the snakes together so the round can
@@ -125,6 +139,10 @@ class SnakeArena extends MiniGameBase {
   static const int _botFloodCap = 24; // max cells counted by the safety flood
   static const double _botSpaceWeight = 1.6; // free-space vs food-distance weight
   static const double _botHeadOnPenalty = 40.0; // dodge cells a rival can enter
+  // CUT-OFF drive: a bot's intercept bonus is this base scaled by its
+  // [BotProfile.accuracy], so hard bots (≈0.93) actively cut rivals off while
+  // easy bots (≈0.55) barely set one up — the takedown skill reads in the AI.
+  static const double _botInterceptWeight = 8.0;
 
   // ── Layout tuning (pixels / fractions) ──────────────────────────────────────
   static const double _marginFactor = 0.04; // arena margin / min(w,h)
@@ -136,8 +154,12 @@ class SnakeArena extends MiniGameBase {
   static const int _nearMissSparks = 5;
   static const double _wallFlareDecay = 2.4; // per-second flare falloff
   static const double _nearMissCooldownSec = 0.18; // throttle near-miss sparks
-  static const double _hintFadeSec = 3.5; // turn-hint settle time at round start
-  static const double _hintIdleLevel = 0.82; // resting turn-hint brightness (stays clearly visible)
+  static const double _hintFadeSec = 3.5; // heading-readout settle time at start
+  static const double _hintIdleLevel = 0.82; // resting readout brightness (stays clearly visible)
+  // Length of the always-on PROJECTED PATH (cells ahead of the head). 3 sits in
+  // the readable 2–4 range: long enough to plan a cut-off, short enough not to
+  // clutter the grid or read as cheating.
+  static const int _projectCells = 3;
 
   // ── Death break-apart + winner celebration tuning (visual only) ─────────────
   static const double _deathBurstSpreadSec = 0.2; // stagger window head→tail
@@ -164,8 +186,13 @@ class SnakeArena extends MiniGameBase {
   // Death order, worst→best as snakes die (used to build the final ranking).
   final List<int> _deathOrder = [];
 
+  // Cut-offs (deliberate intercepts) credited per player id — read by tests to
+  // prove a genuine cut-off pays and an accidental/old-tail crash does NOT.
+  final Map<int, int> _takedowns = <int, int>{};
+
   double _elapsed = 0;
   double _stepAcc = 0;
+  int _stepTick = 0; // logical step counter (drives intercept freshness + flash)
   double _animClock = 0; // real-time clock for pulses (never time-scaled)
   double _wallFlare = 0; // 0..1 neon wall flare, decays over time
   double _nearMissCd = 0; // near-miss spark throttle (real-time)
@@ -197,10 +224,12 @@ class SnakeArena extends MiniGameBase {
         heading: heading,
         clock: p.isBot ? ReactionClock(ctx.botProfile, ctx.rng) : null,
       );
-      // Seed an initial body trailing behind the head.
+      // Seed an initial body trailing behind the head. Seed [bodyTick] in step
+      // so it stays head-aligned with [body] from frame one (all born at step 0).
       final back = kStep[heading]!;
       for (var s = 1; s < _startLength; s++) {
         snake.body.add(Cell(col - back.col * s, row - back.row * s));
+        snake.bodyTick.add(0);
       }
       _snakes.add(snake);
     }
@@ -317,12 +346,20 @@ class SnakeArena extends MiniGameBase {
 
   /// Turn a snake: RIGHT = clockwise (`+1`), LEFT = counter-clockwise (`+3`).
   /// Reversing straight back is impossible because a single ±90° turn can never
-  /// flip the heading 180°.
+  /// flip the heading 180°. A turn that actually CHANGES the heading records the
+  /// step + the line it left ([Snake.lastTurnTick]/[Snake.prevHeading]) so the
+  /// renderer can flash the new projected line — a one-tap turn with instant,
+  /// readable payoff. A no-op "turn" (delta picked equals current heading — only
+  /// possible via a degenerate call) records nothing.
   void _turn(int id, bool right) {
     for (final s in _snakes) {
       if (s.playerId == id && s.alive) {
         final delta = right ? 1 : 3;
-        s.heading = Heading.values[(s.heading.index + delta) % 4];
+        final next = Heading.values[(s.heading.index + delta) % 4];
+        if (next == s.heading) return;
+        s.prevHeading = s.heading;
+        s.heading = next;
+        s.lastTurnTick = _stepTick;
         return;
       }
     }
@@ -389,6 +426,9 @@ class SnakeArena extends MiniGameBase {
       floodCap: _botFloodCap,
       spaceWeight: _botSpaceWeight,
       headOnPenalty: _botHeadOnPenalty,
+      // Scale the cut-off drive by skill so hard bots intercept and easy bots
+      // mostly wander/self-crash — the deliberate-takedown read lives in the AI.
+      interceptWeight: _botInterceptWeight * ctx.botProfile.accuracy,
     );
     for (final s in _snakes) {
       if (!s.alive || s.clock == null) continue;
@@ -437,32 +477,45 @@ class SnakeArena extends MiniGameBase {
     return false;
   }
 
-  /// The living snake (other than [exclude]) whose body occupies [c], or null if
-  /// none — used to attribute a takedown to the snake that blocked a rival. The
-  /// mover's own about-to-vacate tail is ignored so a self-trim is not a body.
-  Snake? _bodyOwnerAt(Cell c, {required Snake exclude}) {
+  /// The living snake (other than [victim]) that DELIBERATELY INTERCEPTED the
+  /// victim at [c] — i.e. the victim's next head cell lands on a segment that the
+  /// blocker just CUT IN FRESH across the victim's path. "Fresh cut" =
+  ///   * near the blocker's HEAD (segment index ≤ [_interceptHeadSegs]) — the
+  ///     leading edge it is actively driving, not its trailing tail; AND
+  ///   * young (laid down within [_interceptFreshTicks] logical steps) — it just
+  ///     swung that line in, it was not sitting there.
+  /// Returns null for a crash into an OLD body / deep tail (the victim's own
+  /// misplay) so only an earned cut-off pays a takedown. A blocker that is itself
+  /// dying this step is skipped (a mutual crash credits no one).
+  Snake? _interceptorAt(Cell c, {required Snake victim, required Set<Snake> dying}) {
     for (final s in _snakes) {
-      if (!s.alive || identical(s, exclude)) continue;
+      if (!s.alive || identical(s, victim) || dying.contains(s)) continue;
       for (var i = 0; i < s.body.length; i++) {
-        if (s.body[i] == c) return s;
+        if (s.body[i] != c) continue;
+        final freshlyCut = i <= _interceptHeadSegs &&
+            (_stepTick - s.bodyTick[i]) <= _interceptFreshTicks;
+        return freshlyCut ? s : null; // hit found; pay only if it was a real cut
       }
     }
     return null;
   }
 
-  /// Credit [blocker] a takedown: bump its score + growth, then fire the
-  /// signature cinematic beat at [crashCell] — where the rival ran into the
-  /// blocker's body. One `bigMoment` per crash (burst + shake + slow-mo + zoom +
-  /// flash + "TAKEDOWN!" banner + haptic) so forcing a rival crash reads as a
-  /// deliberate, celebrated win.
+  /// Credit [blocker] a takedown for a DELIBERATE CUT-OFF: it slid a fresh body
+  /// segment across the victim's path and the victim drove into it. Bump score +
+  /// growth, then fire the signature cinematic beat at [crashCell] — where the
+  /// rival hit the cut line. One `bigMoment` per crash (burst + shake + slow-mo +
+  /// zoom + flash + "CUT OFF!" banner + haptic) so a read-ahead intercept reads
+  /// as a celebrated, skilful win (and never fires for a lucky/accidental crash,
+  /// which the intercept gate already rules out).
   void _awardTakedown(Snake blocker, Cell crashCell) {
     blocker.score += _takedownScore;
-    // Bonus growth feeds the length-based ranking too, so a takedown is a real
+    _takedowns[blocker.playerId] = (_takedowns[blocker.playerId] ?? 0) + 1;
+    // Bonus growth feeds the length-based ranking too, so a cut-off is a real
     // edge (longer snake) rather than a cosmetic counter.
     blocker.pendingGrowth += _takedownGrow;
     setScore(blocker.playerId, blocker.score);
     final at = _cellCenter(crashCell, _lastSize);
-    _juice.bigMoment(at, blocker.color, banner: 'TAKEDOWN!',
+    _juice.bigMoment(at, blocker.color, banner: 'CUT OFF!',
         sparks: _takedownSparks);
   }
 
@@ -474,16 +527,18 @@ class SnakeArena extends MiniGameBase {
   void _advanceAll() {
     final living = _snakes.where((s) => s.alive).toList();
     if (living.isEmpty) return;
+    _stepTick += 1; // one logical step elapsed (drives intercept freshness)
 
     final nextHeads = <Snake, Cell>{
       for (final s in living) s: s.head.plus(kStep[s.heading]!),
     };
 
-    // Phase 1: flag deaths (wall, body, head-on swap, shared target cell). When
-    // the death is a clean block — running into ANOTHER snake's body — remember
-    // who owns that body so it can be credited a takedown (interaction reward).
+    // Phase 1: flag deaths (wall, body, head-on swap, shared target cell). A
+    // body crash records the victim → crash cell so the INTERCEPT gate can later
+    // (once the full dying set is known) decide whether it was a deliberate
+    // cut-off worth a takedown, or just the victim's own bad driving (no credit).
     final dying = <Snake>{};
-    final killer = <Snake, Snake>{}; // victim → the rival whose body blocked it
+    final bodyCrash = <Snake, Cell>{}; // victim → the cell it crashed a body into
     for (final s in living) {
       final nh = nextHeads[s]!;
       if (_hitsWall(nh)) {
@@ -492,8 +547,7 @@ class SnakeArena extends MiniGameBase {
       }
       if (_hitsAnyBody(nh, ignoreTailOf: s)) {
         dying.add(s);
-        final blocker = _bodyOwnerAt(nh, exclude: s);
-        if (blocker != null) killer[s] = blocker; // crashed into a rival
+        bodyCrash[s] = nh; // resolve the interceptor after Phase 1
         continue;
       }
       for (final o in living) {
@@ -507,11 +561,26 @@ class SnakeArena extends MiniGameBase {
       }
     }
 
+    // Phase 1b: resolve deliberate INTERCEPTS now that the full dying set is
+    // known — a takedown is credited ONLY where the victim ran into a segment
+    // the blocker freshly CUT across its path (near-head + young), and the
+    // blocker is not itself dying this step (mutual crashes pay no one).
+    final killer = <Snake, Snake>{}; // victim → the rival that intercepted it
+    for (final entry in bodyCrash.entries) {
+      final blocker =
+          _interceptorAt(entry.value, victim: entry.key, dying: dying);
+      if (blocker != null) killer[entry.key] = blocker;
+    }
+
     // Phase 2: move survivors (advance head; eat grows, otherwise trim tail).
+    // [bodyTick] is kept head-aligned with [body] so the just-laid head cell is
+    // stamped with the current step — that birth-step is what the intercept gate
+    // reads to tell a FRESH cut from a stale tail.
     for (final s in living) {
       if (dying.contains(s)) continue;
       final nh = nextHeads[s]!;
       s.body.insert(0, nh);
+      s.bodyTick.insert(0, _stepTick);
       final ate = _food.remove(nh);
       if (ate) {
         final wasGolden = _golden.remove(nh);
@@ -525,6 +594,7 @@ class SnakeArena extends MiniGameBase {
         s.pendingGrowth -= 1;
       } else {
         s.body.removeLast();
+        s.bodyTick.removeLast();
       }
     }
 
@@ -835,10 +905,10 @@ class SnakeArena extends MiniGameBase {
       _drawSnake(canvas, s, size);
     }
 
-    // The "tap left / tap right to steer" hint, on top of the snakes so it
-    // always reads.
+    // The heading readout (arrow + projected path) on top of the snakes so the
+    // line each one is committed to always reads — a turn is a visible choice.
     for (final s in _snakes.where((s) => s.alive)) {
-      _drawTurnHint(canvas, s, size);
+      _drawHeadingProjection(canvas, s, size);
     }
 
     _juice.render(canvas);
@@ -871,31 +941,65 @@ class SnakeArena extends MiniGameBase {
     );
   }
 
-  /// Draw the "tap left = turn left, tap right = turn right" affordance over
-  /// [s]'s head: a left-pointing and a right-pointing arrow flanking the head,
-  /// each showing where that tap would send the snake. Humans (no bot clock) get
-  /// a bold hint that fades from full to a calm idle level over [_hintFadeSec] so
-  /// the rule lands at the start without nagging forever; bots show a faint
-  /// version so every snake visibly obeys the same rule.
-  void _drawTurnHint(Canvas canvas, Snake s, Size size) {
+  /// Draw the heading READOUT over [s]'s head: a clear forward arrow + a short
+  /// collision-aware PROJECTED PATH (the next [_projectCells] cells the head will
+  /// occupy if it holds course, stopping short at the first wall/body) so a turn
+  /// is a visible LINE CHOICE, not a blind reflex. Plus faint left/right
+  /// next-turn landing dots so the one-tap steer stays discoverable. A just-
+  /// committed turn lights the new line up ([_turnFlash]) — instant felt payoff.
+  /// Humans get a bold readout fading to a calm idle level; bots a faint one so
+  /// every snake visibly obeys the same rule.
+  void _drawHeadingProjection(Canvas canvas, Snake s, Size size) {
     final isHuman = s.clock == null;
     final fadeIn = (1.0 - _elapsed / _hintFadeSec).clamp(0.0, 1.0);
     final emphasis = isHuman
         ? _hintIdleLevel + (1.0 - _hintIdleLevel) * fadeIn
         : _hintIdleLevel * 0.5;
+
+    final pathCells = _projectedPath(s);
+    final pathPixels = [for (final c in pathCells) _cellCenter(c, size)];
     final leftHeading = Heading.values[(s.heading.index + 3) % 4];
     final rightHeading = Heading.values[(s.heading.index + 1) % 4];
-    SnakeRenderer.drawTurnHint(
+
+    SnakeRenderer.drawHeadingPath(
       canvas,
       _cellCenter(s.head, size),
       _headingPixelDir(s.heading),
+      pathPixels,
       _headingPixelDir(leftHeading),
       _headingPixelDir(rightHeading),
       _cell(),
       s.color,
       pulse: _gridPulse(),
       emphasis: emphasis,
+      turnFlash: _turnFlash(s),
     );
+  }
+
+  /// The next cells [s]'s head will occupy if it KEEPS its heading, up to
+  /// [_projectCells], stopping BEFORE the first cell that is a wall or a body
+  /// (its own about-to-move tail ignored, like the sim) — so the drawn path
+  /// visibly "runs short" into a hazard and reading ahead is rewarded. Empty if
+  /// the very next cell is already blocked (the snake is about to die there).
+  List<Cell> _projectedPath(Snake s) {
+    final cells = <Cell>[];
+    var c = s.head;
+    for (var i = 0; i < _projectCells; i++) {
+      c = c.plus(kStep[s.heading]!);
+      if (_hitsWall(c) || _hitsAnyBody(c, ignoreTailOf: s)) break;
+      cells.add(c);
+    }
+    return cells;
+  }
+
+  /// How freshly [s] just turned, 0..1 (1 right after a committed turn, decaying
+  /// to 0 over [_turnFlashTicks] logical steps) — drives the "new line lights up"
+  /// payoff so a one-tap turn is instantly felt. 0 if it has not turned yet.
+  double _turnFlash(Snake s) {
+    if (s.lastTurnTick < 0) return 0;
+    final age = _stepTick - s.lastTurnTick;
+    if (age < 0 || age > _turnFlashTicks) return 0;
+    return 1.0 - age / (_turnFlashTicks + 1);
   }
 
   void _drawHud(Canvas canvas, Size size, Rect field) {
@@ -999,8 +1103,10 @@ class SnakeArena extends MiniGameBase {
     for (final s in _snakes) {
       if (s.playerId != id) continue;
       final tail = s.body.last;
+      final tailTick = s.bodyTick.last;
       for (var i = 0; i < n; i++) {
         s.body.add(tail); // duplicate-tail padding; length is all the bias reads
+        s.bodyTick.add(tailTick); // keep bodyTick head-aligned with body
       }
       return;
     }
@@ -1014,6 +1120,66 @@ class SnakeArena extends MiniGameBase {
     _golden.clear();
     _spawnOneFood();
   }
+
+  /// How many deliberate CUT-OFFS (intercept takedowns) have been credited to
+  /// [id] — lets a test prove a genuine cut pays and an accidental crash pays 0.
+  @visibleForTesting
+  int takedownsOf(int id) => _takedowns[id] ?? 0;
+
+  /// Whether [id]'s snake is still alive (read-only) — for staged-crash tests.
+  @visibleForTesting
+  bool aliveOf(int id) {
+    for (final s in _snakes) {
+      if (s.playerId == id) return s.alive;
+    }
+    return false;
+  }
+
+  /// Body of [id]'s snake as a head-first list of (col,row) pairs (a copy) — for
+  /// asserting exact positions in staged scenarios.
+  @visibleForTesting
+  List<List<int>> bodyCellsOf(int id) {
+    for (final s in _snakes) {
+      if (s.playerId == id) {
+        return [for (final c in s.body) [c.col, c.row]];
+      }
+    }
+    return const [];
+  }
+
+  /// Stage an EXACT two-snake scenario for the deliberate-cut-off proof: rebuild
+  /// snake [id]'s body from [cells] (head-first (col,row) pairs) and point it
+  /// [headingIndex] (0=up,1=right,2=down,3=left — [Heading.values] order). All
+  /// segments are stamped as just-laid ([_stepTick]) unless [freshHead] is false,
+  /// in which case the body is stamped OLD (well past the freshness window) so a
+  /// crash into it reads as the victim's own misplay, not an intercept. Clears
+  /// pellets so eating cannot perturb the staged step. Heading is taken as an int
+  /// so tests need not import the internal [Heading] type.
+  @visibleForTesting
+  void stageSnakeForTest(int id, List<List<int>> cells, int headingIndex,
+      {bool freshHead = true}) {
+    for (final s in _snakes) {
+      if (s.playerId != id) continue;
+      s.body
+        ..clear()
+        ..addAll([for (final c in cells) Cell(c[0], c[1])]);
+      final stamp = freshHead ? _stepTick : (_stepTick - _interceptFreshTicks - 10);
+      s.bodyTick
+        ..clear()
+        ..addAll([for (var i = 0; i < s.body.length; i++) stamp]);
+      s.heading = Heading.values[headingIndex % 4];
+      s.alive = true;
+      s.pendingGrowth = 0;
+      _food.clear();
+      _golden.clear();
+      return;
+    }
+  }
+
+  /// Run exactly ONE logical step (head advance + death/eat/takedown resolution),
+  /// so a staged scenario resolves deterministically without timing/seed noise.
+  @visibleForTesting
+  void stepOnceForTest() => _advanceAll();
 }
 
 /// A death spark scheduled to fire after [delay] seconds at [at]. Used to stagger

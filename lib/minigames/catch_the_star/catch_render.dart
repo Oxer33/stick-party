@@ -69,6 +69,12 @@ class CatchRenderer {
   static const double _cometLenFactor = 3.4; // trail length / star radius
   static const int _emberCount = 5; // crackling embers around a bomb fuse
 
+  // Trajectory-hint tuning (the legible "where it will cross" read).
+  static const int _hintDashes = 9; // dashes along an item's predicted path
+  static const double _hintMarkerR = 0.018; // intercept marker radius / minSide
+  static const double _starHintAlpha = 0.28; // base alpha for a star hint
+  static const double _bombHintAlpha = 0.42; // bombs hint a touch louder (warn)
+
   // Basket tuning, in fractions of the basket half-mouth `mouth`.
   static const double _basketDepthFactor = 0.9; // basket depth / half-mouth
   static const double _basketGlowFactor = 1.35; // soft glow / half-mouth
@@ -337,8 +343,10 @@ class CatchRenderer {
   /// A falling item: a warm STAR, a brighter GOLD star (with a sparkle crown), or
   /// a clearly-distinct BOMB (dark shell, red danger rim + a lit fuse). [center]
   /// is the pixel position, [r] the outer radius; [spin] rotates it for life; [t]
-  /// drives the bomb fuse twinkle. Distinct silhouettes + colors telegraph which
-  /// is which from across the lane.
+  /// drives the bomb fuse twinkle. [velDir] is the unit travel direction (pixel
+  /// space) so the comet wake streams opposite the ANGLED path — defaults to
+  /// straight-down so a legacy vertical drop still trails upward. Distinct
+  /// silhouettes + colors telegraph which is which from across the lane.
   static void drawItem(
     Canvas canvas,
     Offset center,
@@ -347,13 +355,92 @@ class CatchRenderer {
     bool gold = false,
     double spin = 0,
     double t = 0,
+    Offset velDir = const Offset(0, 1),
   }) {
     if (r <= 0) return;
     if (isBomb) {
-      _drawBomb(canvas, center, r, t);
+      _drawBomb(canvas, center, r, t, velDir);
     } else {
-      _drawStar(canvas, center, r, gold: gold, rot: spin, t: t);
+      _drawStar(canvas, center, r, gold: gold, rot: spin, t: t, velDir: velDir);
     }
+  }
+
+  /// Normalize a travel direction; fall back to straight-down if degenerate.
+  static Offset _safeDir(Offset v) {
+    final len = math.sqrt(v.dx * v.dx + v.dy * v.dy);
+    if (len <= 0 || !len.isFinite) return const Offset(0, 1);
+    return Offset(v.dx / len, v.dy / len);
+  }
+
+  /// The legible READ: a faint dashed line from a falling item [from] down to its
+  /// predicted intercept [to] on the catch line, capped by a small pulsing
+  /// marker. Bombs hint a touch louder/redder so a converging crossing is obvious
+  /// — you thread a telegraphed path, you do not guess. [minSide] sizes the
+  /// marker; [t] pulses it. Additive, side-effect free, never throws.
+  static void drawTrajectoryHint(
+    Canvas canvas,
+    Offset from,
+    Offset to, {
+    bool isBomb = false,
+    bool gold = false,
+    double t = 0,
+    double minSide = 0,
+  }) {
+    final dx = to.dx - from.dx, dy = to.dy - from.dy;
+    final dist = math.sqrt(dx * dx + dy * dy);
+    if (dist < 1) return;
+    final base = isBomb ? _bombEdge : (gold ? _bonusGlow : _starGlow);
+    final alpha = isBomb ? _bombHintAlpha : _starHintAlpha;
+    // Fade the hint IN as the item nears the line (a far item hints faintly, a
+    // committing one hints clearly) — read pressure rises with proximity.
+    final dir = Offset(dx / dist, dy / dist);
+    final dash = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.0, dist * 0.012)
+      ..color = base.withValues(alpha: alpha);
+    // Dashes that drift downward along the path so it reads as flowing toward the
+    // line (the drift is deterministic off the sim clock).
+    final flow = (t * 0.6) % 1.0;
+    for (var i = 0; i < _hintDashes; i++) {
+      final a = ((i + flow) / _hintDashes).clamp(0.0, 1.0);
+      final b = (a + 0.5 / _hintDashes).clamp(0.0, 1.0);
+      // Brighter near the intercept end so the eye is led to the catch point.
+      dash.color = base.withValues(alpha: (alpha * (0.4 + 0.6 * a)).clamp(0.0, 1.0));
+      canvas.drawLine(
+        Offset(from.dx + dir.dx * dist * a, from.dy + dir.dy * dist * a),
+        Offset(from.dx + dir.dx * dist * b, from.dy + dir.dy * dist * b),
+        dash,
+      );
+    }
+    // Pulsing intercept marker on the catch line — a soft halo + a crisp ring.
+    final pulse = 0.5 + 0.5 * math.sin(t * 5.0 + (isBomb ? math.pi : 0));
+    final mr = math.max(3.0, minSide * _hintMarkerR) * (0.85 + 0.3 * pulse);
+    canvas.drawCircle(
+      to,
+      mr * 2.0,
+      Paint()
+        ..shader = Gradient.radial(
+          to,
+          mr * 2.0,
+          [base.withValues(alpha: (alpha * 0.9).clamp(0.0, 1.0)),
+            const Color(0x00000000)],
+        ),
+    );
+    canvas.drawCircle(
+      to,
+      mr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, mr * 0.28)
+        ..color = base.withValues(alpha: (0.5 + 0.4 * pulse).clamp(0.0, 1.0)),
+    );
+    // A tiny crosshair tick at the marker so the exact crossing x is unambiguous.
+    final tick = math.max(2.0, mr * 0.8);
+    final tickPaint = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.0, mr * 0.22)
+      ..color = base.withValues(alpha: (0.55 + 0.3 * pulse).clamp(0.0, 1.0));
+    canvas.drawLine(to.translate(-tick, 0), to.translate(tick, 0), tickPaint);
   }
 
   static void _drawStar(
@@ -363,25 +450,28 @@ class CatchRenderer {
     bool gold = false,
     double rot = 0,
     double t = 0,
+    Offset velDir = const Offset(0, 1),
   }) {
     final pulse = 0.5 + 0.5 * math.sin(t * 5.0);
     final body = gold ? _bonusGold : _starGold;
     final glow = gold ? _bonusGlow : _starGlow;
 
-    // Comet trail: stacked translucent puffs streaming UP behind the fall, each
-    // smaller + fainter than the last so the star reads as a streaking meteor.
-    // Stars always fall downward, so the wake is straight above the body.
+    // Comet trail: stacked translucent puffs streaming behind the travel
+    // direction, each smaller + fainter than the last so the star reads as a
+    // streaking meteor whose wake reveals its ANGLED path.
+    final wake = -_safeDir(velDir); // opposite the direction of motion
     final trailPaint = Paint();
     for (var i = _cometSegments; i >= 1; i--) {
       final f = i / _cometSegments; // 1 at tail .. 1/n near body
-      final up = r * _cometLenFactor * f * (gold ? 1.2 : 1.0);
+      final back = r * _cometLenFactor * f * (gold ? 1.2 : 1.0);
       final segR = r * (0.85 - 0.5 * f);
       // Tail breathes slightly out of phase so it flickers like burning gas.
       final flick = 0.8 + 0.2 * math.sin(t * 6.0 - i * 0.9);
       trailPaint.color = glow.withValues(
         alpha: ((1.05 - f) * 0.24 * flick * (gold ? 1.3 : 1.0)).clamp(0.0, 1.0),
       );
-      canvas.drawCircle(center.translate(0, -up), segR.clamp(0.5, r), trailPaint);
+      canvas.drawCircle(center.translate(wake.dx * back, wake.dy * back),
+          segR.clamp(0.5, r), trailPaint);
     }
 
     // Soft halo (breathes; gold blooms larger).
@@ -470,10 +560,26 @@ class CatchRenderer {
         Paint()..color = _white.withValues(alpha: 0.9));
   }
 
-  static void _drawBomb(Canvas canvas, Offset center, double r, double t) {
+  static void _drawBomb(
+      Canvas canvas, Offset center, double r, double t, Offset velDir) {
     // Pulsing red danger halo so a bomb screams "DON'T CATCH" from a distance.
     final pulse = 0.5 + 0.5 * math.sin(t * 7.0);
     final haloR = r * _bombHaloFactor * (0.9 + 0.15 * pulse);
+
+    // Faint red motion-streak behind the bomb along its travel line so its
+    // ANGLED approach reads (stacked fading puffs, opposite the direction).
+    final wake = -_safeDir(velDir);
+    final streak = Paint();
+    for (var i = _cometSegments; i >= 1; i--) {
+      final f = i / _cometSegments;
+      final back = r * (_cometLenFactor * 0.7) * f;
+      final segR = r * (0.7 - 0.42 * f);
+      streak.color = _bombEdge
+          .withValues(alpha: ((1.0 - f) * 0.16).clamp(0.0, 1.0));
+      canvas.drawCircle(center.translate(wake.dx * back, wake.dy * back),
+          segR.clamp(0.5, r), streak);
+    }
+
     canvas.drawCircle(
       center,
       haloR,

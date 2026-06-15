@@ -30,6 +30,11 @@ class FallingRenderer {
   static const Color _scrollTex = Color(0x0EFFFFFF);
   static const Color _scrollTexFar = Color(0x07FFFFFF); // distant parallax layer
   static const Color _telegraph = Color(0xFFFF5A4D);
+  // Late-dodge window: AMBER while warming (get ready) → hot RED in the scoring
+  // late window (dodge NOW). The split color is the whole readability of the
+  // mechanic, so the two states never blur into one.
+  static const Color _telegraphWarm = Color(0xFFFFA02A); // warm: building danger
+  static const Color _telegraphHot = Color(0xFFFF3A2A); // hot: the scoring window
   static const Color _nearMissTint = Color(0x3325E0FF);
 
   // Hazard body colors.
@@ -321,12 +326,19 @@ class FallingRenderer {
 
   // ── Telegraph: ground marker in a hazard's target lane ────────────────────
 
-  /// A pulsing ground marker under a hazard's target lane so the player can
-  /// react before it lands. [progress] in 0..1 is how close the hazard is to
-  /// the runner line (1 = about to hit) and drives the marker's intensity.
-  /// [phase] (seconds) drives a breathing glow halo behind the marker so an
-  /// incoming hazard reads from across the band — drawn FIRST + centered on the
-  /// same point so it never obscures the marker, ring, carets, or tap-split.
+  /// The VISIBLE late-dodge window: a ground marker under a hazard's target lane
+  /// that telegraphs WHEN to dodge, not just where. It has two readable states:
+  ///
+  ///  * WARM ([hotFrac] == 0): an AMBER ring that CONTRACTS from wide toward a
+  ///    tight core as [warmFrac] (0→1) grows — "danger building, get ready". A
+  ///    hop now is safe but scores nothing.
+  ///  * HOT ([hotFrac] > 0): the ring SNAPS to RED, locks tight, throbs faster,
+  ///    and a closing bracket cinches in as [hotFrac] (0→1) climbs to impact —
+  ///    the unmistakable "NOW". Stepping off a HOT lane is the ONLY scoring dodge.
+  ///
+  /// [progress] (overall closeness, 1 = about to hit) still drives the down-caret
+  /// stack. [phase] (seconds) breathes the glow. All additive, no blur, pure
+  /// Canvas — safe to call from render and never throws.
   static void drawTelegraph(
     Canvas canvas,
     double laneX,
@@ -334,17 +346,32 @@ class FallingRenderer {
     double hazardSize,
     double progress, {
     double phase = 0.0,
+    double warmFrac = 0.0,
+    double hotFrac = 0.0,
   }) {
     final p = progress.clamp(0.0, 1.0);
     if (p <= 0.02) return;
-    final w = hazardSize * (1.0 + 0.4 * p);
-    final h = hazardSize * _telegraphMaxH;
+    final warm = warmFrac.clamp(0.0, 1.0);
+    final hot = hotFrac.clamp(0.0, 1.0);
+    final isHot = hot > 0.0;
 
-    // Pulsing glow halo (behind everything): a wide, breathing oval that swells
-    // with both [phase] and proximity. Faint so it widens the read without
-    // washing out the crisp marker on top.
-    final pulse = 0.5 + 0.5 * math.sin(phase * 5.0);
-    final haloScale = 1.7 + 0.5 * pulse + 0.5 * p;
+    // Color flips amber → red the instant the window goes hot; intensity ramps
+    // with how late we are inside it.
+    final color = isHot ? _telegraphHot : _telegraphWarm;
+
+    // The marker CONTRACTS as the hazard nears: wide while early-warm, cinching
+    // to a tight locked ring through the hot window. (reach: 1.5 → ~0.5.)
+    final reach =
+        isHot ? (0.78 - 0.30 * hot) : (1.5 - 0.72 * warm).clamp(0.78, 1.5);
+    final w = hazardSize * reach;
+    final h = hazardSize * _telegraphMaxH * (isHot ? 0.92 : 1.0);
+
+    // Faster throb + stronger core once hot, so it reads as "armed".
+    final pulse = 0.5 + 0.5 * math.sin(phase * (isHot ? 9.0 : 5.0));
+    final intensity = isHot ? (0.55 + 0.45 * hot) : (0.18 + 0.30 * warm);
+
+    // Pulsing glow halo (behind everything).
+    final haloScale = (isHot ? 1.5 : 1.9) + 0.5 * pulse;
     canvas.drawOval(
       Rect.fromCenter(
         center: Offset(laneX, groundY),
@@ -352,40 +379,54 @@ class FallingRenderer {
         height: h * (haloScale * 0.92),
       ),
       Paint()
-        ..color = _telegraph.withValues(
-            alpha: (0.04 + 0.10 * p) * (0.55 + 0.45 * pulse)),
+        ..color = color.withValues(
+            alpha: (0.05 + 0.16 * intensity) * (0.55 + 0.45 * pulse)),
     );
 
-    // Soft halo: two stacked translucent ovals (wide+faint under tight+stronger)
-    // approximate the blur cheaply per hazard.
+    // Soft halo: two stacked translucent ovals fake the blur cheaply.
     canvas.drawOval(
       Rect.fromCenter(
           center: Offset(laneX, groundY), width: w * 1.3, height: h * 1.5),
-      Paint()..color = _telegraph.withValues(alpha: 0.06 + 0.16 * p),
+      Paint()..color = color.withValues(alpha: 0.06 + 0.22 * intensity),
     );
     canvas.drawOval(
       Rect.fromCenter(center: Offset(laneX, groundY), width: w, height: h),
-      Paint()..color = _telegraph.withValues(alpha: 0.10 + 0.24 * p),
+      Paint()..color = color.withValues(alpha: 0.10 + 0.30 * intensity),
     );
 
-    // Crisp ring.
+    // Crisp ring (thickens + brightens when hot).
     final ring = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(1.5, hazardSize * 0.05)
-      ..color = _telegraph.withValues(alpha: 0.45 + 0.5 * p);
+      ..strokeWidth = math.max(1.5, hazardSize * (isHot ? 0.075 : 0.05))
+      ..color = color.withValues(alpha: 0.40 + 0.55 * intensity);
     canvas.drawOval(
       Rect.fromCenter(
           center: Offset(laneX, groundY), width: w * 0.78, height: h * 0.78),
       ring,
     );
 
+    // HOT-only: a hard bright inner core + a closing "lock bracket" that cinches
+    // toward the center as impact nears — the felt "it's locked on, dodge NOW".
+    if (isHot) {
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(laneX, groundY),
+            width: w * 0.34,
+            height: h * 0.34),
+        Paint()
+          ..color = _white.withValues(
+              alpha: (0.30 + 0.5 * hot) * (0.6 + 0.4 * pulse)),
+      );
+      _drawHotBracket(canvas, laneX, groundY, hazardSize, hot, color);
+    }
+
     // Down-pointing caret stack: more carets as the hazard nears.
     final carets = 1 + (p * 2).round();
     final caret = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(1.4, hazardSize * 0.045)
+      ..strokeWidth = math.max(1.4, hazardSize * (isHot ? 0.06 : 0.045))
       ..strokeCap = StrokeCap.round
-      ..color = _telegraph.withValues(alpha: 0.5 + 0.4 * p);
+      ..color = color.withValues(alpha: 0.5 + 0.45 * intensity);
     final cw = hazardSize * 0.22;
     for (var i = 0; i < carets; i++) {
       final cy = groundY - h * 0.9 - i * cw * 0.85;
@@ -394,6 +435,33 @@ class FallingRenderer {
         ..lineTo(laneX, cy + cw * 0.35)
         ..lineTo(laneX + cw * 0.5, cy - cw * 0.35);
       canvas.drawPath(path, caret);
+    }
+  }
+
+  /// A pair of opposing corner ticks that cinch INWARD toward the lane center as
+  /// [hot] (0→1) climbs — a targeting-lock "brackets closing" read on the HOT
+  /// window. Pure additive strokes; deterministic off [hot].
+  static void _drawHotBracket(Canvas canvas, double laneX, double groundY,
+      double hazardSize, double hot, Color color) {
+    // Bracket span shrinks from wide to tight as the hazard locks on.
+    final span = hazardSize * (0.62 - 0.30 * hot);
+    final arm = hazardSize * 0.16;
+    final yh = hazardSize * _telegraphMaxH * 0.5;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.6, hazardSize * 0.05)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = color.withValues(alpha: 0.55 + 0.4 * hot);
+    // Left + right vertical ticks bracketing the lane, just above the line.
+    for (final s in const [-1.0, 1.0]) {
+      final x = laneX + s * span;
+      canvas.drawLine(Offset(x, groundY - yh), Offset(x, groundY + yh), paint);
+      // Small inward foot so it reads as a corner bracket, not a plain bar.
+      canvas.drawLine(
+          Offset(x, groundY + yh), Offset(x - s * arm, groundY + yh), paint);
+      canvas.drawLine(
+          Offset(x, groundY - yh), Offset(x - s * arm, groundY - yh), paint);
     }
   }
 
@@ -809,34 +877,56 @@ class FallingRenderer {
     double figureScale,
     int chain,
     int maxPips,
-    double pulse,
-  ) {
+    double pulse, {
+    double flash = 0.0,
+  }) {
     if (chain < 1) return;
     final shown = chain < maxPips ? chain : maxPips;
-    final heat = (maxPips <= 1 ? 0.0 : (shown - 1) / (maxPips - 1)).clamp(0.0, 1.0);
+    final heat =
+        (maxPips <= 1 ? 0.0 : (shown - 1) / (maxPips - 1)).clamp(0.0, 1.0);
     final color = _blend(_chainCool, _chainHot, heat);
     final p = pulse.clamp(0.0, 1.0);
+    final f = flash.clamp(0.0, 1.0); // one-shot flare on the freshest link
 
-    final r = math.max(2.0, 3.0 * figureScale) * (1.0 + 0.12 * p);
+    // The flare scales the whole badge up briefly so a NEW link visibly pops.
+    final r = math.max(2.0, 3.0 * figureScale) * (1.0 + 0.12 * p + 0.5 * f);
     final gap = r * 2.6;
     final totalW = (shown - 1) * gap;
     final y = above.dy;
     final startX = above.dx - totalW / 2;
+
+    // Expanding burst ring on a fresh graze — a felt "level up" pop behind the
+    // pips (fades as [flash] decays).
+    if (f > 0.02) {
+      canvas.drawCircle(
+        Offset(above.dx, y),
+        r * (3.0 + 5.0 * (1.0 - f)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, r * 0.5 * f)
+          ..color = color.withValues(alpha: 0.5 * f),
+      );
+    }
+
     for (var i = 0; i < shown; i++) {
       final c = Offset(startX + i * gap, y);
+      // The freshest pip glows hottest on a flare.
+      final isNewest = i == shown - 1;
+      final glowA = 0.18 + (isNewest ? 0.5 * f : 0.0);
       canvas.drawCircle(
-          c, r * 1.7, Paint()..color = color.withValues(alpha: 0.18));
+          c, r * (1.7 + 0.6 * (isNewest ? f : 0.0)),
+          Paint()..color = color.withValues(alpha: glowA));
       canvas.drawCircle(c, r, Paint()..color = color);
       canvas.drawCircle(
         c.translate(-r * 0.28, -r * 0.28),
         r * 0.4,
-        Paint()..color = _white.withValues(alpha: 0.6),
+        Paint()..color = _white.withValues(alpha: 0.6 + 0.4 * (isNewest ? f : 0.0)),
       );
     }
     // "xN" label once the streak is genuinely stacking.
     if (chain >= 2) {
-      _drawChainLabel(canvas, Offset(above.dx, y - r * 3.4), 'x$chain',
-          color, math.max(11.0, 9.0 * figureScale) * (1.0 + 0.08 * p));
+      _drawChainLabel(canvas, Offset(above.dx, y - r * 3.4), 'x$chain', color,
+          math.max(11.0, 9.0 * figureScale) * (1.0 + 0.08 * p + 0.25 * f));
     }
   }
 
