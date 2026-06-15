@@ -209,14 +209,14 @@ class CatchRenderer {
     // Glowing catch line across the lane — the telegraph of WHERE catches happen.
     final lineGlow = Paint()
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = math.max(2.0, zone.width * 0.02)
-      ..color = color.withValues(alpha: 0.16);
+      ..strokeWidth = math.max(2.0, zone.width * 0.025)
+      ..color = color.withValues(alpha: 0.30); // brighter: the action zone reads at a glance
     canvas.drawLine(
         Offset(zone.left, catchLineY), Offset(zone.right, catchLineY), lineGlow);
     final lineCore = Paint()
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = math.max(1.0, zone.width * 0.008)
-      ..color = color.withValues(alpha: 0.5);
+      ..strokeWidth = math.max(1.0, zone.width * 0.01)
+      ..color = color.withValues(alpha: 0.8);
     canvas.drawLine(
         Offset(zone.left, catchLineY), Offset(zone.right, catchLineY), lineCore);
 
