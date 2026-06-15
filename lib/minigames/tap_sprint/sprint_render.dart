@@ -475,8 +475,9 @@ class SprintRenderer {
     if (live) _drawJumpCue(canvas, Offset(base.dx, top - h * 0.55), halfW, warnPulse);
   }
 
-  /// The "JUMP!" telegraph above a live hurdle: a pulsing up-chevron + a small
-  /// tag, so the cue to vault is unmistakable.
+  /// The "HOLD!" telegraph above a live hurdle: a pulsing up-chevron + a tag.
+  /// It says HOLD (not JUMP) because a vault only fires from a HELD press — a
+  /// quick tap just strides and trips the bar — so the action is unmistakable.
   static void _drawJumpCue(
       Canvas canvas, Offset at, double scale, double pulse) {
     final p = pulse.clamp(0.0, 1.0);
@@ -489,11 +490,11 @@ class SprintRenderer {
       ..strokeJoin = StrokeJoin.round
       ..color = _hurdleWarn.withValues(alpha: 0.7 + 0.3 * p);
     final s = scale * 0.7;
-    // Up-chevron (jump arrow).
+    // Up-chevron (vault arrow).
     canvas.drawLine(c.translate(-s, s * 0.6), c.translate(0, -s * 0.2), paint);
     canvas.drawLine(c.translate(0, -s * 0.2), c.translate(s, s * 0.6), paint);
-    // A compact "JUMP" tag above the chevron.
-    _drawText(canvas, 'JUMP!', c.translate(0, -s * 1.1), scale * 0.7, _hurdleWarn,
+    // A compact "HOLD!" tag above the chevron — the vault is a HELD press.
+    _drawText(canvas, 'HOLD!', c.translate(0, -s * 1.1), scale * 0.7, _hurdleWarn,
         weight: FontWeight.w900, maxWidth: scale * 6);
   }
 

@@ -94,13 +94,12 @@ class BumperBalls extends MiniGameBase {
   // side) from the ball before it counts as a deliberate aim; a smaller wiggle
   // is treated as a no-drag tap (→ aim at nearest, a kid-safe default).
   static const double _aimDragDeadzone = 0.018;
-  // ── COMMIT GATE (the design law: aim + charge, or whiff/self-ring) ───────────
-  // The kid-safe "tap aims at the nearest rival" auto-assist is EARNED by
-  // committing to a hold: only a release whose charge reached this threshold
-  // gets the nearest-target fallback. An instant down→up MASH (no hold, no drag)
-  // fires in the ball's *last committed* aim with NO retarget, so blind tap-spam
-  // sprays stale-direction dashes that whiff — and self-ring on the closing edge
-  // when the stale aim faces the rim. (Mirrors Sumo's earned auto-aim.)
+  // The kid-safe "no-drag release aims at the nearest rival" assist is EARNED by
+  // a committed hold (charge >= this). A quick TAP (below it, no drag) fires the
+  // ball's CURRENT shown aim with no retarget — so a masher who never drags nor
+  // holds sprays mis-aimed dashes that whiff (bumper's lively caroms would let an
+  // auto-aimed 0-charge dash grind ejects, so the aim must be earned). The idle
+  // aim arrow makes that current aim visible, so a tap is readable, not random.
   static const double _autoAimMinCharge = 0.18;
   // While charging, retain only this share of speed per 1/60s — a near-root so a
   // whiffed charge is punishable (the ball is briefly a sitting duck and cannot
@@ -345,23 +344,25 @@ class BumperBalls extends MiniGameBase {
       case InputPhase.down:
         if (s.ready && !s.invulnerable) {
           s.charging = true; // begin charging
-          s.hasDragAim = false; // no chosen direction until the thumb moves
-          _applyDragAim(input, body, s); // a press already away from us aims
+          s.hasDragAim = false; // a plain tap stays on the nearest-rival aim
+          s.downPos = Offset(
+            input.normPos.dx * _size.width,
+            input.normPos.dy * _size.height,
+          );
         }
       case InputPhase.holdTick:
-        // A drag sample re-aims toward the thumb (the player owns the angle).
+        // Only a real DRAG (finger travels from the press point) re-aims by hand.
         _applyDragAim(input, body, s);
       case InputPhase.up:
         if (s.charging) {
           s.charging = false;
-          _applyDragAim(input, body, s); // final flick can still steer
-          // Aim resolution (the heart of the skill gate):
-          //  * a thumb-chosen drag aim ALWAYS wins (full agency); else
-          //  * the kid-safe nearest-rival auto-assist is unlocked ONLY by a
-          //    committed hold (charge >= [_autoAimMinCharge]); else
-          //  * a pure instant down→up MASH keeps the ball's *last* aim with NO
-          //    retarget — so blind tap-spam sprays stale-direction dashes that
-          //    whiff (and self-ring when the stale aim faces the closing edge).
+          _applyDragAim(input, body, s); // a final flick can still steer
+          // A deliberate DRAG aims by hand; a committed HOLD (charge >= the gate)
+          // earns the nearest-rival auto-assist; a quick TAP fires the CURRENT
+          // shown aim with no retarget — so a no-drag, no-hold masher's dashes
+          // stay mis-aimed and whiff (bumper's caroms would let an auto-aimed
+          // 0-charge dash grind ejects). The always-on idle arrow shows that aim,
+          // so the tap is readable, not random.
           final earnedAssist = s.charge >= _autoAimMinCharge;
           final aim = s.hasDragAim
               ? s.aim
@@ -380,14 +381,17 @@ class BumperBalls extends MiniGameBase {
   /// nearest-opponent fallback — intact.
   void _applyDragAim(PlayerInput input, Body body, BallState s) {
     if (!s.charging) return;
+    if (input.normPos == Offset.zero) return; // a bare per-frame tick has no pos
     final touch = Offset(
       input.normPos.dx * _size.width,
       input.normPos.dy * _size.height,
     );
-    final d = touch - body.pos;
     final minSide = math.min(_size.width, _size.height);
-    if (d.distance < minSide * _aimDragDeadzone) return;
-    s.aim = math.atan2(d.dy, d.dx);
+    // Manual aim engages only once the finger DRAGS from where it pressed; a
+    // tap-in-place leaves the nearest-rival default, so a tap never fires in a
+    // surprise direction. The angle points from the ball toward the finger.
+    if ((touch - s.downPos).distance < minSide * _aimDragDeadzone) return;
+    s.aim = math.atan2(touch.dy - body.pos.dy, touch.dx - body.pos.dx);
     s.hasDragAim = true;
   }
 
@@ -475,14 +479,18 @@ class BumperBalls extends MiniGameBase {
   ///    on the very first flick frame).
   void _tickBallStates(double dt) {
     for (final entry in _ball.entries) {
+      final id = entry.key;
       final s = entry.value;
-      if (_isAlive(entry.key) && s.charging) {
+      if (_isAlive(id) && s.charging) {
         s.charge = math.min(1.0, s.charge + dt / _chargeTimeSec);
+        // Once the hold has EARNED the assist, preview (and fire toward) the
+        // nearest rival so the arrow matches the release; below it the arrow
+        // holds the current aim, so a quick tap honestly fires un-retargeted.
         if (!s.hasDragAim && s.charge >= _autoAimMinCharge) {
-          final a = _aimAtNearest(entry.key);
+          final a = _aimAtNearest(id);
           if (a != null) s.aim = a;
         }
-        final body = _bodyOf(entry.key);
+        final body = _bodyOf(id);
         if (body != null && body.vel != Offset.zero) {
           final retain = math.pow(_chargeRootRetain, dt * 60.0).toDouble();
           body.vel = body.vel * retain;
@@ -1213,9 +1221,15 @@ class BumperBalls extends MiniGameBase {
         face: _faceFor(b, state),
       );
 
-      // No idle arrow. While charging, a telegraph points the way the player is
-      // dragging (where the bump will fire) with a charge ground-arc.
-      if (state != null && state.charging) {
+      // Show the aim telegraph whenever this human can act — faint at rest (idle
+      // "fire THIS way" preview), bright while charging — so the bump direction
+      // is ALWAYS readable (bots show nothing).
+      final showAim = state != null &&
+          (state.charging ||
+              (!_botClocks.containsKey(b.id) &&
+                  state.ready &&
+                  !state.invulnerable));
+      if (showAim) {
         BumperRenderer.drawAim(
           canvas,
           b.pos,

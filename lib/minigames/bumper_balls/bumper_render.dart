@@ -694,13 +694,16 @@ class BumperRenderer {
   }) {
     if (ballR <= 0) return;
     final c = charge.clamp(0.0, 1.0);
-    if (c <= 0.01) return;
     final dir = Offset(math.cos(aim), math.sin(aim));
     final base = ballR * 1.0;
-    final len = ballR * (2.0 + 2.7 * c);
+    // A faint short stub at rest (the idle "you'll fire THIS way" preview) that
+    // grows long + bright as the charge fills — so the bump direction is always
+    // on screen and a tap never fires in a surprise direction.
+    final len = ballR * (1.2 + 2.7 * c);
+    final a = 0.4 + 0.55 * c; // overall opacity: dim idle → bold charged
     final start = center + dir * base;
     final end = center + dir * (base + len);
-    final w = ballR * (0.24 + 0.26 * c);
+    final w = ballR * (0.22 + 0.26 * c);
 
     // Layered solid shaft: a wide soft-tinted base, a crisp colored core, then a
     // white inner line so it pops over the neon floor — all blur-free.
@@ -708,7 +711,7 @@ class BumperRenderer {
       start,
       end,
       Paint()
-        ..color = color.withValues(alpha: 0.45)
+        ..color = color.withValues(alpha: 0.45 * a)
         ..strokeWidth = w * 1.8
         ..strokeCap = StrokeCap.round,
     );
@@ -716,7 +719,7 @@ class BumperRenderer {
       start,
       end,
       Paint()
-        ..color = color.withValues(alpha: 0.95)
+        ..color = color.withValues(alpha: 0.95 * a)
         ..strokeWidth = w
         ..strokeCap = StrokeCap.round,
     );
@@ -724,7 +727,7 @@ class BumperRenderer {
       start,
       end,
       Paint()
-        ..color = _white.withValues(alpha: 0.6)
+        ..color = _white.withValues(alpha: 0.6 * a)
         ..strokeWidth = w * 0.4
         ..strokeCap = StrokeCap.round,
     );
@@ -740,28 +743,30 @@ class BumperRenderer {
       ..lineTo(left.dx, left.dy)
       ..lineTo(right.dx, right.dy)
       ..close();
-    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: 0.95));
+    canvas.drawPath(headPath, Paint()..color = color.withValues(alpha: 0.95 * a));
     canvas.drawPath(
       headPath,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(1.0, ballR * 0.08)
-        ..color = _white.withValues(alpha: 0.7),
+        ..color = _white.withValues(alpha: 0.7 * a),
     );
 
-    // Charge ground-arc beneath the ball while holding.
-    final groundCenter = center.translate(0, ballR);
-    canvas.drawArc(
-      Rect.fromCircle(center: groundCenter, radius: ballR * 1.25),
-      -math.pi / 2,
-      math.pi * 2 * c,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = ballR * 0.18
-        ..strokeCap = StrokeCap.round
-        ..color = _blend(color, _white, c).withValues(alpha: 0.9),
-    );
+    // Charge ground-arc beneath the ball — only once a hold is building.
+    if (c > 0.01) {
+      final groundCenter = center.translate(0, ballR);
+      canvas.drawArc(
+        Rect.fromCircle(center: groundCenter, radius: ballR * 1.25),
+        -math.pi / 2,
+        math.pi * 2 * c,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = ballR * 0.18
+          ..strokeCap = StrokeCap.round
+          ..color = _blend(color, _white, c).withValues(alpha: 0.9),
+      );
+    }
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────

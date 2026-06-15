@@ -136,8 +136,8 @@ class SnakeArena extends MiniGameBase {
   static const int _nearMissSparks = 5;
   static const double _wallFlareDecay = 2.4; // per-second flare falloff
   static const double _nearMissCooldownSec = 0.18; // throttle near-miss sparks
-  static const double _hintFadeSec = 1.6; // turn-hint settle time at round start
-  static const double _hintIdleLevel = 0.55; // resting turn-hint brightness
+  static const double _hintFadeSec = 3.5; // turn-hint settle time at round start
+  static const double _hintIdleLevel = 0.82; // resting turn-hint brightness (stays clearly visible)
 
   // ── Death break-apart + winner celebration tuning (visual only) ─────────────
   static const double _deathBurstSpreadSec = 0.2; // stagger window head→tail

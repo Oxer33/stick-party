@@ -14,6 +14,7 @@ import '../../core/rng.dart';
 /// for one round).
 class BallState {
   double aim; // current aim angle (radians) — set by the player's drag
+  Offset downPos = Offset.zero; // touch point at press, to tell a tap from a drag
   bool charging = false;
   bool hasDragAim = false; // true once this charge has a thumb-chosen angle
   double charge = 0; // 0..1 while held

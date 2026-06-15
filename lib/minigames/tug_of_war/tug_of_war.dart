@@ -377,6 +377,12 @@ class TugOfWar extends MiniGameBase {
     if (_beatInWindow && pl.heaveArmed) {
       pl.heaveArmed = false; // consume this window pass: one heave per beat
       _fireHeave(pl, _beatPrecision.clamp(0.0, 1.0));
+    } else if (_beatInWindow) {
+      // Already heaved THIS window: an extra on-beat tap is simply ignored, not
+      // punished — so a player who taps the still-lit "HEAVE!" again isn't hit
+      // with a baffling SLIP. Spam still loses on the OFF-beat taps below (the
+      // window is a small slice of the sweep, so a masher racks up misses).
+      return;
     } else {
       _missSlip(pl);
     }
