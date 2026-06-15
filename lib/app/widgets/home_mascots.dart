@@ -39,6 +39,10 @@ const double _kFigureScale = 1.18;
 /// Gentle breathing bob amplitude (px).
 const double _kBobAmplitude = 3.0;
 
+/// Subtle breathing scale amplitude (fraction of base size) layered on the bob
+/// so each mascot visibly "breathes" while idling.
+const double _kBreathAmplitude = 0.025;
+
 /// Peak height of a mascot's springy jump (px).
 const double _kJumpHeight = 26.0;
 
@@ -52,11 +56,18 @@ const double _kRunBurstMin = 0.7;
 const double _kRunBurstMax = 1.4;
 
 /// An animated lineup of player-colored stickmen. Drop into the hero section.
+///
+/// Optionally pass a [cheerSignal]: every time it notifies, the crew breaks into
+/// a staggered celebratory hop (used when QUICK PLAY is pressed). It is purely
+/// cosmetic — the lineup behaves identically when it is null.
 class HomeMascots extends StatefulWidget {
-  const HomeMascots({super.key, this.height = _kBandHeight});
+  const HomeMascots({super.key, this.height = _kBandHeight, this.cheerSignal});
 
   /// Height of the drawing band.
   final double height;
+
+  /// Optional trigger; each notification makes the crew cheer.
+  final Listenable? cheerSignal;
 
   @override
   State<HomeMascots> createState() => _HomeMascotsState();
@@ -74,7 +85,24 @@ class _HomeMascotsState extends State<HomeMascots>
   void initState() {
     super.initState();
     _buildMascots();
+    widget.cheerSignal?.addListener(_cheer);
     _ticker = createTicker(_onTick)..start();
+  }
+
+  @override
+  void didUpdateWidget(HomeMascots oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cheerSignal != widget.cheerSignal) {
+      oldWidget.cheerSignal?.removeListener(_cheer);
+      widget.cheerSignal?.addListener(_cheer);
+    }
+  }
+
+  /// Kick off a staggered celebratory hop across the crew.
+  void _cheer() {
+    for (int i = 0; i < _mascots.length; i++) {
+      _mascots[i].requestCheer(i * 0.08);
+    }
   }
 
   void _buildMascots() {
@@ -136,6 +164,7 @@ class _HomeMascotsState extends State<HomeMascots>
 
   @override
   void dispose() {
+    widget.cheerSignal?.removeListener(_cheer);
     _ticker.dispose();
     _frame.dispose();
     super.dispose();
@@ -181,6 +210,20 @@ class _Mascot {
   /// Total vertical offset the painter applies to the render root.
   double get yOffset => _bob + _jumpY;
 
+  /// A subtle breathing scale (~1.0) the painter applies for extra liveliness —
+  /// the torso swells a touch on the inhale. Recomputed each tick.
+  double _breath = 1.0;
+  double get breathScale => _breath;
+
+  /// Seconds left before a queued cheer fires (>0 ⇒ counting down to the hop).
+  /// Negative when no cheer is pending. Lets the crew stagger their celebration.
+  double _cheerDelay = -1;
+
+  /// Queue a celebratory hop after [delay] seconds (staggered per mascot).
+  void requestCheer(double delay) {
+    _cheerDelay = delay;
+  }
+
   /// Seconds left before the next stunt is chosen (>0 ⇒ resting/idle).
   double restTimer;
 
@@ -209,6 +252,23 @@ class _Mascot {
   void tick(double dt, double now) {
     figure.update(dt);
     _bob = math.sin((now + bobPhase) * 1.6) * _kBobAmplitude;
+    // Breathing swell, slightly out of phase with the bob so it never reads as a
+    // single mechanical pulse.
+    _breath =
+        1.0 + math.sin((now + bobPhase) * 1.3 + 0.6) * _kBreathAmplitude;
+
+    // A queued cheer fires once the figure is free, launching a springy hop.
+    if (_cheerDelay >= 0) {
+      _cheerDelay -= dt;
+      if (_cheerDelay <= 0 && !figure.actionPlaying) {
+        _cheerDelay = -1;
+        _active = _Stunt.jump;
+        _t = 0;
+        _dur = _kJumpDur;
+        figure.setLoco(LocoState.jump);
+        figure.special();
+      }
+    }
 
     if (_active == _Stunt.jump) {
       _t += dt;
@@ -314,7 +374,15 @@ class _MascotPainter extends CustomPainter {
       // Soft ground glow under each mascot for grounding. Anchored to the ground
       // (not the jump), and it shrinks a touch as the mascot leaps for "lift".
       _drawGroundGlow(canvas, m, baseline, cx, slot);
+      // Breathing: scale the figure about its pelvis root (a touch more on Y)
+      // so the torso swells without the feet sliding. Cheap save/transform.
+      final double s = m.breathScale;
+      canvas.save();
+      canvas.translate(root.dx, root.dy);
+      canvas.scale(s, s * 1.04);
+      canvas.translate(-root.dx, -root.dy);
       m.figure.render(canvas, root);
+      canvas.restore();
     }
   }
 

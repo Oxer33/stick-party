@@ -293,8 +293,13 @@ class ArcherRenderer {
     double t,
   ) {
     final strength = (windX.abs() / _windRef).clamp(0.0, 1.0);
-    if (anchors.isEmpty || strength <= 0.02) return;
+    if (strength <= 0.02) return;
     final dirSign = windX >= 0 ? 1.0 : -1.0;
+    // Deepest sub-layer: a faint, slow ambient vector field drifting in the wind
+    // direction behind all gameplay, so the breeze reads even with no anchors
+    // near. Deterministic (index + sin) — no random, no per-entity blur.
+    _drawAmbientWindField(canvas, size, dirSign, strength, t);
+    if (anchors.isEmpty) return;
     final len = 26.0 + 40.0 * strength;
     final paint = Paint()
       ..strokeCap = StrokeCap.round
@@ -310,6 +315,30 @@ class ArcherRenderer {
       paint.color = _windTint
           .withValues(alpha: (0.05 + 0.12 * strength).clamp(0.0, 1.0));
       canvas.drawLine(tail, Offset(x, y), paint);
+    }
+  }
+
+  /// Faint full-field wind streaks drifting across the whole arena in the wind
+  /// direction. Lanes are derived deterministically from index (no anchors,
+  /// no random); far/upper lanes drift slower + fainter for a parallax breeze.
+  static void _drawAmbientWindField(Canvas canvas, Size size, double dirSign,
+      double strength, double t) {
+    final len = (size.width * 0.05) + (size.width * 0.05) * strength;
+    final span = size.width + len * 2;
+    final paint = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = 1.1;
+    const rows = 9;
+    for (var i = 0; i < rows; i++) {
+      final lane = (i + 0.5) / rows; // 0 (top) .. 1 (bottom)
+      final y = size.height * (0.06 + 0.86 * lane) +
+          math.sin(t * 0.8 + i * 1.7) * (size.height * 0.008);
+      final speed = (12.0 + (i % 4) * 6.0) * (0.5 + strength);
+      final raw = size.width * lane * 1.7 + dirSign * t * speed;
+      final x = ((raw % span) + span) % span - len;
+      final a = (0.015 + 0.045 * strength) * (0.5 + 0.5 * lane);
+      paint.color = _windTint.withValues(alpha: a.clamp(0.0, 1.0));
+      canvas.drawLine(Offset(x - dirSign * len, y), Offset(x, y), paint);
     }
   }
 
@@ -574,6 +603,15 @@ class ArcherRenderer {
       Canvas canvas, Offset at, double r, Color color, double popT) {
     final p = popT.clamp(0.0, 1.0);
     final grow = 1.0 + (1 - p) * 1.4;
+    // Soft glow halo so the hit feels juicy: two stacked translucent fills that
+    // bloom outward and fade with the flash (no per-entity blur — STACKED fills).
+    final glow = color.withValues(alpha: (0.30 * p).clamp(0.0, 1.0));
+    canvas.drawCircle(at, r * (grow + 0.55), Paint()..color = glow);
+    canvas.drawCircle(
+      at,
+      r * (grow + 0.18),
+      Paint()..color = color.withValues(alpha: (0.22 * p).clamp(0.0, 1.0)),
+    );
     canvas.drawCircle(
       at,
       r * grow,

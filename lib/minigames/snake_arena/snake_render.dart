@@ -41,6 +41,7 @@ class SnakeRenderer {
   static const double _foodPulseAmp = 0.18; // pellet radius pulse amplitude
   static const double _foodBaseFactor = 0.30; // pellet radius / cell
   static const int _foodSparkArms = 4;
+  static const int _goldenSpiralMotes = 14; // rainbow swirl around bonus pellet
   static const double _pipGap = 6.0;
   static const double _pipRadius = 4.0;
   static const double _speedTintMax = 0.16; // max red screen tint alpha
@@ -70,6 +71,28 @@ class SnakeRenderer {
         const [0.55, 1.0],
       );
     canvas.drawRect(Offset.zero & size, vignette);
+
+    // A faint cool top-down sheen: a violet whisper at the very top fading out
+    // by mid-screen gives the "neon-glass arcade" depth (top sheen) without
+    // touching the playfield's legibility.
+    final sheen = Paint()
+      ..shader = Gradient.linear(
+        Offset(size.width / 2, 0),
+        Offset(size.width / 2, size.height * 0.5),
+        const [Color(0x14463A8C), Color(0x00000000)],
+      );
+    canvas.drawRect(Offset.zero & size, sheen);
+
+    // Deepen the four corners a touch more than the round vignette so the frame
+    // reads as a lit stage — corners recede, center pops.
+    final corner = Paint()
+      ..shader = Gradient.radial(
+        Offset(size.width / 2, size.height / 2),
+        r * 0.95,
+        const [Color(0x00000000), Color(0x66000000)],
+        const [0.78, 1.0],
+      );
+    canvas.drawRect(Offset.zero & size, corner);
   }
 
   /// The glowing logical grid inside [field]. [cols]/[rows] size the lattice;
@@ -84,7 +107,8 @@ class SnakeRenderer {
     if (cols <= 0 || rows <= 0 || field.width <= 1 || field.height <= 1) return;
     final cw = field.width / cols;
     final ch = field.height / rows;
-    final breathe = 0.5 + 0.5 * pulse.clamp(0.0, 1.0);
+    final p = pulse.clamp(0.0, 1.0);
+    final breathe = 0.5 + 0.5 * p;
 
     // Soft glow underlay (wide, faint) then crisp lines on top. A wider faint
     // stroke under each crisp line fakes the glow without a per-line blur — this
@@ -100,8 +124,7 @@ class SnakeRenderer {
       ..color = _gridLine.withValues(alpha: 0.55 + 0.25 * breathe);
     final major = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = _gridMajorW
-      ..color = _gridMajor.withValues(alpha: 0.6 + 0.3 * breathe);
+      ..strokeWidth = _gridMajorW;
 
     for (var c = 0; c <= cols; c++) {
       final x = field.left + c * cw;
@@ -109,7 +132,15 @@ class SnakeRenderer {
       final p2 = Offset(x, field.bottom);
       final isMajor = c % _majorEvery == 0;
       canvas.drawLine(p1, p2, glow);
-      canvas.drawLine(p1, p2, isMajor ? major : minor);
+      if (isMajor) {
+        // Major lines breathe faintly out of phase with the pulse so the lattice
+        // feels alive — a gentle per-line shimmer, deterministic from [pulse].
+        major.color = _gridMajor.withValues(
+            alpha: 0.55 + 0.32 * (0.5 + 0.5 * math.sin(p * math.pi * 2 + c)));
+        canvas.drawLine(p1, p2, major);
+      } else {
+        canvas.drawLine(p1, p2, minor);
+      }
     }
     for (var r = 0; r <= rows; r++) {
       final y = field.top + r * ch;
@@ -117,8 +148,36 @@ class SnakeRenderer {
       final p2 = Offset(field.right, y);
       final isMajor = r % _majorEvery == 0;
       canvas.drawLine(p1, p2, glow);
-      canvas.drawLine(p1, p2, isMajor ? major : minor);
+      if (isMajor) {
+        major.color = _gridMajor.withValues(
+            alpha: 0.55 + 0.32 * (0.5 + 0.5 * math.sin(p * math.pi * 2 + r)));
+        canvas.drawLine(p1, p2, major);
+      } else {
+        canvas.drawLine(p1, p2, minor);
+      }
     }
+
+    // Rolling scan-line: a soft horizontal band sweeps top↔bottom (driven by the
+    // breathing pulse) — a faint additive wash band, no blur. Sells the "powered
+    // grid" feel without ever obscuring snakes (very low alpha, behind actors).
+    final bandY = field.top + p * field.height;
+    final bandH = math.max(ch * 1.5, field.height * 0.10);
+    final scan = Paint()
+      ..shader = Gradient.linear(
+        Offset(field.left, bandY - bandH),
+        Offset(field.left, bandY + bandH),
+        [
+          _gridGlow.withValues(alpha: 0.0),
+          _wallNeon.withValues(alpha: 0.06 + 0.05 * breathe),
+          _gridGlow.withValues(alpha: 0.0),
+        ],
+        const [0.0, 0.5, 1.0],
+      );
+    canvas.drawRect(
+      Rect.fromLTRB(
+          field.left, bandY - bandH, field.right, bandY + bandH),
+      scan,
+    );
   }
 
   /// The neon wall border framing the arena: a wide outer glow + a crisp core
@@ -148,6 +207,46 @@ class SnakeRenderer {
       ..strokeWidth = _wallCoreW
       ..color = Color.lerp(_wallNeon, _white, 0.25 + 0.4 * flare) ?? _wallNeon;
     canvas.drawRect(field, core);
+
+    // Travelling light pulse: while the wall is flaring, a bright hot dot sweeps
+    // once around the perimeter as the flare decays (flare 1→0 ≈ one lap). Pure
+    // cosmetic energy on every eat/crash/squeeze cue; invisible at rest (flare
+    // 0). Deterministic from the existing [intensity] — no clock, no blur.
+    if (flare > 0.02) _drawWallTravellingPulse(canvas, field, flare, _wallNeon);
+  }
+
+  /// A glowing comet that rides the [field] perimeter. [progress] (0..1) is its
+  /// position around the loop; [tint] colors it. Two stacked translucent dots
+  /// (wide+faint over tight+hot) fake the bloom without a blur.
+  static void _drawWallTravellingPulse(
+      Canvas canvas, Rect field, double progress, Color tint) {
+    final pos = _perimeterPoint(field, (1.0 - progress).clamp(0.0, 1.0));
+    final r = math.max(3.0, math.min(field.width, field.height) * 0.018);
+    final hot = (0.35 + 0.5 * progress).clamp(0.0, 1.0);
+    canvas.drawCircle(
+        pos, r * 2.4, Paint()..color = tint.withValues(alpha: 0.12 * hot));
+    canvas.drawCircle(
+        pos, r * 1.4, Paint()..color = tint.withValues(alpha: 0.30 * hot));
+    canvas.drawCircle(pos, r,
+        Paint()..color = (Color.lerp(tint, _white, 0.6) ?? tint)
+            .withValues(alpha: 0.9 * hot));
+  }
+
+  /// Maps [t] (0..1) to a point walking clockwise around [rect]'s perimeter,
+  /// starting at the top-left corner. Used for the travelling wall pulse.
+  static Offset _perimeterPoint(Rect rect, double t) {
+    final w = rect.width;
+    final h = rect.height;
+    final per = 2 * (w + h);
+    if (per <= 0) return rect.topLeft;
+    var d = (t % 1.0) * per;
+    if (d < w) return Offset(rect.left + d, rect.top); // top edge →
+    d -= w;
+    if (d < h) return Offset(rect.right, rect.top + d); // right edge ↓
+    d -= h;
+    if (d < w) return Offset(rect.right - d, rect.bottom); // bottom edge ←
+    d -= w;
+    return Offset(rect.left, rect.bottom - d); // left edge ↑
   }
 
   /// The SUDDEN DEATH closing wall: a hot, throbbing red border around the
@@ -157,6 +256,22 @@ class SnakeRenderer {
   static void drawClosingWalls(Canvas canvas, Rect box, double pulse) {
     if (box.width <= 1 || box.height <= 1) return;
     final p = pulse.clamp(0.0, 1.0);
+
+    // Heat shimmer JUST INSIDE the wall: a thin, faint warm inset rim that
+    // breathes with the pulse — the air rippling off the hot wall. Drawn first
+    // and kept low-alpha so it never dulls the wall's menace or hides snakes.
+    final inset = box.deflate(_wallCoreW * 1.6);
+    if (inset.width > 1 && inset.height > 1) {
+      canvas.drawRect(
+        inset,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _wallCoreW * (1.0 + 0.8 * p)
+          ..color = Color.lerp(_sdWall, _foodNeon, 0.35)!
+              .withValues(alpha: 0.06 + 0.08 * p),
+      );
+    }
+
     canvas.drawRect(
       box,
       Paint()
@@ -171,6 +286,10 @@ class SnakeRenderer {
         ..strokeWidth = _wallCoreW * 1.3
         ..color = Color.lerp(_sdWall, _white, 0.2 + 0.3 * p) ?? _sdWall,
     );
+
+    // A hot travelling spark rides the closing wall too, so the squeeze feels
+    // electrically alive. Driven by the pulse so it loops perpetually here.
+    _drawWallTravellingPulse(canvas, box, p, _sdWall);
   }
 
   /// A pulsing food pellet at pixel [center] of radius scaled to [cell]. Layered
@@ -220,6 +339,59 @@ class SnakeRenderer {
       final outer = r * (1.9 + 0.25 * math.sin(phase * 5.0 + i));
       canvas.drawLine(center + dir * inner, center + dir * outer, spark);
     }
+
+    // A golden pellet screams "JACKPOT": a slow rainbow spiral of dots orbiting
+    // the core plus a counter-spinning gold star ring — all deterministic via
+    // [phase], no blur. Drawn last so it crowns the pellet.
+    if (golden) _drawGoldenShimmer(canvas, center, r, phase);
+  }
+
+  /// The bonus-pellet flourish: a rainbow spiral of orbiting motes + a spinning
+  /// gold five-point star outline. Purely cosmetic, deterministic from [phase].
+  static void _drawGoldenShimmer(
+      Canvas canvas, Offset center, double r, double phase) {
+    // Rainbow spiral: motes march outward along an Archimedean spiral, hue
+    // cycling per index — a shimmering "treasure" swirl.
+    const motes = _goldenSpiralMotes;
+    final mote = Paint();
+    for (var i = 0; i < motes; i++) {
+      final t = i / motes;
+      final a = phase * 1.1 + t * math.pi * 4.0; // 2 full turns
+      final rad = r * (1.3 + 1.7 * t);
+      final pos = center + Offset(math.cos(a), math.sin(a)) * rad;
+      final hue = (phase * 40.0 + t * 360.0) % 360.0;
+      mote.color =
+          _hsv(hue, 0.85, 1.0).withValues(alpha: (0.55 * (1.0 - t)) + 0.12);
+      canvas.drawCircle(pos, math.max(0.8, r * 0.16 * (1.0 - 0.5 * t)), mote);
+    }
+
+    // Spinning gold star: a five-point outline that counter-rotates and gently
+    // pulses its radius — the unmistakable "shiny prize" badge.
+    final spin = -phase * 0.9;
+    final pulseR = 2.0 + 0.18 * math.sin(phase * 2.5);
+    final outer = r * pulseR;
+    final inner = outer * 0.45;
+    final star = Path();
+    for (var i = 0; i < 10; i++) {
+      final rr = i.isEven ? outer : inner;
+      final a = spin + i * (math.pi / 5) - math.pi / 2;
+      final p = center + Offset(math.cos(a), math.sin(a)) * rr;
+      if (i == 0) {
+        star.moveTo(p.dx, p.dy);
+      } else {
+        star.lineTo(p.dx, p.dy);
+      }
+    }
+    star.close();
+    canvas.drawPath(
+      star,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = math.max(1.0, r * 0.12)
+        ..color = _goldenFood.withValues(
+            alpha: 0.45 + 0.2 * (0.5 + 0.5 * math.sin(phase * 3.0))),
+    );
   }
 
   /// Draw one snake as a fading neon trail of rounded segments. [pixels] are the
@@ -250,15 +422,27 @@ class SnakeRenderer {
 
     // 1) Wide soft glow pass under the body (tail faints out) — the light trail.
     // Wider, faint translucent circles per segment fake the bloom without a
-    // per-segment blur (this loop runs for every segment of every snake).
+    // per-segment blur (this loop runs for every segment of every snake). A
+    // second, even softer & wider halo on the head-most segments fakes a comet
+    // streak so the direction of motion reads instantly: head blazes, tail dims.
     final glowPaint = Paint();
     for (var i = n - 1; i >= 0; i--) {
       final f = 1.0 - i / n; // 1 at head → ~0 at tail
-      final a = (0.07 + 0.22 * f) * dim;
+      // Ease the falloff (f²-blend) so the head end concentrates the light and
+      // the tail melts away smoothly rather than linearly — a richer trail.
+      final fade = f * f;
+      final a = (0.05 + 0.26 * fade) * dim;
       if (a <= 0.01) continue;
+      // Wide, very faint motion-streak only on the brightest third nearest the
+      // head — this is the "comet glow" that sells the trail without a blur.
+      if (f > 0.66) {
+        glowPaint.color = color.withValues(alpha: (0.10 * fade) * dim);
+        canvas.drawCircle(
+            pixels[i], (bodyR + inset) * (1.4 + 1.6 * f), glowPaint);
+      }
       glowPaint.color = color.withValues(alpha: a);
       canvas.drawCircle(
-          pixels[i], (bodyR + inset) * (0.9 + 1.0 * f), glowPaint);
+          pixels[i], (bodyR + inset) * (0.85 + 1.05 * f), glowPaint);
     }
 
     // 2) Connective neon ribbon so segments read as one continuous body.
@@ -277,12 +461,20 @@ class SnakeRenderer {
       }
     }
 
-    // 3) Crisp rounded segments, gradient head→tail, brightest at the head.
+    // 3) Crisp rounded segments, gradient head→tail, brightest at the head. A
+    // small offset top-sheen highlight on each gives the body a glassy, rounded
+    // read (depth: top sheen) without any blur — additive, deterministic.
+    final sheen = Paint();
     for (var i = n - 1; i >= 1; i--) {
       final f = 1.0 - i / n;
+      final segR = bodyR * (0.7 + 0.5 * f);
       final c =
           _segColor(color, f).withValues(alpha: (0.9 * dim).clamp(0.0, 1.0));
-      canvas.drawCircle(pixels[i], bodyR * (0.7 + 0.5 * f), Paint()..color = c);
+      canvas.drawCircle(pixels[i], segR, Paint()..color = c);
+      // Glassy top-left sheen, brighter toward the head so the body looks lit.
+      sheen.color = _white.withValues(alpha: (0.10 + 0.18 * f) * dim);
+      canvas.drawCircle(
+          pixels[i].translate(-segR * 0.28, -segR * 0.28), segR * 0.42, sheen);
     }
 
     // 4) The head: bright glow + body + a white-hot core + eyes. Two stacked
@@ -477,6 +669,36 @@ class SnakeRenderer {
   }
 
   // ── Small private helpers ──────────────────────────────────────────────────
+
+  /// Minimal HSV→Color (h in degrees 0..360, s/v in 0..1). Used for the golden
+  /// pellet's rainbow shimmer; alpha is applied by the caller. Self-contained so
+  /// the renderer keeps its single `dart:ui` dependency.
+  static Color _hsv(double h, double s, double v) {
+    final hh = (h % 360 + 360) % 360 / 60.0;
+    final c = v * s;
+    final x = c * (1 - (hh % 2 - 1).abs());
+    final m = v - c;
+    double rr = 0, gg = 0, bb = 0;
+    if (hh < 1) {
+      rr = c; gg = x;
+    } else if (hh < 2) {
+      rr = x; gg = c;
+    } else if (hh < 3) {
+      gg = c; bb = x;
+    } else if (hh < 4) {
+      gg = x; bb = c;
+    } else if (hh < 5) {
+      rr = x; bb = c;
+    } else {
+      rr = c; bb = x;
+    }
+    return Color.fromARGB(
+      255,
+      ((rr + m) * 255).round().clamp(0, 255),
+      ((gg + m) * 255).round().clamp(0, 255),
+      ((bb + m) * 255).round().clamp(0, 255),
+    );
+  }
 
   /// Head→tail gradient: bright (toward white) at the head, deeper toward tail.
   static Color _segColor(Color base, double headFraction) {

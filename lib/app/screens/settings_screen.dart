@@ -5,6 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../engine/bots.dart';
@@ -56,28 +57,50 @@ class SettingsScreen extends ConsumerWidget {
     final double shake = ref.watch(shakeIntensityProvider);
     final Locale? locale = ref.watch(localeProvider);
 
-    return GlassScaffold(
-      title: l10n.settingsTitle,
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          SectionHeader(title: l10n.sectionGameplay),
-          PremiumPanel(
-            accent: GlassColors.violet,
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    // Each top-level section fades/rises in sequence so the screen assembles
+    // itself rather than snapping in — purely an entrance flourish.
+    final List<Widget> sections = <Widget>[
+      SectionHeader(title: l10n.sectionGameplay),
+      PremiumPanel(
+        accent: GlassColors.violet,
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
               children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    const _OptionBadge(
-                        icon: Icons.smart_toy, accent: GlassColors.violet),
-                    const SizedBox(width: 12),
-                    Text(l10n.cpuDifficulty, style: GlassText.heading),
+                const _OptionBadge(
+                    icon: Icons.smart_toy, accent: GlassColors.violet),
+                const SizedBox(width: 12),
+                Text(l10n.cpuDifficulty, style: GlassText.heading),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Accent-tinted segmented control: the selected difficulty glows
+            // violet. Selection/value logic is unchanged — styling only.
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              transitionBuilder: (Widget child, Animation<double> a) =>
+                  FadeTransition(opacity: a, child: child),
+              child: Container(
+                key: ValueKey<BotDifficulty>(difficulty),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: GlassColors.violet.withValues(alpha: 0.35),
+                      blurRadius: 16,
+                      spreadRadius: -4,
+                    ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                SegmentedButton<BotDifficulty>(
+                child: SegmentedButton<BotDifficulty>(
+                  style: SegmentedButton.styleFrom(
+                    selectedBackgroundColor: GlassColors.violet,
+                    selectedForegroundColor: Colors.white,
+                    foregroundColor: GlassColors.textMuted,
+                  ),
                   segments: <ButtonSegment<BotDifficulty>>[
                     ButtonSegment<BotDifficulty>(
                         value: BotDifficulty.easy,
@@ -93,72 +116,65 @@ class SettingsScreen extends ConsumerWidget {
                   onSelectionChanged: (Set<BotDifficulty> sel) =>
                       ref.read(difficultyProvider.notifier).state = sel.first,
                 ),
-              ],
+              ),
             ),
-          ),
-          const SizedBox(height: GlassTokens.gapSmall),
-          PremiumPanel(
-            accent: GlassColors.cyan,
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    const _OptionBadge(
-                        icon: Icons.vibration, accent: GlassColors.cyan),
-                    const SizedBox(width: 12),
-                    Expanded(
-                        child:
-                            Text(l10n.screenShake, style: GlassText.heading)),
-                    AccentTag(
-                      label: '${(shake * 100).round()}%',
-                      accent: GlassColors.cyan,
-                    ),
-                  ],
-                ),
-                Slider(
-                  value: shake,
-                  onChanged: (double v) =>
-                      ref.read(shakeIntensityProvider.notifier).state = v,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-          SectionHeader(title: l10n.sectionLanguage, color: GlassColors.cyan),
-          _LanguagePicker(
-            selectedCode: locale?.languageCode ?? '',
-            systemLabel: l10n.languageSystem,
-            onSelected: (String code) => _selectLanguage(ref, code),
-          ),
-          const SizedBox(height: 24),
-          SectionHeader(
-              title: l10n.sectionPurchases, color: GlassColors.amber),
-          PremiumMediaTile(
-            accent: GlassColors.amber,
-            leading: const _OptionBadge(
-                icon: Icons.restore, accent: GlassColors.amber),
-            title: l10n.restorePurchases,
-            supporting: l10n.restorePurchasesDesc,
-            trailing: const Icon(Icons.chevron_right, color: GlassColors.amber),
-            onTap: () => _restore(context, ref),
-          ),
-          const SizedBox(height: 24),
-          SectionHeader(title: l10n.sectionData, color: GlassColors.flame),
-          PremiumMediaTile(
-            accent: GlassColors.flame,
-            leading: const _OptionBadge(
-                icon: Icons.delete_outline, accent: GlassColors.flame),
-            title: l10n.resetProgress,
-            titleColor: GlassColors.flame,
-            supporting: l10n.resetProgressDesc,
-            trailing:
-                const Icon(Icons.chevron_right, color: GlassColors.flame),
-            onTap: () => _confirmReset(context, ref),
-          ),
-          const SizedBox(height: 24),
-          const _AboutNote(),
+          ],
+        ),
+      ),
+      const SizedBox(height: GlassTokens.gapSmall),
+      _ShakeControl(
+        value: shake,
+        onChanged: (double v) =>
+            ref.read(shakeIntensityProvider.notifier).state = v,
+      ),
+      const SizedBox(height: 24),
+      SectionHeader(title: l10n.sectionLanguage, color: GlassColors.cyan),
+      _LanguagePicker(
+        selectedCode: locale?.languageCode ?? '',
+        systemLabel: l10n.languageSystem,
+        onSelected: (String code) => _selectLanguage(ref, code),
+      ),
+      const SizedBox(height: 24),
+      SectionHeader(title: l10n.sectionPurchases, color: GlassColors.amber),
+      PremiumMediaTile(
+        accent: GlassColors.amber,
+        leading: const _OptionBadge(
+            icon: Icons.restore, accent: GlassColors.amber),
+        title: l10n.restorePurchases,
+        supporting: l10n.restorePurchasesDesc,
+        trailing: const Icon(Icons.chevron_right, color: GlassColors.amber),
+        onTap: () => _restore(context, ref),
+      ),
+      const SizedBox(height: 24),
+      SectionHeader(title: l10n.sectionData, color: GlassColors.flame),
+      PremiumMediaTile(
+        accent: GlassColors.flame,
+        leading: const _OptionBadge(
+            icon: Icons.delete_outline, accent: GlassColors.flame),
+        title: l10n.resetProgress,
+        titleColor: GlassColors.flame,
+        supporting: l10n.resetProgressDesc,
+        trailing: const Icon(Icons.chevron_right, color: GlassColors.flame),
+        onTap: () => _confirmReset(context, ref),
+      ),
+      const SizedBox(height: 24),
+      const _AboutNote(),
+    ];
+
+    return GlassScaffold(
+      title: l10n.settingsTitle,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          for (int i = 0; i < sections.length; i++)
+            sections[i]
+                .animate()
+                .fadeIn(
+                  delay: (GlassTokens.stagger * i),
+                  duration: 300.ms,
+                  curve: Curves.easeOut,
+                )
+                .slideY(begin: 0.1, end: 0, curve: Curves.easeOutCubic),
         ],
       ),
     );
@@ -220,6 +236,105 @@ class SettingsScreen extends ConsumerWidget {
       SnackBar(
         content: Text(l10n.progressReset),
         duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+}
+
+/// The screen-shake panel: the live percentage tag, a cyan track that fills to
+/// the current intensity with a glow that grows with it, and the real [Slider]
+/// layered on top. Visual-only — the slider's value/callback are unchanged, so
+/// dragging behaves exactly as before; the fill simply mirrors the value.
+class _ShakeControl extends StatelessWidget {
+  const _ShakeControl({required this.value, required this.onChanged});
+
+  final double value;
+  final ValueChanged<double> onChanged;
+
+  /// Height of the decorative fill track behind the slider.
+  static const double _trackHeight = 8;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
+    final double t = value.clamp(0.0, 1.0);
+    return PremiumPanel(
+      accent: GlassColors.cyan,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const _OptionBadge(
+                  icon: Icons.vibration, accent: GlassColors.cyan),
+              const SizedBox(width: 12),
+              Expanded(child: Text(l10n.screenShake, style: GlassText.heading)),
+              AccentTag(
+                label: '${(t * 100).round()}%',
+                accent: GlassColors.cyan,
+              ),
+            ],
+          ),
+          // Animated track fill + the live slider stacked on top of it.
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Stack(
+              alignment: Alignment.center,
+              children: <Widget>[
+                // Decorative fill: a frosted base with a cyan portion that
+                // widens with intensity and glows brighter as it grows.
+                LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints c) {
+                    return Container(
+                      height: _trackHeight,
+                      decoration: BoxDecoration(
+                        color: GlassColors.frost.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(_trackHeight),
+                      ),
+                      alignment: Alignment.centerLeft,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 140),
+                        curve: Curves.easeOut,
+                        height: _trackHeight,
+                        width: c.maxWidth * t,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: <Color>[
+                              GlassColors.cyan.withValues(alpha: 0.65),
+                              GlassColors.cyan,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(_trackHeight),
+                          boxShadow: <BoxShadow>[
+                            BoxShadow(
+                              color: GlassColors.cyan
+                                  .withValues(alpha: 0.25 + t * 0.4),
+                              blurRadius: 6 + t * 10,
+                              spreadRadius: -2,
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                // The real control — transparent track so the fill shows
+                // through; logic and value are untouched.
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2,
+                    activeTrackColor: Colors.transparent,
+                    inactiveTrackColor: Colors.transparent,
+                    thumbColor: Colors.white,
+                    overlayColor: GlassColors.cyan.withValues(alpha: 0.2),
+                  ),
+                  child: Slider(value: value, onChanged: onChanged),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -317,7 +432,9 @@ class _LanguagePicker extends StatelessWidget {
 }
 
 /// A single tappable language row: the endonym on the left, a cyan check on the
-/// right when active. Press-scales via [PressableCard] to match the card feel.
+/// right when active. The active row gains a soft cyan wash + glow and a left
+/// accent rail, and its check pops in with a scale/fade so selecting a language
+/// feels responsive. Press-scales via [PressableCard] to match the card feel.
 class _LanguageRow extends StatelessWidget {
   const _LanguageRow({
     required this.label,
@@ -333,20 +450,60 @@ class _LanguageRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return PressableCard(
       onTap: onTap,
-      child: Padding(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(GlassTokens.radiusSmall - 2),
+          // Soft accent wash + glow behind the active language.
+          gradient: selected
+              ? LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: <Color>[
+                    GlassColors.cyan.withValues(alpha: 0.18),
+                    GlassColors.cyan.withValues(alpha: 0.04),
+                  ],
+                )
+              : null,
+          border: Border(
+            left: BorderSide(
+              color: selected ? GlassColors.cyan : Colors.transparent,
+              width: 3,
+            ),
+          ),
+        ),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Row(
           children: <Widget>[
             Expanded(
-              child: Text(
-                label,
+              child: AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOutCubic,
                 style: GlassText.heading.copyWith(
                   color: selected ? GlassColors.cyan : GlassColors.text,
+                  fontWeight:
+                      selected ? FontWeight.w800 : GlassText.heading.fontWeight,
                 ),
+                child: Text(label),
               ),
             ),
+            // The check pops in (scale + fade) the moment a row becomes active;
+            // unselected rows show a faint outline placeholder.
             if (selected)
-              const Icon(Icons.check_circle, color: GlassColors.cyan, size: 22)
+              const Icon(
+                Icons.check_circle,
+                color: GlassColors.cyan,
+                size: 22,
+              )
+                  .animate(key: const ValueKey<bool>(true))
+                  .scaleXY(
+                    begin: 0.4,
+                    end: 1,
+                    duration: 260.ms,
+                    curve: Curves.easeOutBack,
+                  )
+                  .fadeIn(duration: 160.ms)
             else
               Icon(
                 Icons.circle_outlined,

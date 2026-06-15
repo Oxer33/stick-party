@@ -54,11 +54,14 @@ class ChickenRenderer {
   static const double _platWidthFactor = 0.78; // plat width / column width
   static const int _starsPerColumn = 14;
   static const int _pillarsPerColumn = 3;
-  static const double _parallaxFar = 0.18; // far layer drift factor
+  static const double _parallaxFar = 0.18; // far star layer drift factor
+  static const double _parallaxFarPillar = 0.26; // far pillar layer drift
   static const double _parallaxNear = 0.42; // near layer drift factor
   static const int _lavaWaves = 7; // surface ripple segments
   static const double _lavaCrestH = 6; // bright crest band thickness
   static const int _emberCount = 7; // floating embers above the lava
+  static const int _shimmerBands = 4; // heat-mirage rows above the lava
+  static const double _shimmerReach = 0.34; // shimmer height / column width
   static const double _contactShadowW = 2.0;
   static const double _contactShadowH = 0.42;
   static const double _altBarWFactor = 0.05; // altitude bar width / column width
@@ -123,11 +126,40 @@ class ChickenRenderer {
     canvas.drawRect(column, band);
 
     _drawParallaxStars(canvas, column, parallax, a);
-    _drawParallaxPillars(canvas, column, parallax, color, a);
+    // Two pillar depths: a dim far layer drifting slowly behind the brighter
+    // near layer for stronger parallax separation.
+    _drawParallaxPillars(canvas, column, parallax * _parallaxFarPillar, color,
+        a * 0.5,
+        far: true);
+    _drawParallaxPillars(canvas, column, parallax * _parallaxNear, color, a);
+    _drawColumnVignette(canvas, column, a);
 
     canvas.restore();
 
     _drawColumnFrame(canvas, column, color, d, a);
+  }
+
+  /// A soft edge-darkening vignette inside the column so the playfield reads
+  /// with depth and the center pops. Two stacked translucent frames (corners
+  /// darkest) approximate a radial falloff without a blur.
+  static void _drawColumnVignette(Canvas canvas, Rect column, double a) {
+    final inset = math.min(column.width, column.height) * 0.5;
+    if (inset < 6) return;
+    // Outer thick faint frame + a thinner darker one hugging the edge.
+    canvas.drawRect(
+      column,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = inset
+        ..color = _black.withValues(alpha: 0.16 * a),
+    );
+    canvas.drawRect(
+      column.deflate(inset * 0.5),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = inset * 0.5
+        ..color = _black.withValues(alpha: 0.10 * a),
+    );
   }
 
   /// A far drifting starfield. Positions are deterministic from the index (no
@@ -148,22 +180,31 @@ class ChickenRenderer {
     }
   }
 
-  /// Near rock pillars on the column sides for depth; drift faster than stars.
+  /// Rock pillars on the column sides for depth. The near layer drifts fast and
+  /// reads crisp; the [far] layer (passed a pre-scaled, slower [parallax]) is
+  /// dimmer, narrower and offset inward so it sits visibly behind — deepening
+  /// the parallax. [parallax] arrives already multiplied by the layer factor.
   static void _drawParallaxPillars(
-      Canvas canvas, Rect column, double parallax, Color color, double a) {
-    final drift = parallax * _parallaxNear;
-    final w = column.width * 0.16;
+      Canvas canvas, Rect column, double parallax, Color color, double a,
+      {bool far = false}) {
+    final drift = parallax;
+    final w = column.width * (far ? 0.10 : 0.16);
+    final inset = far ? column.width * 0.10 : 0.0; // tuck far layer inward
     final gap = column.height / _pillarsPerColumn;
     if (gap <= 4) return;
-    final fill = Paint()..color = _rockNear.withValues(alpha: 0.6 * a);
+    final fillTint = far ? _blend(_rockNear, _columnBottom, 0.5) : _rockNear;
+    final fill = Paint()..color = fillTint.withValues(alpha: 0.6 * a);
     final edgeColor =
-        _blend(_rockNear, color, 0.25).withValues(alpha: 0.5 * a);
+        _blend(fillTint, color, 0.25).withValues(alpha: 0.5 * a);
+    // Far layer is phase-shifted half a gap so the two rows never line up.
+    final phase = far ? gap * 0.5 : 0.0;
     for (var side = 0; side < 2; side++) {
       final left = side == 0;
-      final x0 = left ? column.left : column.right - w;
+      final x0 = left ? column.left + inset : column.right - w - inset;
       for (var i = -1; i <= _pillarsPerColumn; i++) {
-        final base = column.top + ((i * gap + drift) % (column.height + gap));
-        final h = gap * 0.5;
+        final base = column.top +
+            ((i * gap + drift + phase) % (column.height + gap));
+        final h = gap * (far ? 0.4 : 0.5);
         final rect = Rect.fromLTWH(x0, base - h * 0.5, w, h);
         final rr = RRect.fromRectAndCorners(
           rect,
@@ -204,6 +245,31 @@ class ChickenRenderer {
       ..strokeWidth = math.max(1.2, column.width * 0.008)
       ..color = color.withValues(alpha: (0.4 + 0.4 * d) * a);
     canvas.drawRRect(rrect, core);
+
+    // Glass top sheen: a bright white-tinted highlight riding the upper inner
+    // edge, fading toward the sides, so the neon frame reads like lit glass.
+    final sheenInset = inset.deflate(math.max(1.5, column.width * 0.012));
+    final r = math.max(6.0, column.width * 0.06);
+    final sheen = Path()
+      ..moveTo(sheenInset.left + r, sheenInset.top)
+      ..lineTo(sheenInset.right - r, sheenInset.top);
+    canvas.drawPath(
+      sheen,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, column.width * 0.01)
+        ..strokeCap = StrokeCap.round
+        ..shader = Gradient.linear(
+          Offset(sheenInset.left, sheenInset.top),
+          Offset(sheenInset.right, sheenInset.top),
+          [
+            _white.withValues(alpha: 0.0),
+            _blend(_white, color, 0.3).withValues(alpha: 0.45 * a),
+            _white.withValues(alpha: 0.0),
+          ],
+          const [0.0, 0.5, 1.0],
+        ),
+    );
 
     // Divider edge between adjacent columns.
     canvas.drawLine(
@@ -325,6 +391,21 @@ class ChickenRenderer {
       ..strokeJoin = StrokeJoin.round
       ..color = warn;
 
+    // Molten under-glow: a wider, warmer stroke laid UNDER the red fissures that
+    // only ramps in over the back half of the timer (crk → 1), so the fracture
+    // reads like it is heating up from within just before it gives way. Kept
+    // beneath the crisp warning strokes below so the danger cue is never dimmed.
+    final hot = math.max(0.0, (crk - 0.45) / 0.55).clamp(0.0, 1.0);
+    final Paint? glow = hot <= 0.01
+        ? null
+        : (Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.4, h * 0.34)
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = _blend(_crackWarn, _lavaCrest, 0.55)
+              .withValues(alpha: 0.5 * hot));
+
     // Three deterministic zig-zag fissures fanning down from the top edge.
     const seeds = [0.32, 0.55, 0.74];
     for (var i = 0; i < seeds.length; i++) {
@@ -334,7 +415,8 @@ class ChickenRenderer {
       path.lineTo(sx + dir * w * 0.08, -h * 0.05);
       path.lineTo(sx - dir * w * 0.06, h * 0.2);
       path.lineTo(sx + dir * w * 0.1, h * 0.42);
-      canvas.drawPath(path, stroke);
+      if (glow != null) canvas.drawPath(path, glow); // hot halo first (under)
+      canvas.drawPath(path, stroke); // crisp warning fissure on top
     }
 
     // A warning rim that grows with urgency.
@@ -556,10 +638,54 @@ class ChickenRenderer {
         ),
     );
 
+    _drawHeatShimmer(canvas, column, top, t, danger);
     _drawLavaCrest(canvas, column, top, t, danger);
     _drawEmbers(canvas, column, top, t);
 
     canvas.restore();
+  }
+
+  /// Vertical offset of the rippling crest at wave node [i]. Two stacked sine
+  /// harmonics (a slow swell + a faster chop) make the surface bumps visibly
+  /// rise and fall instead of sliding rigidly — shared by the glow band and the
+  /// crisp crest line so they ride exactly the same wave.
+  static double _crestWave(double t, int i, double amp) =>
+      math.sin(t * 3.2 + i * 1.3) * amp +
+      math.sin(t * 1.7 - i * 0.6) * amp * 0.45;
+
+  /// A shimmering heat-mirage band hanging just above the molten surface: a few
+  /// faint horizontal ribbons that wobble and breathe with the clock, selling
+  /// the rising-air distortion without any blur. Brightens a touch with
+  /// [danger]. Drawn under the crest so the bright surface line stays crisp.
+  static void _drawHeatShimmer(
+      Canvas canvas, Rect column, double top, double t, double danger) {
+    final reach = column.width * _shimmerReach;
+    if (reach < 4) return;
+    final d = danger.clamp(0.0, 1.0);
+    final seg = column.width / _lavaWaves;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.0, column.width * 0.012)
+      ..strokeCap = StrokeCap.round;
+    for (var b = 0; b < _shimmerBands; b++) {
+      final lift = reach * ((b + 1) / (_shimmerBands + 1));
+      final baseY = top - lift;
+      if (baseY <= column.top) continue;
+      // Higher ribbons fade out; nearer-the-surface ones read warmer.
+      final fade = 1.0 - lift / reach;
+      stroke.color = _blend(_lavaCrest, _ember, 0.4)
+          .withValues(alpha: (0.05 + 0.10 * d) * fade);
+      final wobble = column.width * 0.018 * (0.6 + 0.4 * fade);
+      final path = Path()..moveTo(column.left, baseY);
+      for (var i = 0; i <= _lavaWaves; i++) {
+        final x = column.left + seg * i;
+        // Phase keyed on band+node so each ribbon distorts on its own beat.
+        final y =
+            baseY + math.sin(t * 2.4 + i * 0.9 + b * 1.6) * wobble;
+        path.lineTo(x, y);
+      }
+      canvas.drawPath(path, stroke);
+    }
   }
 
   /// Bubbling bright crest: a rippled band riding the lava surface + a soft glow
@@ -574,7 +700,7 @@ class ChickenRenderer {
     final glowPath = Path()..moveTo(column.left, top);
     for (var i = 0; i <= _lavaWaves; i++) {
       final x = column.left + seg * i;
-      final y = top + math.sin(t * 3.2 + i * 1.3) * amp;
+      final y = top + _crestWave(t, i, amp);
       glowPath.lineTo(x, y);
     }
     glowPath
@@ -592,7 +718,7 @@ class ChickenRenderer {
     final crest = Path()..moveTo(column.left, top);
     for (var i = 0; i <= _lavaWaves; i++) {
       final x = column.left + seg * i;
-      final y = top + math.sin(t * 3.2 + i * 1.3) * amp;
+      final y = top + _crestWave(t, i, amp);
       crest.lineTo(x, y);
     }
     canvas.drawPath(
@@ -615,29 +741,57 @@ class ChickenRenderer {
     }
   }
 
-  /// Floating embers drifting up from the lava surface.
+  /// Floating embers drifting up from the lava surface. Each rises on its own
+  /// loop, sways sideways as it climbs, and flickers — all deterministic from
+  /// the index so the spark field stays lively without rng. A faint trailing
+  /// halo under the bright core fakes a glowing wake (no per-ember blur).
   static void _drawEmbers(Canvas canvas, Rect column, double top, double t) {
-    final paint = Paint();
+    final core = Paint();
+    final halo = Paint();
     for (var i = 0; i < _emberCount; i++) {
       final fx = _hash(i * 3 + 2);
+      final fy = _hash(i * 3 + 5); // independent seed for sway/flicker
       // Each ember rises on its own loop above the surface.
       final phase = (t * (0.4 + 0.3 * fx) + fx) % 1.0;
-      final x = column.left + fx * column.width;
+      // Sway widens as the spark climbs and cools, like rising hot air.
+      final sway = math.sin(t * (1.6 + fy) + i * 1.7) *
+          column.width * 0.05 *
+          phase;
+      final x = column.left + fx * column.width + sway;
       final y = top - phase * column.width * 0.9;
       if (y < column.top) continue;
-      final r = (column.width * 0.012) * (1.0 - phase);
+      final rise = 1.0 - phase;
+      // Twinkle so embers pulse rather than fade flatly.
+      final flick = 0.7 + 0.3 * math.sin(t * 7.0 + i * 2.3 + fy * 6.28);
+      final r = (column.width * 0.012) * rise;
       if (r <= 0.3) continue;
-      paint.color = _ember.withValues(alpha: (1.0 - phase) * 0.9);
-      canvas.drawCircle(Offset(x, y), r, paint);
+      final alpha = rise * 0.9 * flick;
+      // Trailing halo (slightly larger, fainter, warm) under the bright core.
+      halo.color = _blend(_ember, _lavaCrest, 0.3)
+          .withValues(alpha: alpha * 0.45);
+      canvas.drawCircle(Offset(x, y + r * 0.6), r * 1.8, halo);
+      core.color = _ember.withValues(alpha: alpha);
+      canvas.drawCircle(Offset(x, y), r, core);
     }
   }
 
   // ── Climber contact shadow + figure ────────────────────────────────────────
 
-  /// Soft contact shadow ellipse beneath the climber at the rung line.
+  /// Soft contact shadow ellipse beneath the climber at the rung line. A faint
+  /// warm dust-tinted rim hugs the outer edge so the foot reads as planted on
+  /// kicked-up grit rather than floating on a flat blob.
   static void drawContactShadow(
       Canvas canvas, Offset groundCenter, double width, bool alive) {
     if (!alive || width <= 0) return;
+    // Warm settled-dust ring just outside the shadow (wide + very faint).
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: groundCenter,
+        width: width * (_contactShadowW + 0.9),
+        height: width * (_contactShadowH + 0.3),
+      ),
+      Paint()..color = _ember.withValues(alpha: 0.05),
+    );
     // Two stacked translucent ovals (wide+faint under tight+darker) fake the
     // soft edge without a per-climber blur.
     canvas.drawOval(

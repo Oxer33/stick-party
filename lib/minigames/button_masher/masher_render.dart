@@ -72,6 +72,12 @@ class MasherRenderer {
     Color(0x10BFE8FF),
   ];
 
+  // Atmosphere extras (depth/parallax/summit light).
+  static const Color _rayTint = Color(0xFF8BD4FF); // cool summit light shafts
+  static const Color _vignette = Color(0x4A05070C); // edge-gutter darkening
+  static const Color _railSheen = Color(0xFFE8F2FF); // top-of-rail highlight
+  static const Color _scuffTint = Color(0xFFFFE7B0); // climbed-rung foothold
+
   // ── Tuning (fractions of tower width / arena; no inline magic numbers) ──────
   static const double _railWidthFrac = 0.5; // distance between the two rails
   static const double _railThickFrac = 0.09; // each rail's thickness / width
@@ -79,6 +85,7 @@ class MasherRenderer {
   static const double _flagPoleFrac = 1.0; // flag pole height / width
   static const int _groundLines = 4;
   static const int _cloudBands = 5;
+  static const int _summitRays = 5; // volumetric light shafts from the top
   static const double _barThickFrac = 0.34; // hazard bar height / width
   static const double _barSpikeFrac = 0.16; // spike teeth size / width
 
@@ -93,8 +100,8 @@ class MasherRenderer {
       );
     canvas.drawRect(Offset.zero & size, bg);
 
-    // Soft cool glow pooling near the top (toward the summit).
-    final glowR = size.width * 0.9;
+    // Soft cool glow pooling near the top (toward the summit), gently breathing.
+    final glowR = size.width * (0.86 + 0.05 * math.sin(t * 0.6));
     if (glowR > 0) {
       final center = Offset(size.width / 2, size.height * 0.18);
       canvas.drawCircle(
@@ -109,8 +116,57 @@ class MasherRenderer {
       );
     }
 
+    _drawSummitRays(canvas, size, t);
     _drawClouds(canvas, size, t);
     _drawGround(canvas, size);
+    _drawDepthVignette(canvas, size);
+  }
+
+  /// Faint volumetric light shafts fanning down from the summit — sells "tall"
+  /// and gives the upper sky some slow drift without obscuring the towers.
+  static void _drawSummitRays(Canvas canvas, Size size, double t) {
+    final apex = Offset(size.width / 2, -size.height * 0.05);
+    final reach = size.height * 0.72;
+    final paint = Paint()..blendMode = BlendMode.plus;
+    for (var i = 0; i < _summitRays; i++) {
+      final u = (i + 0.5) / _summitRays - 0.5; // −0.5..0.5
+      final sway = math.sin(t * 0.18 + i * 1.7) * 0.05;
+      final spread = size.width * (0.16 + 0.06 * (i % 2));
+      final dx = (u + sway) * size.width * 1.1;
+      final foot = Offset(apex.dx + dx, apex.dy + reach);
+      final ray = Path()
+        ..moveTo(apex.dx - spread * 0.18, apex.dy)
+        ..lineTo(apex.dx + spread * 0.18, apex.dy)
+        ..lineTo(foot.dx + spread, foot.dy)
+        ..lineTo(foot.dx - spread, foot.dy)
+        ..close();
+      final a = (0.05 + 0.03 * math.sin(t * 0.5 + i)).clamp(0.0, 1.0);
+      canvas.drawPath(
+        ray,
+        Paint()
+          ..blendMode = paint.blendMode
+          ..shader = Gradient.linear(
+            apex,
+            foot,
+            [_rayTint.withValues(alpha: a), const Color(0x00000000)],
+          ),
+      );
+    }
+  }
+
+  /// Vertical edge vignette — darkens the left/right gutters so the playfield
+  /// feels deep and the towers pop forward. Drawn after clouds, before actors.
+  static void _drawDepthVignette(Canvas canvas, Size size) {
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(0, size.height / 2),
+          Offset(size.width, size.height / 2),
+          const [_vignette, Color(0x00000000), Color(0x00000000), _vignette],
+          const [0.0, 0.16, 0.84, 1.0],
+        ),
+    );
   }
 
   /// Slow drifting cloud bands for height + parallax.
@@ -201,6 +257,21 @@ class MasherRenderer {
             const [_railSteelHi, _railSteel],
           ),
       );
+      // Top sheen cap — a bright glint where each rail catches the summit light,
+      // fading down so the tower reads as polished metal rising into depth.
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTRB(x - railThick * 0.24, t.railTop,
+              x + railThick * 0.06, t.railTop + t.railSpan * 0.22),
+          Radius.circular(railThick * 0.3),
+        ),
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(0, t.railTop),
+            Offset(0, t.railTop + t.railSpan * 0.22),
+            [_railSheen.withValues(alpha: 0.55), const Color(0x00000000)],
+          ),
+      );
     }
 
     _drawRungs(canvas, t, color, rungs, reachedFraction, glowPulse, lx, rx);
@@ -221,6 +292,7 @@ class MasherRenderer {
   ) {
     final rungThick = math.max(2.0, t.width * _rungThickFrac);
     final reachedRung = (reachedFraction.clamp(0.0, 1.0) * rungs).round();
+    final scuffPaint = Paint(); // reused across climbed rungs (no per-rung alloc)
     for (var i = 1; i <= rungs; i++) {
       final pos = t.rungPos(i);
       final lit = i <= reachedRung;
@@ -238,6 +310,20 @@ class MasherRenderer {
             ..color = color
                 .withValues(alpha: (0.12 + 0.1 * glowPulse).clamp(0.0, 1.0)),
         );
+        // Foothold "scuff": a faint warm smudge worn into a rung already
+        // climbed past, so the trail of conquered rungs reads as progress.
+        // Only on rungs strictly below the current best (i < reachedRung).
+        if (i < reachedRung) {
+          // Deterministic side + size variation by index — looks worn, not
+          // stamped, with zero randomness in render.
+          final side = (i.isEven ? 1.0 : -1.0);
+          final jitter = math.sin(i * 1.7);
+          final sx = t.center + side * t.width * (0.07 + 0.05 * jitter.abs());
+          final scuffR = rungThick * (0.7 + 0.2 * jitter.abs());
+          scuffPaint.color =
+              _scuffTint.withValues(alpha: 0.10 + 0.05 * jitter.abs());
+          canvas.drawCircle(Offset(sx, pos.dy), scuffR, scuffPaint);
+        }
       }
       canvas.drawRRect(
         RRect.fromRectAndRadius(
@@ -309,16 +395,22 @@ class MasherRenderer {
     }
 
     final alpha = live ? 1.0 : 0.28; // dwelling bars sit faint at the edge
-    _drawLiveBar(canvas, center, barW, h, alpha);
+    // Bars sweep either direction across the lane, so the speed fx are kept
+    // symmetric (both vertical faces). laneFrac doubles as the motion phase that
+    // drives the spark trail + shimmer deterministically.
+    _drawLiveBar(canvas, center, barW, h, alpha, laneFrac.clamp(0.0, 1.0), live);
   }
 
-  static void _drawLiveBar(
-      Canvas canvas, Offset center, double w, double h, double alpha) {
+  static void _drawLiveBar(Canvas canvas, Offset center, double w, double h,
+      double alpha, double phase, bool live) {
     final a = alpha.clamp(0.0, 1.0);
     final rect = RRect.fromRectAndRadius(
       Rect.fromCenter(center: center, width: w, height: h),
       Radius.circular(h * 0.3),
     );
+    // Motion trail FIRST (behind the slab) so the bar plows over its own streaks
+    // — reads as fast & dangerous without touching the telegraph (warn) layer.
+    if (live) _drawSpeedTrail(canvas, center, w, h, a, phase);
     // Danger glow (cheap stacked disc, no blur).
     if (a > 0.5) {
       canvas.drawRRect(
@@ -343,6 +435,9 @@ class MasherRenderer {
           const [0.0, 0.5, 1.0],
         ),
     );
+    // Speed shimmer: a thin diagonal highlight sliding across the slab face,
+    // clipped to the bar so it never bleeds onto the lane guides.
+    if (live) _drawShimmer(canvas, rect, center, w, h, a, phase);
     canvas.drawRRect(
       rect,
       Paint()
@@ -351,6 +446,95 @@ class MasherRenderer {
         ..color = _white.withValues(alpha: 0.5 * a),
     );
     _drawSpikes(canvas, center, w, h, a);
+    // Hot rims on BOTH vertical faces — the cutting edges glow brightest. Kept
+    // symmetric so it's correct whichever way the bar is sweeping.
+    if (live) {
+      final rimPaint = Paint()..color = _hazardHi.withValues(alpha: 0.85 * a);
+      for (final dir in [-1.0, 1.0]) {
+        final ex = center.dx + dir * w / 2;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTRB(math.min(ex, ex - dir * h * 0.18),
+                center.dy - h / 2, math.max(ex, ex - dir * h * 0.18),
+                center.dy + h / 2),
+            Radius.circular(h * 0.3),
+          ),
+          rimPaint,
+        );
+      }
+    }
+  }
+
+  /// Spark/streak trail dragging off BOTH vertical faces — a few tapering
+  /// horizontal whiskers plus tiny sparks, all driven by [phase] so they jitter
+  /// deterministically as the bar sweeps. Symmetric (direction-agnostic). Drawn
+  /// behind the slab; never covers the warn telegraph (which returns early
+  /// before any live drawing).
+  static void _drawSpeedTrail(
+      Canvas canvas, Offset center, double w, double h, double a, double phase) {
+    final len = w * (0.5 + 0.25 * a); // how far the streaks reach outward
+    final streak = Paint()
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    const lanes = 4;
+    for (final dir in [-1.0, 1.0]) {
+      final edge = center.dx + dir * w / 2;
+      for (var i = 0; i < lanes; i++) {
+        final ly = center.dy + (i / (lanes - 1) - 0.5) * h * 0.74;
+        // Each whisker pulses its length with the sweep phase + its own offset.
+        final wobble = 0.65 + 0.35 * math.sin(phase * 6.2832 + i * 1.3 + dir);
+        final tail = edge + dir * len * wobble;
+        streak
+          ..strokeWidth = math.max(1.0, h * 0.08 * (1.0 - i * 0.12))
+          ..shader = Gradient.linear(
+            Offset(edge, ly),
+            Offset(tail, ly),
+            [_hazardHi.withValues(alpha: 0.45 * a), const Color(0x00000000)],
+          );
+        canvas.drawLine(Offset(edge, ly), Offset(tail, ly), streak);
+      }
+    }
+    // Darting sparks just off each edge.
+    final sparkPaint = Paint();
+    for (final dir in [-1.0, 1.0]) {
+      final edge = center.dx + dir * w / 2;
+      for (var i = 0; i < 2; i++) {
+        final ph = (phase * 1.7 + i * 0.5 + (dir > 0 ? 0.0 : 0.27)) % 1.0;
+        final sx = edge + dir * len * (0.25 + 0.6 * ph);
+        final sy = center.dy + math.sin(phase * 9.4 + i * 2.1 + dir) * h * 0.3;
+        final sr = h * 0.1 * (1.0 - ph);
+        if (sr <= 0) continue;
+        sparkPaint.color = _blend(_hazardHi, _white, 0.4)
+            .withValues(alpha: 0.6 * a * (1 - ph));
+        canvas.drawCircle(Offset(sx, sy), sr, sparkPaint);
+      }
+    }
+  }
+
+  /// A single bright diagonal sweep crossing the slab face for a metallic
+  /// speed-glint. Clipped to [rect] so it stays inside the bar.
+  static void _drawShimmer(Canvas canvas, RRect rect, Offset center, double w,
+      double h, double a, double phase) {
+    if (w <= 1) return;
+    canvas.save();
+    canvas.clipRRect(rect);
+    // Glint travels across the bar, looping with the sweep phase.
+    final p = (phase * 2.0) % 1.0;
+    final gx = center.dx - w / 2 + p * (w + h);
+    final band = h * 0.5;
+    final glint = Path()
+      ..moveTo(gx, center.dy - h)
+      ..lineTo(gx + band, center.dy - h)
+      ..lineTo(gx + band - h, center.dy + h)
+      ..lineTo(gx - h, center.dy + h)
+      ..close();
+    canvas.drawPath(
+      glint,
+      Paint()
+        ..blendMode = BlendMode.plus
+        ..color = _white.withValues(alpha: 0.16 * a),
+    );
+    canvas.restore();
   }
 
   /// Hazard-stripe spike teeth along the top + bottom edge so the bar reads as
@@ -490,12 +674,8 @@ class MasherRenderer {
     required double scale,
   }) {
     if (stunned) {
-      // Knocked-loose tell: a slight lean + a faint red wash behind the figure.
-      canvas.drawCircle(
-        root.translate(0, -scale * 0.6),
-        scale * 0.8,
-        Paint()..color = hazardRed.withValues(alpha: 0.18),
-      );
+      _drawKnockbackWash(canvas, root, scale);
+      // Knocked-loose tell: a slight lean (kept) on top of the red wash.
       canvas.save();
       canvas.translate(root.dx, root.dy);
       canvas.rotate(0.12);
@@ -504,13 +684,65 @@ class MasherRenderer {
       canvas.restore();
       return;
     }
-    figure.render(canvas, root);
-    // A drawn reaching hand-hold cue when stepping up.
     final r = reach.clamp(0.0, 1.0);
+    // Strain shake: while a step is lunging hard the body trembles. Derived from
+    // [reach] only (no clock needed) — reach ramps 0→1→0 across a step, so
+    // hashing it through sin() yields a deterministic sub-pixel tremor that lives
+    // exactly during the fast part of a climb and dies when clinging.
+    final shake = _strainShake(r, scale);
+    if (shake != Offset.zero) {
+      canvas.save();
+      canvas.translate(shake.dx, shake.dy);
+      figure.render(canvas, root);
+      canvas.restore();
+      // Faint effort glow at the hips when straining hardest.
+      _softGlow(canvas, root.translate(0, -scale * 0.7), scale * 0.34, color,
+          0.12 * r);
+    } else {
+      figure.render(canvas, root);
+    }
+    // A drawn reaching hand-hold cue when stepping up.
     if (r > 0.02) {
-      final hand = root.translate(scale * 0.08, -scale * (1.5 + 0.5 * r));
+      final hand = root.translate(
+          scale * 0.08 + shake.dx, -scale * (1.5 + 0.5 * r) + shake.dy);
       canvas.drawCircle(
           hand, scale * 0.1 * r, Paint()..color = _blend(color, _white, 0.5));
+    }
+  }
+
+  /// Deterministic strain tremor for the climbing body. Amplitude ramps with the
+  /// step intensity [r]; the offset is a function of [r] alone (two detuned sines)
+  /// so it shivers frame-to-frame as [r] sweeps, with no clock and no randomness.
+  static Offset _strainShake(double r, double scale) {
+    if (r < 0.18) return Offset.zero; // only the hard, fast part of a step
+    final amp = scale * 0.05 * r;
+    final dx = math.sin(r * 47.0) * amp;
+    final dy = math.sin(r * 61.0 + 1.3) * amp * 0.6;
+    return Offset(dx, dy);
+  }
+
+  /// Red knockback flash behind a bar-struck climber: a layered hot wash plus a
+  /// few outward impact streaks. Brighter + punchier than a flat disc so the hit
+  /// reads instantly, while staying behind the (leaning) figure.
+  static void _drawKnockbackWash(Canvas canvas, Offset root, double scale) {
+    final c = root.translate(0, -scale * 0.7);
+    // Layered wash (stacked translucent discs, no blur).
+    canvas.drawCircle(
+        c, scale * 1.05, Paint()..color = hazardRed.withValues(alpha: 0.12));
+    canvas.drawCircle(
+        c, scale * 0.72, Paint()..color = hazardRed.withValues(alpha: 0.22));
+    canvas.drawCircle(c, scale * 0.4,
+        Paint()..color = _blend(hazardRed, _white, 0.3).withValues(alpha: 0.3));
+    // Impact streaks radiating out — deterministic angles, no per-frame alloc.
+    final streak = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.5, scale * 0.06)
+      ..color = _hazardHi.withValues(alpha: 0.45);
+    for (var i = 0; i < 6; i++) {
+      final ang = i * (math.pi * 2 / 6) + 0.4;
+      final inner = c + Offset(math.cos(ang), math.sin(ang)) * scale * 0.5;
+      final outer = c + Offset(math.cos(ang), math.sin(ang)) * scale * 0.95;
+      canvas.drawLine(inner, outer, streak);
     }
   }
 

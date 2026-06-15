@@ -24,6 +24,7 @@ class ReactionRenderer {
   static const Color _skyTop = Color(0xFF1A1030); // deep dusk violet
   static const Color _skyMid = Color(0xFF59264A); // plum band
   static const Color _skyHot = Color(0xFFC8523A); // sunset ember
+  static const Color _skyWarm = Color(0xFFE07A45); // warm sub-band (ember→haze)
   static const Color _skyHaze = Color(0xFFF2A65A); // low haze near horizon
   static const Color _sunCore = Color(0xFFFFE3A0);
   static const Color _sunEdge = Color(0xFFFF7A3C);
@@ -47,6 +48,8 @@ class ReactionRenderer {
   static const double _sunRadiusFrac = 0.125; // sun radius / width
   static const int _groundLineCount = 5;
   static const int _bambooCount = 9;
+  static const int _moteCount = 26; // drifting dust glints in the lit haze
+  static const int _shimmerBands = 3; // heat/dust ripple bands near horizon
   static const double _bambooWidthFrac = 0.018; // stalk width / width
   static const double _vignInnerFrac = 0.46;
   static const double _vignOuterFrac = 0.78;
@@ -58,24 +61,114 @@ class ReactionRenderer {
   // Duelist marker tuning (fractions of body scale unit `u`).
   static const double _shadowWFactor = 2.6;
   static const double _shadowHFactor = 0.55;
+  static const double _shadowReachFactor = 5.2; // long cast-shadow streak length
   static const double _readoutFontU = 0.6;
 
   // ── Background: dusk gradient sky + sinking sun + bamboo silhouettes ────────
   static void drawBackground(Canvas canvas, Size size, double t) {
     final horizon = size.height * _horizonFrac;
 
-    // Vertical dusk gradient: violet → plum → ember → haze at the horizon.
+    // Vertical dusk gradient: violet → plum → ember → haze at the horizon, with
+    // an extra warm sub-band so the ember→haze transition glows instead of
+    // banding hard.
     final sky = Paint()
       ..shader = Gradient.linear(
         Offset(size.width / 2, 0),
         Offset(size.width / 2, horizon),
-        const [_skyTop, _skyMid, _skyHot, _skyHaze],
-        const [0.0, 0.45, 0.82, 1.0],
+        const [_skyTop, _skyMid, _skyHot, _skyWarm, _skyHaze],
+        const [0.0, 0.42, 0.74, 0.90, 1.0],
       );
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, horizon), sky);
 
     _drawSun(canvas, size, horizon);
+    _drawSunFlare(canvas, size, t);
+    _drawDustMotes(canvas, size, horizon, t);
     _drawBamboo(canvas, size, horizon, t);
+  }
+
+  /// A soft anamorphic lens flare off the low sun: a faint horizontal streak
+  /// plus a couple of drifting ghost discs along the sun→centre axis. Stacked
+  /// translucent fills (no blur), gently breathing on the clock [t] so it reads
+  /// as a living glare rather than a static decal.
+  static void _drawSunFlare(Canvas canvas, Size size, double t) {
+    final center = Offset(size.width * 0.5, size.height * _sunCenterFrac);
+    final r = size.width * _sunRadiusFrac;
+    if (r <= 1) return;
+    final breathe = 0.85 + 0.15 * math.sin(t * 0.9);
+
+    // Horizontal anamorphic streak through the sun — three stacked widths so it
+    // tapers from a hot core to a soft glare.
+    final streakHalf = size.width * 0.5;
+    for (final layer in const [
+      [1.0, 0.16, 0.018],
+      [0.62, 0.22, 0.045],
+      [0.30, 0.20, 0.10],
+    ]) {
+      final hw = streakHalf * layer[0];
+      final hh = r * layer[2] * 6.0;
+      canvas.drawRect(
+        Rect.fromCenter(center: center, width: hw * 2, height: hh),
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(center.dx - hw, center.dy),
+            Offset(center.dx + hw, center.dy),
+            [
+              const Color(0x00000000),
+              _sunCore.withValues(alpha: layer[1] * breathe),
+              const Color(0x00000000),
+            ],
+            const [0.0, 0.5, 1.0],
+          ),
+      );
+    }
+
+    // Ghost discs marching from the sun toward the frame centre.
+    final axis = Offset(size.width * 0.5, size.height * 0.5) - center;
+    for (final g in const [
+      [0.55, 0.42, 0.10],
+      [1.05, 0.26, 0.07],
+      [1.55, 0.62, 0.05],
+    ]) {
+      final gc = center + axis * g[0];
+      canvas.drawCircle(
+        gc,
+        r * g[1],
+        Paint()
+          ..shader = Gradient.radial(
+            gc,
+            r * g[1],
+            [
+              _sunCore.withValues(alpha: g[2] * breathe),
+              const Color(0x00000000),
+            ],
+          ),
+      );
+    }
+  }
+
+  /// Slow warm dust-mote drift in the lit haze above the horizon — tiny glints
+  /// that rise and fade, their positions a deterministic function of index and
+  /// clock [t] (no Random/DateTime). Sells warm evening air without touching the
+  /// signal layer.
+  static void _drawDustMotes(
+      Canvas canvas, Size size, double horizon, double t) {
+    final glint = Paint();
+    for (var i = 0; i < _moteCount; i++) {
+      final fx = (i * 0.61803398875) % 1.0; // golden-ratio spread, stable
+      final x = fx * size.width;
+      // Each mote drifts upward on its own slow loop, wrapping 0..1.
+      final phase = ((t * (0.018 + 0.012 * (i % 5) / 4) + i * 0.137) % 1.0);
+      final y = horizon - phase * (size.height * 0.30);
+      final wob = math.sin(t * 0.7 + i) * size.width * 0.004;
+      // Fade in at the bottom, out at the top → soft twinkle.
+      final fade = math.sin(phase * math.pi);
+      final twinkle = 0.45 + 0.55 * math.sin(t * 2.0 + i * 1.7).abs();
+      final a = 0.5 * fade * twinkle;
+      if (a <= 0.01) continue;
+      final rad = size.width * (0.0016 + 0.0014 * (i % 3) / 2);
+      glint.color = _sunCore.withValues(alpha: a);
+      canvas.drawCircle(Offset(x + wob, y), rad, glint);
+    }
   }
 
   /// The sinking sun: a soft outer halo + a bright gradient disc resting on the
@@ -158,8 +251,9 @@ class ReactionRenderer {
   }
 
   /// The dueling ground: a warm-dark gradient slab with a few receding lines
-  /// for perspective.
-  static void drawGround(Canvas canvas, Size size) {
+  /// for perspective. Pass the clock [t] for a faint heat/dust shimmer banding
+  /// near the horizon (default 0 = still, for callers that want a static slab).
+  static void drawGround(Canvas canvas, Size size, [double t = 0]) {
     final top = size.height * _horizonFrac;
     final rect = Rect.fromLTWH(0, top, size.width, size.height - top);
     canvas.drawRect(
@@ -171,10 +265,42 @@ class ReactionRenderer {
           const [_groundTop, _groundBottom],
         ),
     );
+
+    // Warm haze hugging the horizon — the lit air spilling down from the sky,
+    // fading out before mid-field so the duelists stay crisp. A single radial
+    // fill (no blur), drawn under the perspective lines.
+    final hazeH = (size.height - top) * 0.34;
+    canvas.drawRect(
+      Rect.fromLTWH(0, top, size.width, hazeH),
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(0, top),
+          Offset(0, top + hazeH),
+          [
+            _skyHaze.withValues(alpha: 0.16),
+            const Color(0x00000000),
+          ],
+        ),
+    );
+
+    final span = size.height - top;
+    // Heat/dust shimmer: a couple of slow horizontal bright bands rippling just
+    // above the horizon, their offset a deterministic function of the clock.
+    final shimmer = Paint();
+    for (var s = 0; s < _shimmerBands; s++) {
+      final base = (s + 0.5) / _shimmerBands;
+      final drift = math.sin(t * 0.6 + s * 2.1) * 0.04;
+      final fr = (base * 0.5 + drift).clamp(0.02, 0.6);
+      final y = top + span * fr * fr;
+      final wave = 0.5 + 0.5 * math.sin(t * 1.3 + s * 1.7);
+      shimmer.color = _skyHaze.withValues(alpha: 0.05 + 0.05 * wave);
+      shimmer.strokeWidth = math.max(2.0, span * 0.02);
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), shimmer);
+    }
+
     final line = Paint()
       ..color = _groundLine
       ..strokeWidth = 1.5;
-    final span = size.height - top;
     for (var i = 1; i <= _groundLineCount; i++) {
       final fr = i / (_groundLineCount + 1);
       final y = top + span * fr * fr; // bunch toward the horizon
@@ -202,17 +328,44 @@ class ReactionRenderer {
     );
   }
 
-  /// Soft contact shadow ellipse beneath a duelist at ground level. [u] is the
-  /// figure scale unit (≈ torso width).
+  /// Soft contact shadow beneath a duelist at ground level. [u] is the figure
+  /// scale unit (≈ torso width). The low dusk sun (high and behind the field)
+  /// rakes a long shadow forward toward the viewer: a tapering streak that fades
+  /// out, capped by the crisp contact oval at the feet. Stacked translucent
+  /// fills only (no per-frame blur).
   static void drawContactShadow(Canvas canvas, Offset feet, double u) {
-    // A plain translucent oval grounds the figure without a per-frame blur.
+    // Long cast streak: a quad from a narrow band at the feet to a wider, fully
+    // faded far end pulled forward (down-screen) from the low sun behind.
+    final reach = u * _shadowReachFactor;
+    final nearHalf = u * _shadowWFactor * 0.42;
+    final farHalf = u * _shadowWFactor * 0.62;
+    final farY = feet.dy + reach;
+    final streak = Path()
+      ..moveTo(feet.dx - nearHalf, feet.dy)
+      ..lineTo(feet.dx + nearHalf, feet.dy)
+      ..lineTo(feet.dx + farHalf, farY)
+      ..lineTo(feet.dx - farHalf, farY)
+      ..close();
+    canvas.drawPath(
+      streak,
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(feet.dx, feet.dy),
+          Offset(feet.dx, farY),
+          [
+            _black.withValues(alpha: 0.30),
+            const Color(0x00000000),
+          ],
+        ),
+    );
+    // Crisp contact oval grounds the figure right at the feet.
     canvas.drawOval(
       Rect.fromCenter(
         center: feet,
         width: u * _shadowWFactor,
         height: u * _shadowHFactor,
       ),
-      Paint()..color = _black.withValues(alpha: 0.28),
+      Paint()..color = _black.withValues(alpha: 0.30),
     );
   }
 
@@ -254,14 +407,50 @@ class ReactionRenderer {
   }
 
   /// Per-player reaction readout above a duelist: their result this round
-  /// ("WAIT" greyed, a slash-time in ms once they react, or "TOO SOON!").
+  /// (a slash-time in ms once they react). [waitBreath] in 0..1 is an OPTIONAL
+  /// additive cue (default 0 = off, no behavior change): a faint breath puff
+  /// drifting up from the duelist's mouth while they hold their nerve through
+  /// WAIT. The mouth sits roughly one font-height below the readout anchor; the
+  /// caller drives the value off its existing WAIT pulse so no new clock is
+  /// needed. Purely visual — never affects the WAIT/feint/GO signal.
   static void drawReadout(
     Canvas canvas,
     Offset above,
     double u,
     String text,
-    Color color,
-  ) {
+    Color color, {
+    double waitBreath = 0.0,
+  }) {
+    final breath = waitBreath.clamp(0.0, 1.0);
+    if (breath > 0.01) {
+      // Two small puffs rising from the mouth, the second trailing and fainter,
+      // so it reads as a slow exhale. Position/size from [u] only; the pulse
+      // value animates the rise + fade.
+      final mouth = above.translate(0, u * _readoutFontU + u * 0.9);
+      final rise = u * (0.5 + 1.3 * breath);
+      for (final p in const [
+        [0.0, 1.0, 0.55],
+        [0.45, 0.7, 0.34],
+      ]) {
+        final puffY = mouth.dy - rise * (0.5 + p[0]);
+        final pr = u * 0.28 * p[1] * (0.7 + 0.6 * breath);
+        final pa = 0.28 * p[2] * (1.0 - breath); // fades as the exhale ages
+        if (pa <= 0.01) continue;
+        canvas.drawCircle(
+          Offset(mouth.dx, puffY),
+          pr,
+          Paint()
+            ..shader = Gradient.radial(
+              Offset(mouth.dx, puffY),
+              pr,
+              [
+                _white.withValues(alpha: pa),
+                const Color(0x00000000),
+              ],
+            ),
+        );
+      }
+    }
     if (text.isEmpty) return;
     _drawText(canvas, text, above, u * _readoutFontU, color,
         weight: FontWeight.w800, glow: true);
@@ -273,6 +462,12 @@ class ReactionRenderer {
   /// in 0..1 punches in then fades the "STRIKE!" word so it clears the field for
   /// the KO. When [struck] is false it draws the calm red "WAIT…" pulse;
   /// [waitPulse] in 0..1 throbs it.
+  ///
+  /// [feint] (default false) marks a BLUFF "GO!" — same green word so it still
+  /// genuinely bluffs, but deliberately a touch flatter (no white-hot shockwave,
+  /// cooler/dimmer bloom) so the REAL GO punches visibly harder by contrast.
+  /// Opt-in: leave false and the real-GO punch upgrade still applies to every
+  /// strike, so existing callers get the harder pop with no change.
   static void drawCenterCue(
     Canvas canvas,
     Size size, {
@@ -281,13 +476,14 @@ class ReactionRenderer {
     required double waitPulse,
     double strikeWord = 1.0,
     double centerFrac = 0.5,
+    bool feint = false,
   }) {
     final center = Offset(size.width / 2, size.height * centerFrac);
     if (!struck) {
       _drawWaitCue(canvas, size, center, waitPulse.clamp(0.0, 1.0));
     } else {
       _drawStrikeCue(canvas, size, center, strikeFlash.clamp(0.0, 1.0),
-          strikeWord.clamp(0.0, 1.0));
+          strikeWord.clamp(0.0, 1.0), feint);
     }
   }
 
@@ -328,13 +524,15 @@ class ReactionRenderer {
     );
   }
 
-  static void _drawStrikeCue(
-      Canvas canvas, Size size, Offset center, double flash, double word) {
+  static void _drawStrikeCue(Canvas canvas, Size size, Offset center,
+      double flash, double word, bool feint) {
     // A tight green burst behind the "GO!" word that fades as `flash` → 0. Kept
     // tight (the full-screen wash is the separate screen-flash overlay) so it
-    // reads as a halo around the banner rather than washing the whole sky.
+    // reads as a halo around the banner rather than washing the whole sky. The
+    // feint keeps the same green so it still bluffs, just a touch flatter.
+    final bloomScale = feint ? 0.8 : 1.0;
     if (flash > 0.01) {
-      final r = size.width * (0.28 + 0.12 * (1 - flash));
+      final r = size.width * (0.28 + 0.12 * (1 - flash)) * bloomScale;
       canvas.drawCircle(
         center,
         r,
@@ -343,19 +541,51 @@ class ReactionRenderer {
             center,
             r,
             [
-              _goGreen.withValues(alpha: 0.6 * flash),
-              _goGreenDeep.withValues(alpha: 0.28 * flash),
+              _goGreen.withValues(alpha: (feint ? 0.46 : 0.6) * flash),
+              _goGreenDeep.withValues(alpha: (feint ? 0.2 : 0.28) * flash),
               const Color(0x00000000),
             ],
             const [0.0, 0.45, 1.0],
           ),
       );
+
+      // REAL GO only: a fast white-hot shockwave ring that expands and thins as
+      // the flash decays — the extra "punch" that makes the true signal pop
+      // visibly harder than the bluff. Omitted for the feint so the bluff feels
+      // a hair flat in hindsight without ever ceasing to read as a green GO.
+      if (!feint) {
+        final ringR = size.width * (0.16 + 0.34 * (1 - flash));
+        canvas.drawCircle(
+          center,
+          ringR,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = math.max(2.0, size.width * 0.012 * flash)
+            ..color = _white.withValues(alpha: 0.7 * flash),
+        );
+        // A tight inner white core bloom at the peak for the blinding kick.
+        canvas.drawCircle(
+          center,
+          size.width * 0.10 * flash,
+          Paint()
+            ..shader = Gradient.radial(
+              center,
+              math.max(1.0, size.width * 0.10 * flash),
+              [
+                _white.withValues(alpha: 0.55 * flash),
+                const Color(0x00000000),
+              ],
+            ),
+        );
+      }
     }
     // The word punches in big then fades out (alpha + scale from `word`) so it
     // never lingers over the KO that follows. "GO!" in bright green reinforces
-    // the per-zone green flash (the kid-clear "tap now" signal).
+    // the per-zone green flash (the kid-clear "tap now" signal). The real GO
+    // snaps in a touch bigger with a white-hot halo; the feint is flatter.
     if (word <= 0.01) return;
-    final scale = 1.0 + 0.45 * (1 - word); // grows as it fades for a "boom" feel
+    final grow = feint ? 0.36 : 0.55; // real GO booms a little harder
+    final scale = 1.0 + grow * (1 - word);
     _drawText(
       canvas,
       'GO!',
@@ -364,7 +594,8 @@ class ReactionRenderer {
       _goGreen.withValues(alpha: word),
       weight: FontWeight.w900,
       glow: true,
-      glowColor: _white.withValues(alpha: word),
+      glowColor:
+          (feint ? _goGreenDeep : _white).withValues(alpha: word),
     );
   }
 

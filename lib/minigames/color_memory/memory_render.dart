@@ -20,11 +20,15 @@ class MemoryRenderer {
   static const Color _bgMid = Color(0xFF0E1C33); // mid console blue
   static const Color _bgBottom = Color(0xFF05070E); // near-black floor
   static const Color _vignette = Color(0xCC04060C);
+  static const Color _vignBase = Color(0x9902030A); // cabinet-base floor shadow
   static const Color _gridLine = Color(0x14A9C7FF);
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _consoleFill = Color(0xFF0B1120);
   static const Color _consoleEdge = Color(0x3389B4FF);
+  static const Color _bgSheen = Color(0x12BFD4FF); // top-edge glass light wash
+  static const Color _scanLine = Color(0x0A03060E); // faint CRT scanline ink
+  static const Color _hubAura = Color(0xFFFFFFFF); // base for hub aura blend
   static const Color _watchBanner = Color(0xFF6FA8FF); // calm "WATCH" blue
   static const Color _turnBanner = Color(0xFF54E08A); // active "YOUR TURN" green
   static const Color _pipDim = Color(0x33FFFFFF);
@@ -41,14 +45,20 @@ class MemoryRenderer {
   // ── Tuning (fractions / factors; no inline magic numbers) ──────────────────
   static const double _vignInnerFrac = 0.40;
   static const double _vignOuterFrac = 0.82;
+  static const double _vignBaseFrac = 0.30; // bottom darken band height / screen H
+  static const double _bgSheenFrac = 0.22; // top sheen band height / screen H
+  static const int _scanLineCount = 140; // approx scanline rows down the screen
   static const int _gridCols = 7;
   static const int _gridRows = 11;
   static const double _padGapFactor = 0.06; // gap between quadrants / half
   static const double _padCornerFactor = 0.16; // pad corner radius / half
+  static const double _padShadowFrac = 0.05; // pad drop-shadow offset / cell H
+  static const double _padBevelFrac = 0.06; // inset bevel inset / cell W
   static const double _clusterCornerFactor = 0.10; // cluster plate corner / side
   static const double _clusterPadFactor = 0.10; // inset of pads inside plate
   static const double _baseAlpha = 0.34; // resting pad fill alpha
   static const double _hubGapFactor = 0.30; // hub hole / half (cluster center)
+  static const double _hubAuraScale = 1.45; // hub aura ring radius / hub hole
   static const double _seqDiscFactor = 0.085; // center disc radius / minSide
   static const double _pipRadiusFactor = 0.010; // progress pip radius / blockW
   static const double _bannerFontFrac = 0.052; // phase banner font / width
@@ -72,6 +82,19 @@ class MemoryRenderer {
       );
     canvas.drawRect(Offset.zero & size, bg);
 
+    // Console top sheen: a soft light wash down from the top edge so the cabinet
+    // reads as a lit glass panel rather than a flat fill (cheap single fill).
+    final sheenH = size.height * _bgSheenFrac;
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, sheenH),
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(0, 0),
+          Offset(0, sheenH),
+          const [_bgSheen, Color(0x00FFFFFF)],
+        ),
+    );
+
     final line = Paint()
       ..color = _gridLine
       ..strokeWidth = 1.0;
@@ -82,6 +105,17 @@ class MemoryRenderer {
     for (var r = 1; r < _gridRows; r++) {
       final y = size.height * (r / _gridRows);
       canvas.drawLine(Offset(0, y), Offset(size.width, y), line);
+    }
+
+    // Faint CRT scanline texture: thin dark lines stacked over the grid give the
+    // cabinet a retro-monitor finish. Spaced wide (every few px) so it stays
+    // cheap and never moires the pads. Static (no clock) → deterministic.
+    final scan = Paint()
+      ..color = _scanLine
+      ..strokeWidth = 1.0;
+    final step = math.max(3.0, size.height / _scanLineCount);
+    for (var y = 0.0; y < size.height; y += step) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), scan);
     }
   }
 
@@ -98,6 +132,20 @@ class MemoryRenderer {
           outer,
           const [Color(0x00000000), _vignette],
           [(inner / outer).clamp(0.0, 0.99), 1.0],
+        ),
+    );
+
+    // Cabinet-base darken: a soft shadow rising from the bottom edge grounds the
+    // console and deepens the floor (single fill, no blur). Completes the depth
+    // recipe — top sheen (bg) + bottom darken (here).
+    final baseH = size.height * _vignBaseFrac;
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height - baseH, size.width, baseH),
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(0, size.height),
+          Offset(0, size.height - baseH),
+          const [_vignBase, Color(0x00000000)],
         ),
     );
   }
@@ -124,7 +172,58 @@ class MemoryRenderer {
     final side = math.min(block.width, block.height);
     final plate =
         Rect.fromCenter(center: block.center, width: side, height: side);
+
+    // Breathing glow on the ACTIVE player's plate: a soft accent halo behind the
+    // plate that swells with [turnPulse], so whoever it is time to tap softly
+    // pulses and draws the eye. Two stacked translucent inflated RRects (no blur)
+    // sit under the plate. Idle plates (turnPulse 0) get nothing → stays calm.
+    final breathe = turnPulse.clamp(0.0, 1.0);
+    if (alive && breathe > 0.0) {
+      final corner = plate.width * _clusterCornerFactor;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            plate.inflate(plate.width * (0.05 + 0.04 * breathe)),
+            Radius.circular(corner)),
+        Paint()..color = accent.withValues(alpha: 0.10 + 0.10 * breathe),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            plate.inflate(plate.width * (0.02 + 0.02 * breathe)),
+            Radius.circular(corner)),
+        Paint()..color = accent.withValues(alpha: 0.14 + 0.14 * breathe),
+      );
+    }
+
     _drawPlate(canvas, plate, accent, alive: alive, done: done);
+
+    // Whole-plate pulse synced to the light show: while a pad is flashing (the
+    // WATCH sequence lights the quadrants, and a tap blooms one), wash the plate
+    // face with a faint accent tint + brighten its rim so the whole console
+    // reacts to the beat. Driven by the brightest current bloom → no new clock,
+    // deterministic, and dark/quiet when nothing is lit.
+    var maxBloom = 0.0;
+    for (var i = 0; i < blooms.length; i++) {
+      final b = blooms[i].clamp(0.0, 1.0);
+      if (b > maxBloom) maxBloom = b;
+    }
+    if (alive && maxBloom > 0.05) {
+      final rr = RRect.fromRectAndRadius(
+          plate, Radius.circular(plate.width * _clusterCornerFactor));
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..color =
+              _blend(accent, _white, 0.3).withValues(alpha: 0.10 * maxBloom),
+      );
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, plate.width * 0.03)
+          ..color = _blend(accent, _white, 0.5)
+              .withValues(alpha: (0.4 * maxBloom).clamp(0.0, 1.0)),
+      );
+    }
 
     final half = side / 2;
     final gap = half * _padGapFactor;
@@ -137,6 +236,43 @@ class MemoryRenderer {
       final cell = Rect.fromLTWH(left, top, quadW, quadW);
       final bloom = slot < blooms.length ? blooms[slot].clamp(0.0, 1.0) : 0.0;
       _drawPad(canvas, cell, palette[slot], bloom: bloom, alive: alive);
+    }
+
+    // Center hub aura: a soft ring cycling the four Simon colors around the hub,
+    // giving the console a living, idle glow. The sweep is rotated by a phase
+    // derived from [turnPulse] (the only clock the renderer sees) so it gently
+    // turns while a player is taking their turn and rests as a calm 4-color halo
+    // otherwise. Deterministic; no blur (a stacked stroke-ring sweep).
+    if (alive) {
+      final hubR = half * _hubGapFactor;
+      final auraR = hubR * _hubAuraScale;
+      final phase = turnPulse * 2 * math.pi; // 0 when idle → stable halo
+      final auraColors = <Color>[
+        for (var i = 0; i < palette.length; i++)
+          _blend(palette[i], _hubAura, 0.15)
+              .withValues(alpha: 0.30 + 0.25 * turnPulse),
+        _blend(palette[0], _hubAura, 0.15)
+            .withValues(alpha: 0.30 + 0.25 * turnPulse),
+      ];
+      final auraStops = <double>[
+        for (var i = 0; i < auraColors.length; i++)
+          i / (auraColors.length - 1),
+      ];
+      canvas.drawCircle(
+        plate.center,
+        auraR,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(2.0, hubR * 0.5)
+          ..shader = Gradient.sweep(
+            plate.center,
+            auraColors,
+            auraStops,
+            TileMode.clamp,
+            phase,
+            phase + 2 * math.pi,
+          ),
+      );
     }
 
     // Center hub hole punched through the cluster for the classic Simon look.
@@ -249,6 +385,16 @@ class MemoryRenderer {
     final baseA = alive ? _baseAlpha : 0.10;
     final fillA = (baseA + (1.0 - baseA) * bloom).clamp(0.0, 1.0);
 
+    // Soft drop shadow under the quadrant: an offset dark RRect (no blur) lifts
+    // the pad off the plate so each button reads as a raised 3D key.
+    if (alive) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            cell.shift(Offset(0, cell.height * _padShadowFrac)), radius),
+        Paint()..color = _black.withValues(alpha: 0.30),
+      );
+    }
+
     // Soft outer bloom halo when lit: two stacked translucent inflated plates
     // (wider+fainter, then tighter+brighter) fake a glow without a per-pad blur.
     if (bloom > 0.02 && alive) {
@@ -276,6 +422,20 @@ class MemoryRenderer {
         ),
     );
 
+    // Inset bevel: a tucked-in stroke inside the rim — dark on the lower body,
+    // light along the top — carves the button face so it reads recessed/raised.
+    // Two thin inset RRects (cheap, no blur).
+    final bevel = cell.deflate(math.max(1.0, cell.width * _padBevelFrac));
+    final bevelRR =
+        RRect.fromRectAndRadius(bevel, Radius.circular(bevel.width * _padCornerFactor));
+    canvas.drawRRect(
+      bevelRR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, cell.width * 0.03)
+        ..color = _black.withValues(alpha: (0.22 - 0.12 * bloom).clamp(0.0, 1.0)),
+    );
+
     // Glossy top sheen.
     final sheen = Rect.fromLTWH(
         cell.left + cell.width * 0.12,
@@ -288,6 +448,35 @@ class MemoryRenderer {
         ..color = _white.withValues(
             alpha: (0.12 + 0.5 * bloom).clamp(0.0, 1.0) * (alive ? 1.0 : 0.3)),
     );
+
+    // Flash extras: a brighter inner bloom core + a quick specular highlight when
+    // the pad lights up, so a tap/sequence-flash pops with a glossy hot spot.
+    if (bloom > 0.05 && alive) {
+      // Inner bloom: a soft radial of near-white-to-color tight to the face.
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..shader = Gradient.radial(
+            cell.center.translate(0, -cell.height * 0.10),
+            cell.width * 0.62,
+            [
+              _blend(color, _white, 0.7).withValues(alpha: 0.55 * bloom),
+              const Color(0x00FFFFFF),
+            ],
+          ),
+      );
+      // Specular dot: a small bright ellipse near the top-left of the key.
+      final spec = Rect.fromLTWH(
+        cell.left + cell.width * 0.18,
+        cell.top + cell.height * 0.14,
+        cell.width * 0.30,
+        cell.height * 0.18,
+      );
+      canvas.drawOval(
+        spec,
+        Paint()..color = _white.withValues(alpha: (0.6 * bloom).clamp(0.0, 1.0)),
+      );
+    }
 
     // Crisp rim that lights up with the bloom.
     canvas.drawRRect(

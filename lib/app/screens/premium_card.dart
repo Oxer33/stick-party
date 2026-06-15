@@ -13,6 +13,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
 import '../widgets/glass_kit.dart';
 import '../widgets/glass_tokens.dart';
@@ -50,6 +51,15 @@ class _Card {
   static const double glowSpread = -6;
   static const Offset glowOffset = Offset(0, 12);
   static const double glowAlpha = 0.42;
+
+  // ── Breathing glow (slow, low-amplitude "alive" pulse on the outer glow) ──
+  /// Min/max opacity the breathing glow swings between (centred near
+  /// [glowAlpha] so a still card and a breathing one look the same on average).
+  static const double glowPulseMin = 0.34;
+  static const double glowPulseMax = 0.52;
+
+  /// One full inhale→exhale of the breathing glow.
+  static const Duration glowPulsePeriod = Duration(milliseconds: 2600);
 
   // ── Decorative depth layer (turns the flat tint into a lit, glassy surface) ──
   /// Diagonal accent wash, strongest at the top-left corner.
@@ -135,6 +145,12 @@ class AccentEdge extends StatelessWidget {
 /// A soft outer glow in [accent], used to make a premium card feel lit. Wrap a
 /// card with this (it adds only a box-shadow; the rounded fill comes from the
 /// inner [GlassPanel]).
+///
+/// When [pulse] is set the glow gains a slow, low-amplitude "breathing" swing
+/// so the card feels alive. The breath is a single lightweight
+/// flutter_animate effect on a behind-content glow layer (no per-card
+/// [AnimationController]); the content paints over it unchanged, so this is
+/// cheap even with many cards on screen.
 class AccentGlow extends StatelessWidget {
   const AccentGlow({
     super.key,
@@ -142,6 +158,7 @@ class AccentGlow extends StatelessWidget {
     required this.child,
     this.radius = GlassTokens.radius,
     this.enabled = true,
+    this.pulse = false,
   });
 
   final Color accent;
@@ -149,22 +166,59 @@ class AccentGlow extends StatelessWidget {
   final double radius;
   final bool enabled;
 
+  /// Slowly breathe the glow opacity instead of holding it steady.
+  final bool pulse;
+
   @override
   Widget build(BuildContext context) {
     if (!enabled) return child;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(radius),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            color: accent.withValues(alpha: _Card.glowAlpha),
-            blurRadius: _Card.glowBlur,
-            spreadRadius: _Card.glowSpread,
-            offset: _Card.glowOffset,
-          ),
-        ],
+    if (!pulse) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(radius),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: accent.withValues(alpha: _Card.glowAlpha),
+              blurRadius: _Card.glowBlur,
+              spreadRadius: _Card.glowSpread,
+              offset: _Card.glowOffset,
+            ),
+          ],
+        ),
+        child: child,
+      );
+    }
+
+    // Breathing variant: paint the glow as its own layer behind the content and
+    // oscillate its opacity between min/max. The child is NOT inside the
+    // animated subtree, so only the cheap glow box repaints each frame.
+    final Widget breathingGlow = IgnorePointer(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(radius),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: accent.withValues(alpha: _Card.glowPulseMax),
+              blurRadius: _Card.glowBlur,
+              spreadRadius: _Card.glowSpread,
+              offset: _Card.glowOffset,
+            ),
+          ],
+        ),
       ),
-      child: child,
+    )
+        .animate(onPlay: (AnimationController c) => c.repeat(reverse: true))
+        .fadeIn(
+          begin: _Card.glowPulseMin / _Card.glowPulseMax,
+          duration: _Card.glowPulsePeriod,
+          curve: Curves.easeInOut,
+        );
+
+    return Stack(
+      children: <Widget>[
+        Positioned.fill(child: breathingGlow),
+        child,
+      ],
     );
   }
 }
@@ -182,6 +236,7 @@ class PremiumPanel extends StatelessWidget {
     this.highlight = false,
     this.showEdge = true,
     this.glow = true,
+    this.glowPulse = true,
     this.radius = GlassTokens.radius,
   });
 
@@ -191,6 +246,13 @@ class PremiumPanel extends StatelessWidget {
   final bool highlight;
   final bool showEdge;
   final bool glow;
+
+  /// Slowly breathe the outer accent glow so the card feels alive. Only has an
+  /// effect when [glow] is on. Defaults on — it is one cheap repeating
+  /// flutter_animate effect per card (no [AnimationController] spam), and the
+  /// card content is excluded from the animated subtree.
+  final bool glowPulse;
+
   final double radius;
 
   @override
@@ -223,6 +285,7 @@ class PremiumPanel extends StatelessWidget {
       accent: accent,
       radius: radius,
       enabled: glow,
+      pulse: glowPulse,
       child: panel,
     );
   }
@@ -418,7 +481,20 @@ class AccentTag extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           if (icon != null) ...<Widget>[
-            Icon(icon, color: accent, size: 12),
+            // Tiny soft accent halo behind the glyph so the tag icon glows.
+            DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: accent.withValues(alpha: 0.55),
+                    blurRadius: 6,
+                    spreadRadius: -1,
+                  ),
+                ],
+              ),
+              child: Icon(icon, color: accent, size: 12),
+            ),
             const SizedBox(width: 4),
           ],
           Text(

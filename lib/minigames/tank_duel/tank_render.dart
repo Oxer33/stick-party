@@ -137,6 +137,7 @@ class TankRenderer {
   static const Color _steelDark = Color(0xFF2B3340);
   static const Color _scorch = Color(0xFF0A0A0C);
   static const Color _smoke = Color(0xFF6A6F78); // wreck smoke column
+  static const Color _dust = Color(0xFFB89A6E); // kicked-up / drifting sand
   static const Color _crateWood = Color(0xFFB07C3C);
   static const Color _crateWoodDark = Color(0xFF6E4A20);
   static const Color _crateBand = Color(0xFF3A2A14);
@@ -159,6 +160,8 @@ class TankRenderer {
   static const double _recoilKick = 0.55; // barrel pull-back at full recoil
   static const double _aimGuideLen = 360; // px reticle reach
   static const double _shadowDrop = 0.55;
+  // Reference impact radius used to fade kicked-up dust as a scorch shrinks.
+  static const double _scorchFullR = 34;
 
   // ── Background: layered sky → horizon → ground band with grid + dunes ───────
   static void drawBattlefield(
@@ -188,8 +191,39 @@ class TankRenderer {
     _drawHorizonGlow(canvas, size, horizonY);
     _drawDunes(canvas, size, horizonY);
     _drawPerspectiveGrid(canvas, size, horizonY);
+    _drawAmbientDust(canvas, size, horizonY, t);
     _drawEmbers(canvas, embers, size, t);
     _drawVignette(canvas, size);
+  }
+
+  /// A few faint sheets of sand drifting laterally across the ground band — the
+  /// battlefield breathing between shots. Deterministic from index + [t] (no
+  /// Random/DateTime), parallaxed by row (lower = faster, larger, brighter) so it
+  /// reads as ground-level haze, never near the sky or over the reticle's job.
+  /// Pure translucent fills — no blur, one reused Paint.
+  static void _drawAmbientDust(
+      Canvas canvas, Size size, double horizonY, double t) {
+    const motes = 9;
+    final groundH = size.height - horizonY;
+    if (groundH <= 0) return;
+    final paint = Paint();
+    for (var i = 0; i < motes; i++) {
+      // Depth 0 (far/near horizon) → 1 (close foreground); spread down the band.
+      final depth = ((i * 0.618) % 1.0);
+      final y = horizonY + groundH * (0.12 + 0.82 * depth * depth);
+      // Drift speed + size scale with depth (parallax): close haze moves more.
+      final speed = size.width * (0.012 + 0.045 * depth);
+      final dir = i.isEven ? 1.0 : -1.0;
+      // Wrap horizontally with generous over-scan so puffs ease on/off frame.
+      final span = size.width * 1.3;
+      final raw = (i * 137.0 + dir * t * speed) % span;
+      final x = (raw < 0 ? raw + span : raw) - size.width * 0.15;
+      final grow = (10 + 26 * depth) * (0.8 + 0.2 * math.sin(t * 0.6 + i));
+      final breathe = 0.5 + 0.5 * math.sin(t * 0.5 + i * 1.9);
+      final alpha = (0.018 + 0.030 * depth) * breathe;
+      paint.color = _dust.withValues(alpha: alpha.clamp(0.0, 1.0));
+      canvas.drawCircle(Offset(x, y), grow, paint);
+    }
   }
 
   static void _drawHorizonGlow(Canvas canvas, Size size, double horizonY) {
@@ -288,6 +322,32 @@ class TankRenderer {
         const [0.0, 0.55, 1.0],
       );
     canvas.drawCircle(at, radius, paint);
+    _drawImpactDust(canvas, at, radius);
+  }
+
+  /// A low ring of kicked-up dust settling around a fresh impact mark — a few
+  /// deterministic puffs splayed outward, fading as the scorch's [radius]
+  /// shrinks with its fade. Rides the existing per-impact scorch event (no new
+  /// state, no clock): variation comes purely from `at` + the petal index, so it
+  /// is stable frame-to-frame. Solid translucent fills only — no per-puff blur.
+  static void _drawImpactDust(Canvas canvas, Offset at, double radius) {
+    const puffs = 7;
+    // Per-impact seed from position so each crater's dust splay differs but is
+    // deterministic (never Random()/DateTime in render).
+    final seed = (at.dx * 0.7 + at.dy * 1.3);
+    final dust = Paint();
+    for (var i = 0; i < puffs; i++) {
+      final ang = (i / puffs) * math.pi * 2 + math.sin(seed + i) * 0.6;
+      // Push out a touch past the scorch edge; younger (bigger-radius) marks
+      // throw their dust slightly farther so it reads as "kicked up, settling".
+      final reach = radius * (0.92 + 0.28 * (0.5 + 0.5 * math.sin(seed * 1.7 + i)));
+      final at2 = at + Offset(math.cos(ang), math.sin(ang)) * reach;
+      final grow = radius * (0.16 + 0.10 * (0.5 + 0.5 * math.cos(seed + i * 2.1)));
+      // The whole ring fades with the scorch's own radius shrink.
+      final fade = (radius / _scorchFullR).clamp(0.0, 1.0);
+      dust.color = _dust.withValues(alpha: (0.16 * fade).clamp(0.0, 1.0));
+      canvas.drawCircle(at2, grow, dust);
+    }
   }
 
   // ── Destructible cover crate ───────────────────────────────────────────────

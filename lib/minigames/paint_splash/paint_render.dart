@@ -25,6 +25,7 @@ class PaintRenderer {
   static const Color _canvasShade = Color(0xFFD9CFBE);
   static const Color _weave = Color(0x0E000000); // canvas weave threads
   static const Color _vignette = Color(0x55000000);
+  static const Color _cornerShade = Color(0x33000000); // corner pop-darkening
   static const Color _frame = Color(0xFF3A3326);
   static const Color _frameHi = Color(0xFF6E5F44);
   static const Color _white = Color(0xFFFFFFFF);
@@ -85,7 +86,32 @@ class PaintRenderer {
 
     _drawWeave(canvas, size);
     _drawVignette(canvas, size);
+    _drawCornerShade(canvas, size);
     _drawFrame(canvas, size);
+  }
+
+  /// Subtle darkening pooled in the FOUR corners of the canvas so the splatter
+  /// artwork in the middle visually pops. Distinct from [_drawVignette]'s broad
+  /// centre-focus wash: this is a tight per-corner radial that only touches the
+  /// extreme corners, kept faint and clear of the HUD bars/ink gauge (which are
+  /// drawn later, on top, and live along the upper edge — not in the corners).
+  static void _drawCornerShade(Canvas canvas, Size size) {
+    final reach = math.min(size.width, size.height) * 0.42;
+    const stops = [0.0, 1.0];
+    final shade = [_cornerShade, const Color(0x00000000)];
+    final corners = <Offset>[
+      Offset.zero,
+      Offset(size.width, 0),
+      Offset(0, size.height),
+      Offset(size.width, size.height),
+    ];
+    final rect = Offset.zero & size;
+    for (final corner in corners) {
+      canvas.drawRect(
+        rect,
+        Paint()..shader = Gradient.radial(corner, reach, shade, stops),
+      );
+    }
   }
 
   /// Faint diagonal cross-hatch evoking canvas weave threads.
@@ -271,6 +297,28 @@ class PaintRenderer {
         center.translate(-r * 0.30, -r * 0.34),
         r * 0.10,
         Paint()..color = _white.withValues(alpha: 0.7 * w),
+      );
+      // An elongated specular STREAK across the wet sheen — the tell-tale glint
+      // of a freshly-wet blob that vanishes as it dries. Its tilt is
+      // deterministic per stamp (seed) so it never jitters frame-to-frame.
+      final glintAng = (seed % 360) * math.pi / 180 + math.pi * 0.25;
+      final glintDir = Offset(math.cos(glintAng), math.sin(glintAng));
+      final glintCtr = center.translate(-r * 0.26, -r * 0.30);
+      canvas.save();
+      canvas.translate(glintCtr.dx, glintCtr.dy);
+      canvas.rotate(glintAng);
+      canvas.scale(1.0, 0.34); // squash a circle into an oval streak
+      canvas.drawCircle(
+        Offset.zero,
+        r * 0.30,
+        Paint()..color = _white.withValues(alpha: 0.45 * w),
+      );
+      canvas.restore();
+      // A tiny travelling spark at the streak's leading end for extra wet pop.
+      canvas.drawCircle(
+        glintCtr + glintDir * r * 0.24,
+        r * 0.05,
+        Paint()..color = _white.withValues(alpha: 0.85 * w),
       );
     }
 

@@ -37,6 +37,12 @@ class SumoRenderer {
   static const double _beltWidthFactor = 0.42; // mawashi width / bodyR
   static const double _cooldownArcR = 1.35; // cooldown arc radius / bodyR
   static const double _crownR = 0.34; // id pip radius / bodyR
+  // Climax extras: the danger band starts vibrating + kicks up a clay plume only
+  // once the ring is collapsing hard (dangerPulse high). Deterministic via the
+  // pulse value + segment index — never random — so it stays replay-stable.
+  static const double _shimmerOnset = 0.72; // dangerPulse above this → vibrate
+  static const int _shimmerSegments = 26; // band shimmer arc segments
+  static const int _plumePuffs = 7; // clay plume puffs around the rim
 
   // ── Background: arena gradient + soft spotlight on the dohyo ────────────────
   static void drawBackground(Canvas canvas, Size size, Offset center,
@@ -129,6 +135,13 @@ class SumoRenderer {
       ..strokeWidth = math.max(2.0, bandDepth * 0.42)
       ..color = _dangerBand.withValues(alpha: bandAlpha.clamp(0.0, 1.0));
     canvas.drawCircle(center, bandR, bandCore);
+
+    // CLIMAX: once the ring is collapsing hard (dangerPulse high), the danger
+    // band vibrates and the clay churns up a low plume — the visual "final push
+    // toward a ring-out". Both are deterministic (driven by the pulse + index),
+    // blur-free per segment, and sit under the rim so the aim arrow stays clear.
+    _drawDangerShimmer(canvas, center, bandR, bandDepth, dangerPulse);
+    _drawClayPlume(canvas, center, ringRadius, bandDepth, dangerPulse);
 
     // Thick glowing accent rim (controlled outer glow + crisp core).
     final rimW = math.max(3.0, ringRadius * _rimWidthFactor);
@@ -384,6 +397,81 @@ class SumoRenderer {
           ..strokeCap = StrokeCap.round
           ..color = (_blend(color, _white, c)).withValues(alpha: 0.9),
       );
+    }
+  }
+
+  // ── Climax extras (additive, deterministic, blur-free in loops) ─────────────
+
+  /// Maps [dangerPulse] (0..1) to a climax intensity that is zero until the ring
+  /// is collapsing hard ([_shimmerOnset]) then ramps to 1 — so the band only
+  /// vibrates / kicks dust during the genuine final push toward a ring-out.
+  static double _climax(double dangerPulse) {
+    final p = dangerPulse.clamp(0.0, 1.0);
+    if (p <= _shimmerOnset) return 0.0;
+    return ((p - _shimmerOnset) / (1.0 - _shimmerOnset)).clamp(0.0, 1.0);
+  }
+
+  /// A high-frequency radial vibration of the danger band: short red dashes that
+  /// jitter in/out around [bandR]. Phase comes from the pulse value + segment
+  /// index (deterministic, replay-stable). One reused Paint, no per-dash blur.
+  static void _drawDangerShimmer(Canvas canvas, Offset center, double bandR,
+      double bandDepth, double dangerPulse) {
+    final amp = _climax(dangerPulse);
+    if (amp <= 0.001 || bandR <= 1) return;
+    // The pulse already carries the sim's sin throb, so it doubles as a clock:
+    // scaling it up gives a fast shudder without any new ticker or time source.
+    final phase = dangerPulse * 60.0;
+    final jitter = bandDepth * (0.18 + 0.42 * amp);
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.4, bandDepth * 0.3);
+    const step = math.pi * 2 / _shimmerSegments;
+    for (var i = 0; i < _shimmerSegments; i++) {
+      final a = i * step;
+      // Each segment shudders on its own offset so the ring looks like it is
+      // buzzing, not breathing uniformly.
+      final wob = math.sin(phase + i * 1.7) * jitter;
+      final r = bandR + wob;
+      final dir = Offset(math.cos(a), math.sin(a));
+      final mid = center + dir * r;
+      final tangent = Offset(-dir.dy, dir.dx);
+      final half = step * r * 0.32;
+      final flicker = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(phase * 1.3 + i));
+      paint.color =
+          _dangerBand.withValues(alpha: (amp * flicker).clamp(0.0, 1.0));
+      canvas.drawLine(mid - tangent * half, mid + tangent * half, paint);
+    }
+  }
+
+  /// A low clay plume kicked up just inside the rim during the climax: a ring of
+  /// soft sand-colored puffs that rise and fade. Bigger than the ambient motes,
+  /// deterministic (pulse + index), and capped under the rim so it never reaches
+  /// the wrestlers or the aim arrow. Two reused Paints, no per-puff blur.
+  static void _drawClayPlume(Canvas canvas, Offset center, double ringRadius,
+      double bandDepth, double dangerPulse) {
+    final amp = _climax(dangerPulse);
+    if (amp <= 0.001 || ringRadius <= 1) return;
+    final phase = dangerPulse * 18.0;
+    final baseR = ringRadius - bandDepth * 0.9;
+    final core = Paint();
+    final halo = Paint();
+    for (var i = 0; i < _plumePuffs; i++) {
+      final a = (i / _plumePuffs) * math.pi * 2 + i * 0.6;
+      // Each puff has its own rise cycle (0..1) so they pop at staggered times.
+      final rise = (0.5 + 0.5 * math.sin(phase + i * 2.3));
+      final lift = bandDepth * (0.6 + 2.2 * rise);
+      final dir = Offset(math.cos(a), math.sin(a));
+      final c = center + dir * baseR - Offset(0, lift);
+      // Fade as the puff rises; scale the whole plume by climax intensity.
+      final fade = (1.0 - rise) * amp;
+      if (fade <= 0.02) continue;
+      final puffR = bandDepth * (0.55 + 0.75 * rise) * (0.6 + 0.4 * amp);
+      halo.color = _claySand.withValues(alpha: (0.16 * fade).clamp(0.0, 1.0));
+      canvas.drawCircle(c, puffR * 1.7, halo);
+      core.color = _blend(_claySand, _clayCore, rise)
+          .withValues(alpha: (0.30 * fade).clamp(0.0, 1.0));
+      canvas.drawCircle(c, puffR, core);
     }
   }
 

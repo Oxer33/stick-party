@@ -22,7 +22,12 @@ class SprintRenderer {
   static const Color _railColor = Color(0xFF2C3A57);
   static const Color _trackTop = Color(0xFFD2622F);
   static const Color _trackBottom = Color(0xFF9C3F1C);
+  static const Color _trackBottomDark = Color(0x55000000); // bottom darken
   static const Color _trackSheen = Color(0x18FFFFFF);
+  static const Color _trackSheenStrong = Color(0x33FFFFFF); // glossier top sheen
+  static const Color _trackHighlight = Color(0x26FFFFFF); // travelling sheen sweep
+  static const Color _heatShimmer = Color(0x14FFE9C8); // warm heat-haze tint
+  static const Color _cheerFlare = Color(0x33FFC93C); // crowd cheer flare near finish
   static const Color _laneLine = Color(0xFFF2ECDD);
   static const Color _laneShadow = Color(0x33000000);
   static const Color _startLine = Color(0xFFF2ECDD);
@@ -34,6 +39,7 @@ class SprintRenderer {
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _bannerPole = Color(0xFFB9C2D6);
+  static const Color _sweatColor = Color(0xFF9FE6FF); // sweat-fleck cyan tint
 
   // ── Hurdle palette (the interposing obstacle) ───────────────────────────────
   /// The trip/knock color — the burst the gameplay fires on a clipped hurdle.
@@ -108,6 +114,10 @@ class SprintRenderer {
       // Rows nearer the field are larger + brighter (perspective).
       final depth = r / rows;
       final radius = (1.2 + depth * 2.2) * (cellH / 14).clamp(0.6, 2.4);
+      // Gentle crowd sway: a slow horizontal wave + small vertical bob, varied
+      // per column so the stand reads as a living, swaying crowd (deterministic).
+      final swayAmp = cellW * 0.18;
+      final bobAmp = radius * 0.6;
       for (var c = 0; c < cols; c++) {
         final seed = r * 131 + c * 17;
         final base = _crowdHue(seed % 5);
@@ -116,10 +126,31 @@ class SprintRenderer {
             0.45 + 0.4 * (0.5 + 0.5 * math.sin(t * 1.6 + seed.toDouble()));
         dot.color = base.withValues(
             alpha: (twinkle * (0.4 + depth * 0.5)).clamp(0.0, 1.0));
-        final x = cellW * (c + 0.5) + stagger;
-        canvas.drawCircle(Offset(x % size.width, y), radius, dot);
+        final sway = math.sin(t * 1.1 + c * 0.5 + r) * swayAmp;
+        final bob = math.cos(t * 1.8 + seed.toDouble()) * bobAmp;
+        final x = cellW * (c + 0.5) + stagger + sway;
+        canvas.drawCircle(Offset(x % size.width, y + bob), radius, dot);
       }
     }
+
+    // Cheer flare: a soft warm glow over the stands toward the finish (right
+    // side) that pulses on the clock, as if that block is roaring loudest.
+    final flarePulse = 0.5 + 0.5 * math.sin(t * 2.4);
+    final flareCx = size.width * 0.82;
+    final flareR = standH * 1.4;
+    canvas.drawCircle(
+      Offset(flareCx, standTop + standH * 0.5),
+      flareR,
+      Paint()
+        ..shader = Gradient.radial(
+          Offset(flareCx, standTop + standH * 0.5),
+          flareR,
+          [
+            _cheerFlare.withValues(alpha: 0.10 + 0.16 * flarePulse),
+            const Color(0x00000000),
+          ],
+        ),
+    );
 
     // Front guard rail separating crowd from the track.
     final rail = Paint()
@@ -164,15 +195,35 @@ class SprintRenderer {
       );
     canvas.drawRect(rect, track);
 
-    // Top sheen so the surface reads as a lit synthetic track.
-    final sheenH = h * 0.25;
+    // Top sheen so the surface reads as a lit synthetic track (now stronger,
+    // a two-stop fall-off for a glossier, more lit synthetic surface).
+    final sheenH = h * 0.32;
     final sheen = Paint()
       ..shader = Gradient.linear(
         Offset(0, trackTop),
         Offset(0, trackTop + sheenH),
-        const [_trackSheen, Color(0x00000000)],
+        const [_trackSheenStrong, _trackSheen, Color(0x00000000)],
+        const [0.0, 0.35, 1.0],
       );
     canvas.drawRect(Rect.fromLTWH(0, trackTop, size.width, sheenH), sheen);
+
+    // Bottom darken — grounds the track and gives it depth (Visual Bible:
+    // top sheen + bottom darken). Cheap single linear fill, no blur.
+    final darkH = h * 0.30;
+    final darken = Paint()
+      ..shader = Gradient.linear(
+        Offset(0, size.height - darkH),
+        Offset(0, size.height),
+        const [Color(0x00000000), _trackBottomDark],
+      );
+    canvas.drawRect(
+        Rect.fromLTWH(0, size.height - darkH, size.width, darkH), darken);
+
+    // A faint crisp lip right under the rail so the track edge catches light.
+    canvas.drawRect(
+      Rect.fromLTWH(0, trackTop, size.width, 1.5),
+      Paint()..color = _white.withValues(alpha: 0.10),
+    );
   }
 
   /// Scrolling distance gridlines (10m..90m). [scroll] in 0..1 is the fraction
@@ -190,11 +241,75 @@ class SprintRenderer {
       ..color = _markerColor
       ..strokeWidth = 1.6;
     final step = span / (_distanceMarkers + 1);
-    final shift = scroll.clamp(0.0, 1.0) * step;
+    final s01 = scroll.clamp(0.0, 1.0);
+    final shift = s01 * step;
     for (var i = 1; i <= _distanceMarkers; i++) {
       final x = startX + step * i - shift;
       if (x <= startX || x >= finishX) continue;
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+
+    _drawSpeedTexture(canvas, size, startX, finishX, step, shift);
+    _drawTravellingHighlight(canvas, size, s01);
+    _drawHeatShimmer(canvas, size, s01);
+  }
+
+  /// Fine scrolling dash-texture between the metre gridlines — gives the track
+  /// a sense of rushing speed as the leader advances. Deterministic; reuses the
+  /// same [shift] the markers drift by (a sub-cell scroll), no clock needed.
+  static void _drawSpeedTexture(
+    Canvas canvas,
+    Size size,
+    double startX,
+    double finishX,
+    double step,
+    double shift,
+  ) {
+    final paint = Paint()
+      ..color = _white.withValues(alpha: 0.05)
+      ..strokeWidth = 1.0;
+    final half = step / 2;
+    for (var i = 0; i <= _distanceMarkers; i++) {
+      final x = startX + step * i + half - shift;
+      if (x <= startX || x >= finishX) continue;
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+  }
+
+  /// A single soft vertical sheen band that sweeps left→right across the track
+  /// in lockstep with the marker scroll, faking a moving stadium light. Wide
+  /// translucent fill (no blur) so it stays a per-frame cheap pass.
+  static void _drawTravellingHighlight(Canvas canvas, Size size, double s01) {
+    // Loop the sweep over the full width twice per scroll cycle for liveliness.
+    final cx = ((s01 * 2.0) % 1.0) * size.width;
+    final bandW = size.width * 0.22;
+    final left = cx - bandW / 2;
+    final paint = Paint()
+      ..shader = Gradient.linear(
+        Offset(left, 0),
+        Offset(left + bandW, 0),
+        const [Color(0x00000000), _trackHighlight, Color(0x00000000)],
+        const [0.0, 0.5, 1.0],
+      );
+    canvas.drawRect(Rect.fromLTWH(left, 0, bandW, size.height), paint);
+  }
+
+  /// Subtle heat-haze shimmer drifting up off the warm track — two faint warm
+  /// horizontal bands whose vertical position eases with the scroll phase.
+  static void _drawHeatShimmer(Canvas canvas, Size size, double s01) {
+    final paint = Paint();
+    for (var i = 0; i < 2; i++) {
+      final phase = (s01 + i * 0.5) % 1.0;
+      final wave = math.sin(phase * math.pi * 2 + i);
+      final bandH = size.height * 0.08;
+      final y = size.height * (0.5 + i * 0.22) + wave * size.height * 0.03;
+      paint.shader = Gradient.linear(
+        Offset(0, y - bandH / 2),
+        Offset(0, y + bandH / 2),
+        const [Color(0x00000000), _heatShimmer, Color(0x00000000)],
+        const [0.0, 0.5, 1.0],
+      );
+      canvas.drawRect(Rect.fromLTWH(0, y - bandH / 2, size.width, bandH), paint);
     }
   }
 
@@ -457,6 +572,22 @@ class SprintRenderer {
       );
     }
 
+    // Clear-flash: a clean green halo behind a freshly-cleared bar — a little
+    // "nice vault!" sparkle that confirms the clear. Stacked discs, no blur.
+    if (passed) {
+      final f = 0.5 + 0.5 * warnPulse.clamp(0.0, 1.0);
+      canvas.drawCircle(
+        Offset(base.dx, top),
+        halfW * (1.2 + 0.5 * f),
+        Paint()..color = _hurdlePassed.withValues(alpha: 0.10 + 0.10 * f),
+      );
+      canvas.drawCircle(
+        Offset(base.dx, top),
+        halfW * (0.6 + 0.3 * f),
+        Paint()..color = _hurdlePassed.withValues(alpha: 0.16 * f),
+      );
+    }
+
     // Crossbar with a thin striped underline so it reads as a barrier.
     final barRect = RRect.fromRectAndRadius(
       Rect.fromLTRB(
@@ -471,6 +602,33 @@ class SprintRenderer {
         ..strokeWidth = math.max(1.0, h * 0.05)
         ..color = (passed ? _hurdlePassed : _black).withValues(alpha: 0.35),
     );
+
+    // Wind-ripple: as the runner nears (live), a bright highlight skims back and
+    // forth along the crossbar like wind catching it — a subtle "it's reactive"
+    // tell. A clipped travelling band over the bar; deterministic on warnPulse.
+    if (live) {
+      final p = warnPulse.clamp(0.0, 1.0);
+      final barLeft = base.dx - halfW * 1.15;
+      final barRight = base.dx + halfW * 1.15;
+      final barW = barRight - barLeft;
+      // Ping-pong the highlight centre across the bar.
+      final tri = 1.0 - (2.0 * p - 1.0).abs(); // 0→1→0
+      final cx = barLeft + barW * (0.15 + 0.7 * tri);
+      final bandW = barW * 0.42;
+      canvas.save();
+      canvas.clipRRect(barRect);
+      canvas.drawRect(
+        Rect.fromLTRB(cx - bandW / 2, top - h * 0.12, cx + bandW / 2, top + h * 0.12),
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(cx - bandW / 2, top),
+            Offset(cx + bandW / 2, top),
+            const [Color(0x00FFFFFF), Color(0x66FFFFFF), Color(0x00FFFFFF)],
+            const [0.0, 0.5, 1.0],
+          ),
+      );
+      canvas.restore();
+    }
 
     if (live) _drawJumpCue(canvas, Offset(base.dx, top - h * 0.55), halfW, warnPulse);
   }
@@ -603,6 +761,19 @@ class SprintRenderer {
     if (s <= 0.03) return;
     // Translucent solid puffs (no per-mote blur) read as soft kicked-up dust.
     final paint = Paint();
+
+    // Low, wide ground-hugging spray fan behind the heel — the bulk of the kick.
+    for (var i = 0; i < _dustMoteCount; i++) {
+      final phase = stride * 1.7 + i * 0.9;
+      final spread = 0.5 + 0.5 * math.sin(phase);
+      final px = -bodyW * (0.35 + i * 0.5);
+      final py = bodyW * 0.04 * spread; // hug the ground, fan downward a touch
+      paint.color = _trackBottom.withValues(alpha: (0.05 + 0.12 * spread) * s);
+      canvas.drawCircle(feet.translate(px, py),
+          bodyW * (0.34 + 0.30 * spread) * (0.7 + s), paint);
+    }
+
+    // The lighter rising puffs (original look, kept on top of the low spray).
     for (var i = 0; i < _dustMoteCount; i++) {
       final phase = stride * 2.0 + i * 1.3;
       final puff = 0.5 + 0.5 * math.sin(phase);
@@ -612,6 +783,18 @@ class SprintRenderer {
       paint.color = _trackTop.withValues(alpha: (0.10 + 0.20 * puff) * s);
       canvas.drawCircle(feet.translate(px, py),
           bodyW * (0.28 + 0.22 * puff) * (0.6 + s), paint);
+    }
+
+    // A few sharp grit specks flung back on a faster stride — adds energy.
+    if (s > 0.4) {
+      final grit = Paint()..color = _white.withValues(alpha: 0.18 * s);
+      for (var i = 0; i < 3; i++) {
+        final phase = stride * 2.6 + i * 2.0;
+        final fly = 0.5 + 0.5 * math.sin(phase);
+        final gx = -bodyW * (0.4 + i * 0.7) * (0.6 + fly);
+        final gy = -bodyW * (0.1 + 0.4 * fly);
+        canvas.drawCircle(feet.translate(gx, gy), bodyW * 0.07 * (0.6 + s), grit);
+      }
     }
   }
 
@@ -647,6 +830,53 @@ class SprintRenderer {
           ],
         );
       canvas.drawLine(Offset(x0, y), Offset(x1, y), paint);
+    }
+
+    _drawEffortTells(canvas, chest, bodyW, s, phase);
+  }
+
+  /// Hard-effort tells on a flat-out sprinter: rhythmic breath puffs drifting
+  /// off the mouth and a light sweat streak flicking back off the brow. Both
+  /// ramp in only near top speed so a jogging runner stays clean. Deterministic
+  /// off the supplied [phase]; translucent solids, no blur.
+  static void _drawEffortTells(
+      Canvas canvas, Offset chest, double bodyW, double s, double phase) {
+    if (s <= 0.55) return;
+    final effort = ((s - 0.55) / 0.45).clamp(0.0, 1.0);
+    // Head sits a little above the chest; runner faces +x.
+    final head = chest.translate(bodyW * 0.15, -bodyW * 1.05);
+
+    // Breath puff: a soft expanding mote ahead of the mouth, exhaled in pulses.
+    final breath = (math.sin(phase * 2.0) * 0.5 + 0.5);
+    final puffR = bodyW * (0.16 + 0.20 * breath);
+    final puffX = bodyW * (0.35 + 0.45 * breath);
+    canvas.drawCircle(
+      head.translate(puffX, -bodyW * 0.05),
+      puffR,
+      Paint()
+        ..color = _white.withValues(alpha: (0.06 + 0.14 * (1 - breath)) * effort),
+    );
+
+    // Sweat streak: a short bright dash flicked back off the brow on the beat.
+    final fling = math.sin(phase * 3.0);
+    if (fling > 0.2) {
+      final bx = head.translate(-bodyW * 0.25, -bodyW * 0.15);
+      final ex = bx.translate(-bodyW * (0.4 + 0.5 * fling), -bodyW * 0.3 * fling);
+      canvas.drawLine(
+        bx,
+        ex,
+        Paint()
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = bodyW * 0.07
+          ..shader = Gradient.linear(
+            bx,
+            ex,
+            [
+              _sweatColor.withValues(alpha: 0.55 * effort * fling),
+              _sweatColor.withValues(alpha: 0.0),
+            ],
+          ),
+      );
     }
   }
 

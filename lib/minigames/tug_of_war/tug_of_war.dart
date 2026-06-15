@@ -701,17 +701,19 @@ class TugOfWar extends MiniGameBase {
     _juice.applyWorldTransform(canvas);
 
     TugRenderer.drawBackground(canvas, size);
-    TugRenderer.drawCrowdBands(canvas, size, _crowdBandFrac);
+    TugRenderer.drawCrowdBands(canvas, size, _crowdBandFrac,
+        lead: _marker, t: _animClock);
     TugRenderer.drawPit(canvas, _pitCenter, _pitRx, _pitRy, _animClock);
     TugRenderer.drawFieldLines(
-        canvas, size, _midX, _centerY, _topGoalY, _bottomGoalY);
+        canvas, size, _midX, _centerY, _topGoalY, _bottomGoalY,
+        lead: _marker, t: _animClock);
 
     _drawTeamsAndRope(canvas);
     _drawEffortBars(canvas);
     _drawBeatTrack(canvas);
 
     // Vignette over the field, intensifying as the marker nears an edge.
-    TugRenderer.drawVignette(canvas, size, _markerEdgeProximity());
+    TugRenderer.drawVignette(canvas, size, _markerEdgeProximity(), t: _animClock);
 
     _juice.render(canvas);
     canvas.restore();
@@ -740,6 +742,8 @@ class TugOfWar extends MiniGameBase {
       bow,
       topLead,
       bottomLead,
+      t: _animClock,
+      taut: _markerEdgeProximity(),
     );
 
     // Pullers: shadow + dust under each, then the leaning/straining figure.

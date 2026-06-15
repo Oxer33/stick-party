@@ -40,6 +40,14 @@ class CatchRenderer {
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _urgent = Color(0xFFFF6B6B);
+  static const Color _ember = Color(0xFFFB7234); // bomb ember flicker (flame accent)
+  // Rainbow shimmer ramp for the golden jackpot star (violet→magenta→amber→cyan).
+  static const List<Color> _bonusSpectrum = [
+    Color(0xFF8B5CF6),
+    Color(0xFFEC4899),
+    Color(0xFFFBBF24),
+    Color(0xFF22D3EE),
+  ];
 
   // ── Tuning (fractions / px; no inline magic numbers) ───────────────────────
   static const double _moonCenterXFrac = 0.74; // moon x / width
@@ -57,6 +65,9 @@ class CatchRenderer {
   static const int _goldenRays = 8; // sparkle-crown rays on a gold star
   static const double _bombHaloFactor = 2.2; // danger halo / bomb radius
   static const double _fuseLen = 0.9; // fuse length / bomb radius
+  static const int _cometSegments = 4; // stacked trail puffs behind a star
+  static const double _cometLenFactor = 3.4; // trail length / star radius
+  static const int _emberCount = 5; // crackling embers around a bomb fuse
 
   // Basket tuning, in fractions of the basket half-mouth `mouth`.
   static const double _basketDepthFactor = 0.9; // basket depth / half-mouth
@@ -82,6 +93,19 @@ class CatchRenderer {
     final r = size.width * _moonRadiusFrac;
     if (r <= 1) return;
 
+    // Wide dreamy bloom — a very soft outer wash so the moon glows into the sky
+    // (stacked under the tighter cool halo for layered depth, not a blur).
+    canvas.drawCircle(
+      center,
+      r * _moonHaloFactor * 1.7,
+      Paint()
+        ..shader = Gradient.radial(
+          center,
+          r * _moonHaloFactor * 1.7,
+          [_moonHalo.withValues(alpha: 0.12), const Color(0x00000000)],
+          const [0.0, 1.0],
+        ),
+    );
     // Wide cool halo.
     canvas.drawCircle(
       center,
@@ -179,6 +203,27 @@ class CatchRenderer {
           [(inner / outer).clamp(0.0, 0.99), 1.0],
         ),
     );
+    // Corner accents: soft radial darkenings tucked into each corner so the
+    // frame reads cinematic and the play area floats brighter at center.
+    final cornerR = math.max(size.width, size.height) * 0.42;
+    final rect = Offset.zero & size;
+    for (final corner in [
+      rect.topLeft,
+      rect.topRight,
+      rect.bottomLeft,
+      rect.bottomRight,
+    ]) {
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..shader = Gradient.radial(
+            corner,
+            cornerR,
+            [_vignette.withValues(alpha: 0.5), const Color(0x00000000)],
+            const [0.0, 1.0],
+          ),
+      );
+    }
   }
 
   /// A player's lane: a faint colored seam framing their column, a glowing catch
@@ -205,6 +250,38 @@ class CatchRenderer {
       canvas.drawLine(zone.topLeft, zone.bottomLeft, seam);
       canvas.drawLine(zone.topRight, zone.bottomRight, seam);
     }
+
+    // Catch-zone shimmer: a soft horizontal sheen band centered on the catch
+    // line, painted UNDER the readability glow so it adds glassy depth without
+    // dimming the telegraph. Static (no clock here) — a faint highlight that
+    // widens the perceived "active strip".
+    final shimmerH = math.max(4.0, zone.width * 0.07);
+    final shimmerRect = Rect.fromLTRB(
+        zone.left, catchLineY - shimmerH, zone.right, catchLineY + shimmerH);
+    canvas.drawRect(
+      shimmerRect,
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(zone.left, catchLineY),
+          Offset(zone.left, catchLineY - shimmerH),
+          [
+            color.withValues(alpha: 0.16),
+            const Color(0x00000000),
+          ],
+        ),
+    );
+    canvas.drawRect(
+      shimmerRect,
+      Paint()
+        ..shader = Gradient.linear(
+          Offset(zone.left, catchLineY),
+          Offset(zone.left, catchLineY + shimmerH),
+          [
+            color.withValues(alpha: 0.16),
+            const Color(0x00000000),
+          ],
+        ),
+    );
 
     // Glowing catch line across the lane — the telegraph of WHERE catches happen.
     final lineGlow = Paint()
@@ -291,6 +368,22 @@ class CatchRenderer {
     final body = gold ? _bonusGold : _starGold;
     final glow = gold ? _bonusGlow : _starGlow;
 
+    // Comet trail: stacked translucent puffs streaming UP behind the fall, each
+    // smaller + fainter than the last so the star reads as a streaking meteor.
+    // Stars always fall downward, so the wake is straight above the body.
+    final trailPaint = Paint();
+    for (var i = _cometSegments; i >= 1; i--) {
+      final f = i / _cometSegments; // 1 at tail .. 1/n near body
+      final up = r * _cometLenFactor * f * (gold ? 1.2 : 1.0);
+      final segR = r * (0.85 - 0.5 * f);
+      // Tail breathes slightly out of phase so it flickers like burning gas.
+      final flick = 0.8 + 0.2 * math.sin(t * 6.0 - i * 0.9);
+      trailPaint.color = glow.withValues(
+        alpha: ((1.05 - f) * 0.24 * flick * (gold ? 1.3 : 1.0)).clamp(0.0, 1.0),
+      );
+      canvas.drawCircle(center.translate(0, -up), segR.clamp(0.5, r), trailPaint);
+    }
+
     // Soft halo (breathes; gold blooms larger).
     final haloR = r * _starHaloFactor * (gold ? 1.2 : 1.0) * (0.9 + 0.2 * pulse);
     canvas.drawCircle(
@@ -307,17 +400,53 @@ class CatchRenderer {
         ),
     );
 
-    // Gold gets a sparkle crown of long thin rays.
+    // Gold gets a sparkle crown of long thin rays — plus a big rainbow jackpot
+    // aura that shimmers through the brand spectrum so it screams "BONUS!".
     if (gold) {
-      final ray = Paint()
+      // Outer rainbow bloom: a wide, slow-pulsing sweep-gradient ring. The hue
+      // offset advances with the clock so colors orbit the star.
+      final auraR = r * _starHaloFactor * 1.7 * (0.85 + 0.3 * pulse);
+      final hueShift = t * 0.6; // radians; deterministic spectrum rotation
+      canvas.drawCircle(
+        center,
+        auraR,
+        Paint()
+          ..shader = Gradient.sweep(
+            center,
+            [..._bonusSpectrum, _bonusSpectrum.first]
+                .map((c) => c.withValues(alpha: 0.34 * (0.7 + 0.3 * pulse)))
+                .toList(),
+            const [0.0, 0.28, 0.55, 0.8, 1.0],
+            TileMode.clamp,
+            hueShift,
+            hueShift + math.pi * 2,
+          ),
+      );
+      // Bright inner gold halo on top so the body stays warm, not washed out.
+      canvas.drawCircle(
+        center,
+        haloR * 0.95,
+        Paint()
+          ..shader = Gradient.radial(
+            center,
+            haloR * 0.95,
+            [_bonusGlow.withValues(alpha: 0.4 * (0.7 + 0.3 * pulse)),
+              const Color(0x00000000)],
+          ),
+      );
+      // Sparkle crown — each ray tinted from a different spectrum slot so the
+      // crown itself glints in rainbow as it spins.
+      final rayBase = Paint()
         ..strokeCap = StrokeCap.round
-        ..strokeWidth = math.max(1.0, r * 0.08)
-        ..color = _blend(glow, _white, 0.4).withValues(alpha: 0.5 + 0.3 * pulse);
+        ..strokeWidth = math.max(1.0, r * 0.08);
       for (var i = 0; i < _goldenRays; i++) {
         final ang = rot * 0.5 + i * (math.pi * 2 / _goldenRays);
         final dir = Offset(math.cos(ang), math.sin(ang));
-        canvas.drawLine(
-            center + dir * r * 1.2, center + dir * r * (2.0 + 0.4 * pulse), ray);
+        final tint = _bonusSpectrum[i % _bonusSpectrum.length];
+        rayBase.color =
+            _blend(tint, _white, 0.45).withValues(alpha: 0.55 + 0.3 * pulse);
+        canvas.drawLine(center + dir * r * 1.2,
+            center + dir * r * (2.1 + 0.5 * pulse), rayBase);
       }
     }
 
@@ -370,10 +499,35 @@ class CatchRenderer {
         ..strokeWidth = math.max(1.0, r * 0.1)
         ..color = _fuse,
     );
+    // Crackling spark head: a flickering ember halo (sized by a fast sine) with
+    // a hot white core, ringed by deterministic embers that pop in and out.
+    final crackle = 0.5 + 0.5 * math.sin(t * 13.0); // fast flame flutter
     final sparkR = r * (0.16 + 0.07 * pulse);
     canvas.drawCircle(
-        fuseTip, sparkR * 1.8, Paint()..color = _spark.withValues(alpha: 0.4));
-    canvas.drawCircle(fuseTip, sparkR, Paint()..color = _white);
+      fuseTip,
+      sparkR * (2.2 + 0.9 * crackle),
+      Paint()..color = _ember.withValues(alpha: 0.30 + 0.22 * crackle),
+    );
+    canvas.drawCircle(
+      fuseTip,
+      sparkR * 1.6,
+      Paint()..color = _spark.withValues(alpha: 0.55 + 0.25 * crackle),
+    );
+    canvas.drawCircle(
+        fuseTip, sparkR * (0.9 + 0.2 * crackle), Paint()..color = _white);
+    // Embers flung outward — each on its own phase so they twinkle chaotically.
+    final emberPaint = Paint();
+    for (var i = 0; i < _emberCount; i++) {
+      final phase = t * (4.0 + i) + i * 1.7; // per-ember deterministic clock
+      final life = 0.5 + 0.5 * math.sin(phase); // 0..1 spawn→fade
+      final ang = i * (math.pi * 2 / _emberCount) + t * 1.3;
+      final dist = sparkR * (1.4 + 2.6 * life);
+      final pos = fuseTip.translate(math.cos(ang) * dist,
+          math.sin(ang) * dist - sparkR * life * 1.5); // drift up like sparks
+      emberPaint.color = _blend(_spark, _ember, life)
+          .withValues(alpha: (0.7 * (1.0 - life)).clamp(0.0, 1.0));
+      canvas.drawCircle(pos, sparkR * (0.42 - 0.22 * life), emberPaint);
+    }
 
     // Dark round shell with a soft top-left highlight.
     canvas.drawCircle(
@@ -471,6 +625,19 @@ class CatchRenderer {
       canvas.drawLine(
           Offset(left + inset, ty), Offset(right - inset, ty), weave);
     }
+    // Subtle player-color rim glow tracing the opening: a soft wide underlay
+    // that breathes on the idle clock and flares on a catch, framing the mouth
+    // in the lane's color without washing out the bright rim above it.
+    final rimBreath = 0.5 + 0.5 * math.sin(t * 3.0);
+    canvas.drawLine(
+      Offset(left, top),
+      Offset(right, top),
+      Paint()
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = math.max(2.0, mouth * (0.26 + 0.18 * f))
+        ..color = tint.withValues(
+            alpha: ((0.18 + 0.12 * rimBreath) + 0.4 * f).clamp(0.0, 1.0)),
+    );
     // Bright top rim (the opening) — thickens + brightens on a catch.
     canvas.drawLine(
       Offset(left, top),

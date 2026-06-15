@@ -19,6 +19,8 @@ class FallingRenderer {
   // ── Palette (no magic colors inline elsewhere) ─────────────────────────────
   static const Color _bgTop = Color(0xFF141B2E);
   static const Color _bgBottom = Color(0xFF080B14);
+  static const Color _bgSheen = Color(0xFF8B5CF6); // overhead cool-violet wash
+  static const Color _bgHeatDeep = Color(0xFFFB7234); // deep molten floor glow
   static const Color _bandFloorBlend = Color(0xFF0B0F18);
   static const Color _divider = Color(0xFF1E2940);
   static const Color _laneLine = Color(0x14FFFFFF);
@@ -26,6 +28,7 @@ class FallingRenderer {
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _scrollTex = Color(0x0EFFFFFF);
+  static const Color _scrollTexFar = Color(0x07FFFFFF); // distant parallax layer
   static const Color _telegraph = Color(0xFFFF5A4D);
   static const Color _nearMissTint = Color(0x3325E0FF);
 
@@ -58,30 +61,83 @@ class FallingRenderer {
 
   // ── Background ──────────────────────────────────────────────────────────────
 
-  /// Full-arena vertical gradient backdrop. Drawn once under every band.
+  /// Full-arena vertical gradient backdrop. Drawn once under every band. Layers
+  /// (bottom → top): base gradient, an overhead cool-violet sheen, a bottom heat
+  /// wash that swells with [intensity], and a soft vignette that frames the play
+  /// and deepens with the escalation so the finale reads hottest + most focused.
   static void drawBackground(Canvas canvas, Size size, double intensity) {
+    final rect = Offset.zero & size;
     final bg = Paint()
       ..shader = Gradient.linear(
         Offset(size.width / 2, 0),
         Offset(size.width / 2, size.height),
         const [_bgTop, _bgBottom],
       );
-    canvas.drawRect(Offset.zero & size, bg);
+    canvas.drawRect(rect, bg);
 
-    // Escalation heat: a faint red wash from the bottom as the game ramps.
     final heat = intensity.clamp(0.0, 1.0);
-    if (heat > 0.01) {
-      final wash = Paint()
+
+    // Overhead sheen: a faint cool wash from the top sells "deep arcade night"
+    // and gives the backdrop a top-lit read under the bands.
+    canvas.drawRect(
+      rect,
+      Paint()
         ..shader = Gradient.linear(
-          Offset(size.width / 2, size.height),
-          Offset(size.width / 2, size.height * 0.45),
+          Offset(size.width / 2, 0),
+          Offset(size.width / 2, size.height * 0.5),
           [
-            _telegraph.withValues(alpha: 0.10 * heat),
+            _bgSheen.withValues(alpha: 0.10),
             const Color(0x00000000),
           ],
-        );
-      canvas.drawRect(Offset.zero & size, wash);
+        ),
+    );
+
+    // Escalation heat: a layered red wash from the bottom as the game ramps —
+    // a wide deep glow under a tighter brighter core so the floor feels molten.
+    if (heat > 0.01) {
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(size.width / 2, size.height),
+            Offset(size.width / 2, size.height * 0.40),
+            [
+              _bgHeatDeep.withValues(alpha: 0.12 * heat),
+              const Color(0x00000000),
+            ],
+          ),
+      );
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(size.width / 2, size.height),
+            Offset(size.width / 2, size.height * 0.62),
+            [
+              _telegraph.withValues(alpha: 0.10 * heat),
+              const Color(0x00000000),
+            ],
+          ),
+      );
     }
+
+    // Vignette: a soft radial darken from the edges keeps the eye on the lanes
+    // and tightens (deepens) with the escalation. Single radial — no per-entity
+    // blur — so it stays cheap.
+    final vig = (0.26 + 0.18 * heat).clamp(0.0, 1.0);
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = Gradient.radial(
+          Offset(size.width / 2, size.height * 0.46),
+          size.longestSide * 0.62,
+          [
+            const Color(0x00000000),
+            _black.withValues(alpha: vig),
+          ],
+          const [0.55, 1.0],
+        ),
+    );
   }
 
   // ── One player band ─────────────────────────────────────────────────────────
@@ -118,23 +174,49 @@ class FallingRenderer {
     _drawBandFrame(canvas, band, color, danger, a);
   }
 
-  /// Downward-scrolling chevrons sell the sense of falling motion.
+  /// Downward-scrolling chevrons sell the sense of falling motion. Two parallax
+  /// layers: a faint, slower, larger "far" layer set behind a brighter, faster,
+  /// tighter "near" layer — the speed/scale split reads as depth so the whole
+  /// band feels like it is rushing upward past the runner.
   static void _drawScrollTexture(
       Canvas canvas, Rect band, double scroll, double a) {
-    final rowGap = band.height / _scrollRows;
+    if (band.height / _scrollRows <= 2) return;
+    // Far layer first (slower, larger, dimmer), then the near layer over it.
+    _drawChevronLayer(canvas, band, scroll * 0.55, a,
+        rows: _scrollRows - 1, widthFactor: 0.085, color: _scrollTexFar,
+        offset: band.width * 0.5);
+    _drawChevronLayer(canvas, band, scroll, a,
+        rows: _scrollRows, widthFactor: 0.06, color: _scrollTex);
+  }
+
+  /// One downward-chevron layer at a given [scroll] phase / density. [offset]
+  /// staggers a layer's horizontal phase so the two layers never line up.
+  static void _drawChevronLayer(
+    Canvas canvas,
+    Rect band,
+    double scroll,
+    double a, {
+    required int rows,
+    required double widthFactor,
+    required Color color,
+    double offset = 0.0,
+  }) {
+    final rowGap = band.height / rows;
     if (rowGap <= 2) return;
     final phase = scroll % rowGap;
     final paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(1.0, band.height * 0.012)
+      ..strokeWidth = math.max(1.0, band.height * 0.012 * (widthFactor / 0.06))
       ..strokeCap = StrokeCap.round
-      ..color = _scrollTex.withValues(alpha: _scrollTex.a * a);
-    final w = band.width * 0.06;
-    for (var r = -1; r <= _scrollRows; r++) {
+      ..color = color.withValues(alpha: color.a * a);
+    final w = band.width * widthFactor;
+    final step = w * 3.4;
+    for (var r = -1; r <= rows; r++) {
       final y = band.top + phase + r * rowGap;
       if (y < band.top - rowGap || y > band.bottom + rowGap) continue;
       // A sparse row of small downward chevrons across the width.
-      for (var x = band.left + w; x < band.right - w; x += w * 3.4) {
+      final start = band.left + w + (offset % step);
+      for (var x = start; x < band.right - w; x += step) {
         final path = Path()
           ..moveTo(x - w * 0.5, y - w * 0.28)
           ..lineTo(x, y + w * 0.28)
@@ -179,25 +261,60 @@ class FallingRenderer {
   // ── Lane dividers (vertical) ──────────────────────────────────────────────
 
   /// Vertical lane guide lines inside a band. The runner's current lane is lit
-  /// brighter so it reads clearly.
+  /// brighter so it reads clearly, and (when [color]/[phase] are supplied) gets a
+  /// soft player-color wash column; a faint shimmer sweeps the safe lanes so the
+  /// playfield feels alive. All additive + readability-preserving.
   static void drawLanes(
     Canvas canvas,
     Rect band,
     List<double> laneX,
     double runnerVisualLane,
-    bool alive,
-  ) {
+    bool alive, {
+    Color? color,
+    double phase = 0.0,
+  }) {
     final a = alive ? 1.0 : 0.4;
     final top = band.top + band.height * 0.06;
     final bottom = band.bottom - band.height * 0.06;
+
+    // Soft player-color wash under the current lane: a gentle vertical column so
+    // "you are here" reads instantly even before the eye finds the runner.
+    if (color != null && laneX.length > 1 && alive) {
+      final litIdx = runnerVisualLane.round().clamp(0, laneX.length - 1);
+      final span = (laneX.length > 1)
+          ? (laneX[1] - laneX[0]).abs()
+          : band.width * 0.5;
+      final lx = laneX[litIdx];
+      final breathe = 0.5 + 0.5 * math.sin(phase * 2.2);
+      final washW = span * 0.86;
+      canvas.drawRect(
+        Rect.fromLTRB(lx - washW * 0.5, top, lx + washW * 0.5, bottom),
+        Paint()
+          ..shader = Gradient.linear(
+            Offset(lx, top),
+            Offset(lx, bottom),
+            [
+              color.withValues(alpha: (0.05 + 0.05 * breathe) * a),
+              color.withValues(alpha: (0.12 + 0.06 * breathe) * a),
+            ],
+          ),
+      );
+    }
+
     for (var i = 0; i < laneX.length; i++) {
       final x = laneX[i];
       final lit = (i - runnerVisualLane).abs() < 0.5;
+      // Safe-zone shimmer: a slow per-lane brightness ripple (deterministic via
+      // index + phase) that travels across the non-current lanes.
+      final shimmer = lit
+          ? 0.0
+          : (0.5 + 0.5 * math.sin(phase * 1.6 - i * 0.9)).clamp(0.0, 1.0);
+      final baseA = (lit ? _laneLineLit.a : _laneLine.a) * a;
       final paint = Paint()
         ..strokeWidth = lit ? 2.4 : 1.6
         ..strokeCap = StrokeCap.round
         ..color = (lit ? _laneLineLit : _laneLine)
-            .withValues(alpha: (lit ? _laneLineLit.a : _laneLine.a) * a);
+            .withValues(alpha: baseA * (1.0 + 0.6 * shimmer));
       canvas.drawLine(Offset(x, top), Offset(x, bottom), paint);
     }
   }
@@ -207,17 +324,37 @@ class FallingRenderer {
   /// A pulsing ground marker under a hazard's target lane so the player can
   /// react before it lands. [progress] in 0..1 is how close the hazard is to
   /// the runner line (1 = about to hit) and drives the marker's intensity.
+  /// [phase] (seconds) drives a breathing glow halo behind the marker so an
+  /// incoming hazard reads from across the band — drawn FIRST + centered on the
+  /// same point so it never obscures the marker, ring, carets, or tap-split.
   static void drawTelegraph(
     Canvas canvas,
     double laneX,
     double groundY,
     double hazardSize,
-    double progress,
-  ) {
+    double progress, {
+    double phase = 0.0,
+  }) {
     final p = progress.clamp(0.0, 1.0);
     if (p <= 0.02) return;
     final w = hazardSize * (1.0 + 0.4 * p);
     final h = hazardSize * _telegraphMaxH;
+
+    // Pulsing glow halo (behind everything): a wide, breathing oval that swells
+    // with both [phase] and proximity. Faint so it widens the read without
+    // washing out the crisp marker on top.
+    final pulse = 0.5 + 0.5 * math.sin(phase * 5.0);
+    final haloScale = 1.7 + 0.5 * pulse + 0.5 * p;
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(laneX, groundY),
+        width: w * haloScale,
+        height: h * (haloScale * 0.92),
+      ),
+      Paint()
+        ..color = _telegraph.withValues(
+            alpha: (0.04 + 0.10 * p) * (0.55 + 0.45 * pulse)),
+    );
 
     // Soft halo: two stacked translucent ovals (wide+faint under tight+stronger)
     // approximate the blur cheaply per hazard.
@@ -274,13 +411,71 @@ class FallingRenderer {
     double spin,
   ) {
     _drawHazardShadow(canvas, center, size, groundY);
+    // Impact dust: a deterministic burst of grit kicked up as the body reaches
+    // the runner line, fading out just below it so a landing/hit reads with a
+    // punch. Drawn under the body so the silhouette stays clean.
+    _drawImpactDust(canvas, center, size, groundY, kind);
     switch (kind) {
       case HazardKind.boulder:
         _drawBoulder(canvas, center, size, spin);
       case HazardKind.anvil:
-        _drawAnvil(canvas, center, size);
+        _drawAnvil(canvas, center, size, spin);
       case HazardKind.crate:
         _drawCrate(canvas, center, size, spin);
+    }
+  }
+
+  /// A short-lived grit burst at the ground line as a hazard lands/hits. The
+  /// strength ramps in over a small window straddling [groundY] and fades just
+  /// past it, so it fires exactly once per fall with no extra state. Particle
+  /// fan-out is deterministic (index trig), never rng — render stays pure.
+  static void _drawImpactDust(Canvas canvas, Offset center, double size,
+      double groundY, HazardKind kind) {
+    final dist = center.dy - groundY; // <0 above the line, >0 below
+    // Active window: from just above the line to a body-height below it.
+    final window = size * 0.9;
+    if (dist < -size * 0.25 || dist > window) return;
+    // Strength: 0 at the top edge, peaks at the line, fades to 0 below.
+    final t = dist <= 0
+        ? (1.0 + dist / (size * 0.25)).clamp(0.0, 1.0)
+        : (1.0 - dist / window).clamp(0.0, 1.0);
+    if (t <= 0.02) return;
+
+    final dust = _dustColorFor(kind);
+    const motes = 7;
+    final spread = size * (0.55 + 0.7 * t);
+    final lift = size * 0.22 * t;
+    final fill = Paint()..color = dust.withValues(alpha: 0.16 + 0.20 * t);
+    for (var i = 0; i < motes; i++) {
+      // Symmetric fan kicked outward from the contact point.
+      final dir = (i.isEven ? 1 : -1);
+      final frac = (i + 1) / (motes + 1);
+      final dx = dir * spread * frac;
+      // Higher motes nearer the center, lower ones farther out (a low plume).
+      final dy = -lift * (1.0 - frac) - size * 0.04;
+      final r = size * (0.10 + 0.06 * (1.0 - frac)) * (0.6 + 0.4 * t);
+      canvas.drawCircle(Offset(center.dx + dx, groundY + dy), r, fill);
+    }
+    // A faint flat scuff right on the line ties the plume to the ground.
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(center.dx, groundY),
+        width: spread * 2.0,
+        height: size * 0.16 * t,
+      ),
+      Paint()..color = dust.withValues(alpha: 0.10 + 0.12 * t),
+    );
+  }
+
+  /// Grit tint per hazard so dust reads as "from that thing" (stone/iron/wood).
+  static Color _dustColorFor(HazardKind kind) {
+    switch (kind) {
+      case HazardKind.boulder:
+        return _boulderHi;
+      case HazardKind.anvil:
+        return _anvilHi;
+      case HazardKind.crate:
+        return _crateHi;
     }
   }
 
@@ -367,9 +562,13 @@ class FallingRenderer {
     canvas.restore();
   }
 
-  static void _drawAnvil(Canvas canvas, Offset center, double size) {
+  static void _drawAnvil(
+      Canvas canvas, Offset center, double size, double spin) {
     canvas.save();
     canvas.translate(center.dx, center.dy);
+    // Heavy iron rocks rather than tumbles: a small bounded sway off the spin
+    // clock keeps it weighty while still feeling like it is falling free.
+    canvas.rotate(math.sin(spin) * 0.16);
     final w = size * 0.92;
     final h = size * 0.82;
 

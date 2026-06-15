@@ -268,7 +268,8 @@ class FallingTrackPainter {
     FallingRenderer.drawBand(canvas, t.band, t.color,
         scroll: scroll, danger: t.dangerLevel(), alive: t.alive);
     FallingRenderer.drawLanes(
-        canvas, t.band, t.laneXs(), t.hopper.visualLane, t.alive);
+        canvas, t.band, t.laneXs(), t.hopper.visualLane, t.alive,
+        color: t.color, phase: animClock);
 
     // Near-miss lane flashes (under hazards).
     for (final f in t.flashes) {
@@ -281,7 +282,8 @@ class FallingTrackPainter {
       for (final h in t.hazards) {
         if (h.y > t.runnerY) continue;
         FallingRenderer.drawTelegraph(canvas, t.lanes.coordOf(h.lane),
-            t.runnerY, h.size, t.telegraphProgress(h));
+            t.runnerY, h.size, t.telegraphProgress(h),
+            phase: animClock + h.spinPhase);
       }
     }
 

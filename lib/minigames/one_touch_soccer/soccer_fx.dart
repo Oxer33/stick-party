@@ -186,6 +186,13 @@ class SoccerFx {
     final c = pad.pos;
     final pulse = 0.5 + 0.5 * math.sin(pad.phase * 3.0);
 
+    // Stacked translucent halo (no MaskFilter) so the pad blooms brighter as it
+    // pulses — a clear "zoom here" beacon.
+    canvas.drawCircle(
+      c,
+      r * (1.45 + 0.3 * pulse),
+      Paint()..color = _padCore.withValues(alpha: 0.06 + 0.06 * pulse),
+    );
     canvas.drawCircle(
       c,
       r * (1.0 + 0.18 * pulse),
@@ -198,6 +205,15 @@ class SoccerFx {
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(1.5, r * 0.14)
         ..color = _padEdge.withValues(alpha: 0.9),
+    );
+    // A bright thin inner rim so the disc edge stays crisp over the bloom.
+    canvas.drawCircle(
+      c,
+      r * 0.82,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, r * 0.06)
+        ..color = _white.withValues(alpha: 0.35 + 0.3 * pulse),
     );
     // Twin upward chevrons that bob with the pulse — the "speed" read.
     final lift = r * (0.18 + 0.12 * pulse);
@@ -298,6 +314,16 @@ class SoccerFx {
       height: h,
     );
     final rr = RRect.fromRectAndRadius(rect, Radius.circular(h * 0.5));
+    // Outer glow bloom behind the pill (stacked translucent rounded rects, no
+    // MaskFilter) so the climax banner radiates.
+    for (var i = 3; i >= 1; i--) {
+      final f = i / 3.0;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect.inflate(h * 0.5 * f), Radius.circular(h)),
+        Paint()
+          ..color = _bannerColor.withValues(alpha: 0.10 * p * throb * (1.2 - f)),
+      );
+    }
     canvas.drawRRect(
       rr,
       Paint()..color = _bannerColor.withValues(alpha: 0.2 * p * throb),

@@ -123,7 +123,20 @@ class PlayersSetupScreen extends ConsumerWidget {
             icon: Icons.play_arrow_rounded,
             primary: true,
             onTap: () => _start(context),
-          ),
+          )
+              // Confident entrance, then a slow inviting breath to pull the eye
+              // to the primary action. Relies on GlassButton's own accent glow.
+              .animate()
+              .fadeIn(duration: 320.ms, curve: Curves.easeOut)
+              .slideY(begin: 0.18, end: 0, curve: Curves.easeOutCubic)
+              .then()
+              .animate(onPlay: (AnimationController c) => c.repeat(reverse: true))
+              .scaleXY(
+                begin: 1,
+                end: 1.025,
+                duration: 1400.ms,
+                curve: Curves.easeInOut,
+              ),
         ],
       ),
     );
@@ -195,9 +208,13 @@ class _SeatTile extends StatelessWidget {
 }
 
 /// A tappable, characterful seat avatar: a rounded swatch in the player's color
-/// with a top sheen and a human/robot face, plus a small recolor hint badge so
-/// it reads as "tap to change color".
-class _ColorSwatch extends StatelessWidget {
+/// with a top sheen, a human/robot face, and a gentle pulsing halo in the
+/// player's own color so each seat feels alive. A small recolor hint badge
+/// reads as "tap to change color".
+///
+/// Stateful so the halo can breathe via a looping [AnimationController]; the
+/// pulse rebuilds only the swatch (a tiny subtree), keeping it cheap.
+class _ColorSwatch extends StatefulWidget {
   const _ColorSwatch({
     required this.color,
     required this.isBot,
@@ -208,13 +225,31 @@ class _ColorSwatch extends StatelessWidget {
   final bool isBot;
   final VoidCallback onTap;
 
+  @override
+  State<_ColorSwatch> createState() => _ColorSwatchState();
+}
+
+class _ColorSwatchState extends State<_ColorSwatch>
+    with SingleTickerProviderStateMixin {
   /// Edge length of the swatch.
   static const double _size = 52;
 
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2200),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final Color color = widget.color;
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
       behavior: HitTestBehavior.opaque,
       child: SizedBox(
         width: _size,
@@ -222,30 +257,70 @@ class _ColorSwatch extends StatelessWidget {
         child: Stack(
           clipBehavior: Clip.none,
           children: <Widget>[
-            Container(
-              width: _size,
-              height: _size,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: <Color>[color, color.withValues(alpha: 0.55)],
-                ),
-                borderRadius: BorderRadius.circular(GlassTokens.radiusSmall),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.5),
-                    blurRadius: 12,
-                    spreadRadius: -2,
+            // Breathing halo in the player's color (eased sine, repaint-only).
+            AnimatedBuilder(
+              animation: _pulse,
+              builder: (BuildContext context, Widget? child) {
+                final double t =
+                    Curves.easeInOut.transform(_pulse.value);
+                final double glow = 8 + t * 12;
+                final double spread = -3 + t * 2;
+                return Container(
+                  width: _size,
+                  height: _size,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: <Color>[color, color.withValues(alpha: 0.55)],
+                    ),
+                    borderRadius:
+                        BorderRadius.circular(GlassTokens.radiusSmall),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.2 + t * 0.18),
+                    ),
+                    boxShadow: <BoxShadow>[
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.35 + t * 0.3),
+                        blurRadius: glow,
+                        spreadRadius: spread,
+                      ),
+                    ],
+                  ),
+                  child: child,
+                );
+              },
+              // Face + top sheen never change → built once, not per frame.
+              child: Stack(
+                alignment: Alignment.center,
+                children: <Widget>[
+                  // Soft top sheen for a glossy, lit feel.
+                  Align(
+                    alignment: Alignment.topCenter,
+                    child: Container(
+                      height: _size * 0.42,
+                      margin: const EdgeInsets.fromLTRB(3, 3, 3, 0),
+                      decoration: BoxDecoration(
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(GlassTokens.radiusSmall - 2),
+                        ),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: <Color>[
+                            Colors.white.withValues(alpha: 0.32),
+                            Colors.white.withValues(alpha: 0.0),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    widget.isBot ? Icons.smart_toy : Icons.face,
+                    color: Colors.white,
+                    size: 26,
                   ),
                 ],
-              ),
-              alignment: Alignment.center,
-              child: Icon(
-                isBot ? Icons.smart_toy : Icons.face,
-                color: Colors.white,
-                size: 26,
               ),
             ),
             // Small recolor affordance tucked into the corner.
@@ -306,6 +381,7 @@ class _ModeSelector extends StatelessWidget {
             selectedIndex: index,
             onSelected: (int i) => onChanged(modes[i]),
             expand: true,
+            accent: GlassColors.cyan,
           ),
         ],
       ),
@@ -364,6 +440,7 @@ class _DifficultySelector extends StatelessWidget {
           selectedIndex: BotDifficulty.values.indexOf(selected),
           onSelected: (int i) => onChanged(BotDifficulty.values[i]),
           expand: true,
+          accent: GlassColors.amber,
         ),
       ],
     );
@@ -413,29 +490,51 @@ class _Segmented extends StatelessWidget {
       onTap: () => onSelected(i),
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: active ? accentColor : Colors.transparent,
+          gradient: active
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: <Color>[
+                    accentColor,
+                    accentColor.withValues(alpha: 0.78),
+                  ],
+                )
+              : null,
           borderRadius: BorderRadius.circular(GlassTokens.radiusSmall - 3),
+          border: active
+              ? Border.all(color: Colors.white.withValues(alpha: 0.28))
+              : null,
+          // Stacked translucent layers → a soft accent bloom on selection.
           boxShadow: active
               ? <BoxShadow>[
                   BoxShadow(
-                    color: accentColor.withValues(alpha: 0.5),
-                    blurRadius: 12,
+                    color: accentColor.withValues(alpha: 0.55),
+                    blurRadius: 16,
                     spreadRadius: -3,
+                  ),
+                  BoxShadow(
+                    color: accentColor.withValues(alpha: 0.3),
+                    blurRadius: 6,
+                    spreadRadius: -1,
                   ),
                 ]
               : null,
         ),
-        child: Text(
-          label,
+        child: AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
           style: TextStyle(
             color: active ? Colors.white : GlassColors.textMuted,
-            fontWeight: FontWeight.w800,
+            fontWeight: active ? FontWeight.w900 : FontWeight.w800,
             fontSize: 12,
+            letterSpacing: active ? 0.3 : 0,
           ),
+          child: Text(label),
         ),
       ),
     );

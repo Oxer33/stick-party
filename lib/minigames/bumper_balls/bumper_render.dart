@@ -146,7 +146,7 @@ class BumperRenderer {
     _drawConcentricGrid(canvas, center, ringRadius, t);
     canvas.restore();
 
-    _drawDangerBand(canvas, center, ringRadius, dangerPulse);
+    _drawDangerBand(canvas, center, ringRadius, dangerPulse, t);
     _drawRim(canvas, center, ringRadius, accent);
   }
 
@@ -214,10 +214,12 @@ class BumperRenderer {
     Offset center,
     double ringRadius,
     double pulse,
+    double t,
   ) {
+    final p = pulse.clamp(0.0, 1.0);
     final bandDepth = ringRadius * _dangerBandFactor;
     final bandR = ringRadius - bandDepth * 0.7;
-    final alpha = (0.28 + 0.5 * pulse.clamp(0.0, 1.0));
+    final alpha = (0.28 + 0.5 * p);
     final halo = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = bandDepth * 1.15
@@ -229,6 +231,42 @@ class BumperRenderer {
       ..strokeWidth = math.max(2.0, bandDepth * 0.4)
       ..color = _dangerBand.withValues(alpha: alpha.clamp(0.0, 1.0));
     canvas.drawCircle(center, bandR, core);
+
+    // A bright crest that travels around the band — it sweeps faster and reads
+    // sharper as [pulse] climbs (the band brightens as the floor shrinks and a
+    // ball is pinned near the deadly edge), so the rim feels alive and urgent.
+    // A short bright arc swept along the existing core circle: no blur, no new
+    // geometry beyond one arc.
+    if (p > 0.01) {
+      final sweepW = _blend(_dangerBand, _white, 0.6 + 0.3 * p);
+      final crestSpan = math.pi * (0.5 - 0.32 * p); // tighter = sharper crest
+      final speed = 1.4 + 2.6 * p; // faster travel under pressure
+      final headAngle = (t * speed) % (math.pi * 2);
+      final crestRect = Rect.fromCircle(center: center, radius: bandR);
+      canvas.drawArc(
+        crestRect,
+        headAngle - crestSpan,
+        crestSpan,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = math.max(2.0, bandDepth * 0.5)
+          ..color = sweepW.withValues(alpha: (0.32 + 0.5 * p).clamp(0.0, 1.0)),
+      );
+      // A tight white tip at the leading head so the crest reads as a runner.
+      canvas.drawArc(
+        crestRect,
+        headAngle - crestSpan * 0.32,
+        crestSpan * 0.32,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = math.max(1.2, bandDepth * 0.22)
+          ..color = _white.withValues(alpha: (0.3 + 0.45 * p).clamp(0.0, 1.0)),
+      );
+    }
   }
 
   /// Bright neon rim: a controlled outer glow, a vertical gradient core stroke,
@@ -603,6 +641,20 @@ class BumperRenderer {
     if (p >= 1.0) return;
     final r = maxRadius * _easeOut(p);
     final fade = 1.0 - p;
+
+    // Platform shockwave: a wider, flatter concentric ring that radiates out
+    // along the disc and outruns the spark, so a big hit visibly thumps the
+    // floor. Drawn FIRST (under the crisp spark) as a single thinning stroke —
+    // no blur, no extra geometry — and it reaches ~1.7x the spark radius.
+    final waveR = maxRadius * 1.7 * _easeOut(p);
+    canvas.drawCircle(
+      at,
+      waveR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, maxRadius * 0.16 * fade * fade)
+        ..color = _blend(color, _white, 0.25).withValues(alpha: 0.34 * fade),
+    );
 
     // Two concentric solid strokes (no blur) read as a crisp expanding spark.
     canvas.drawCircle(

@@ -39,11 +39,16 @@ class TugRenderer {
   static const Color _pitLava = Color(0xFFFFC23A);
   static const Color _pitRim = Color(0xFFFF7A1A);
   static const Color _pitRimGlow = Color(0xFFFFB54D);
+  // Atmosphere accents (neon-glass identity).
+  static const Color _flame = Color(0xFFFB7234);
+  static const Color _ember = Color(0xFFFFD27A);
+  static const Color _steam = Color(0xFFB9A8C8);
 
   // Rope palette.
   static const Color _ropeCore = Color(0xFFE8C98C);
   static const Color _ropeDark = Color(0xFF9C6F3A);
   static const Color _ropeShade = Color(0xFF5E3F1F);
+  static const Color _ropeShimmer = Color(0xFFFFF4D8);
 
   // ── Tuning (fractions of arena; no inline magic numbers) ────────────────────
   static const double _spotlightFactor = 0.9; // spotlight radius / height
@@ -60,8 +65,13 @@ class TugRenderer {
   static const double _ropeShadowW = 14;
   static const double _ropeUnderW = 12;
   static const double _ropeBodyW = 9;
-  static const double _ropeBraidW = 4;
+  static const double _ropeStrandW = 3.2; // each woven strand
   static const double _ropeGripW = 11;
+
+  // Braid/shimmer tuning (visual-only, deterministic).
+  static const int _ropeSamples = 28; // path samples for the woven strands
+  static const double _braidTwists = 8.0; // helix turns down the rope
+  static const double _braidAmpFrac = 0.34; // strand offset / body width
 
   // ── Background: gradient sky + soft stage spotlight ─────────────────────────
   static void drawBackground(Canvas canvas, Size size) {
@@ -90,7 +100,18 @@ class TugRenderer {
 
   /// Two dark "crowd" bands behind each team (top + bottom) so the standing rows
   /// read with depth. [bandFrac] is each band's height as a fraction of height.
-  static void drawCrowdBands(Canvas canvas, Size size, double bandFrac) {
+  ///
+  /// [lead] in -1..1 (-1 = top winning) makes the FAVOURED crowd bob/cheer —
+  /// faint warm dot-rows ripple toward the marker's side. [t] is the animation
+  /// clock. Both default to 0 so existing callers stay valid (additive). The
+  /// dark depth bands underneath are unchanged.
+  static void drawCrowdBands(
+    Canvas canvas,
+    Size size,
+    double bandFrac, {
+    double lead = 0,
+    double t = 0,
+  }) {
     final bandH = size.height * bandFrac.clamp(0.0, 0.4);
     if (bandH <= 0) return;
     // Top band (fades downward into the field).
@@ -113,16 +134,64 @@ class TugRenderer {
           const [Color(0x00000000), Color(0x88000000)],
         ),
     );
+
+    // Cheering spectators: faint bobbing dot-rows. The side the marker swings
+    // toward bobs harder + glows warmer (deterministic from index + t).
+    final l = lead.clamp(-1.0, 1.0);
+    _drawCheerRow(canvas, size, bandH, t, dir: -1, hype: (-l).clamp(0.0, 1.0));
+    _drawCheerRow(canvas, size, bandH, t, dir: 1, hype: l.clamp(0.0, 1.0));
+  }
+
+  static void _drawCheerRow(
+    Canvas canvas,
+    Size size,
+    double bandH,
+    double t, {
+    required double dir, // -1 top, +1 bottom
+    required double hype, // 0..1 how much this side is favoured
+  }) {
+    const cols = 11;
+    final baseY = dir < 0 ? bandH * 0.55 : size.height - bandH * 0.55;
+    final headR = bandH * 0.07;
+    if (headR <= 0.5) return;
+    // Idle ambient bob even when neutral, stronger toward the favoured side.
+    final amp = bandH * (0.05 + 0.16 * hype);
+    final speed = 5.0 + 3.5 * hype;
+    final dot = Paint();
+    final headColor = Color.lerp(_white, _ember, hype)!;
+    for (var i = 0; i < cols; i++) {
+      final fx = (i + 0.5) / cols;
+      // Skip the central column so the rope/marker stay clean.
+      if ((fx - 0.5).abs() < 0.06) continue;
+      final phase = t * speed + i * 0.9;
+      // Bob INTO the field (toward the rope), away from the screen edge.
+      final bob = (0.5 + 0.5 * math.sin(phase)) * amp * -dir;
+      final cx = size.width * fx;
+      final cy = baseY + bob;
+      final glow = (0.10 + 0.30 * hype) * (0.55 + 0.45 * math.sin(phase));
+      dot.color = headColor.withValues(alpha: glow.clamp(0.0, 0.5));
+      canvas.drawCircle(Offset(cx, cy), headR, dot);
+    }
   }
 
   /// Crowd-dark vignette so the action pops (drawn over the field, under the
   /// popups). [pulse] in 0..1 reddens/tightens the frame as the marker nears an
-  /// edge — selling the rising tension.
-  static void drawVignette(Canvas canvas, Size size, double pulse) {
+  /// edge — selling the rising tension. Near match point the punch lands harder
+  /// (a thin breathing warm rim), but the center stays clear so the beat cue is
+  /// never obscured. [t] is the animation clock (defaults to 0 — additive).
+  static void drawVignette(
+    Canvas canvas,
+    Size size,
+    double pulse, {
+    double t = 0,
+  }) {
     final diag = math.sqrt(size.width * size.width + size.height * size.height);
-    final outer = diag * _vignetteOuterFrac;
-    final inner = diag * _vignetteInnerFrac;
     final p = pulse.clamp(0.0, 1.0);
+    // Heartbeat-style breath so the punch feels alive at match point.
+    final breath = 0.5 + 0.5 * math.sin(t * 5.0);
+    final tighten = 1.0 - 0.06 * p * breath; // pull the frame in on big pulses
+    final outer = diag * _vignetteOuterFrac;
+    final inner = diag * _vignetteInnerFrac * tighten;
     final edge = Color.lerp(_vignette, const Color(0xFF260202), p) ?? _vignette;
     final paint = Paint()
       ..shader = Gradient.radial(
@@ -132,6 +201,22 @@ class TugRenderer {
         [(inner / outer).clamp(0.0, 0.99), 1.0],
       );
     canvas.drawRect(Offset.zero & size, paint);
+
+    // Match-point flare: a faint warm rim that breathes only when pulse is high.
+    // Kept well outside the central beat-cue zone (large radius, thin stroke).
+    if (p > 0.45) {
+      final flare = ((p - 0.45) / 0.55).clamp(0.0, 1.0);
+      final ringR = outer * (0.94 - 0.02 * breath);
+      canvas.drawCircle(
+        Offset(size.width / 2, size.height / 2),
+        ringR,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 6 + 10 * flare
+          ..color =
+              _flame.withValues(alpha: 0.10 * flare * (0.6 + 0.4 * breath)),
+      );
+    }
   }
 
   /// The central mud/lava pit: dark socket → radial mud→lava core → bubbling
@@ -169,19 +254,25 @@ class TugRenderer {
       body,
     );
 
-    // Bubbling hot spots — a few drifting glowing blobs (deterministic from t).
-    // Plain translucent discs (no per-blob blur).
+    // Bubbling hot spots — more aggressive now: 8 drifting glowing blobs that
+    // swell and "pop" (deterministic from t). Plain translucent discs (no blur).
     final blob = Paint();
-    for (var i = 0; i < 5; i++) {
-      final phase = t * (0.7 + i * 0.13) + i * 1.7;
-      final bx = math.sin(phase) * rx * 0.5;
-      final by = math.cos(phase * 0.9 + i) * ry * 0.45;
-      final pulse = 0.5 + 0.5 * math.sin(phase * 1.6);
-      final r = ry * (0.18 + 0.12 * pulse);
-      blob.color = Color.lerp(_pitMud1, _pitLava, pulse)!
-          .withValues(alpha: 0.45 * pulse + 0.18);
+    for (var i = 0; i < 8; i++) {
+      final phase = t * (0.9 + i * 0.11) + i * 1.7;
+      final bx = math.sin(phase) * rx * 0.55;
+      final by = math.cos(phase * 0.9 + i) * ry * 0.5;
+      // Sharper swell so bubbles read as actively boiling.
+      final pulse = 0.5 + 0.5 * math.sin(phase * 1.9);
+      final pop = math.pow(pulse, 2.2).toDouble(); // mostly small, occasional big
+      final r = ry * (0.12 + 0.16 * pop);
+      blob.color = Color.lerp(_pitMud1, _pitLava, pop)!
+          .withValues(alpha: 0.5 * pop + 0.16);
       canvas.drawCircle(center.translate(bx, by), r, blob);
     }
+
+    // Rising heat: steam wisps + ember flecks lifting off the surface, fading as
+    // they climb (deterministic from t). Stacked translucent discs, no blur.
+    _drawPitHeat(canvas, center, rx, ry, t);
 
     // Inner heat highlight.
     final heat = Paint()
@@ -219,17 +310,63 @@ class TugRenderer {
     );
   }
 
+  /// Rising steam wisps + ember flecks lifting off the pit. Deterministic from
+  /// [t]; each particle loops on its own phase and fades as it climbs.
+  static void _drawPitHeat(
+    Canvas canvas,
+    Offset center,
+    double rx,
+    double ry,
+    double t,
+  ) {
+    final unit = (ry / 60).clamp(0.6, 2.0); // scale sparks to pit size
+    // Steam wisps (cool translucent grey-violet) drifting up from the surface.
+    final wisp = Paint();
+    for (var i = 0; i < 6; i++) {
+      final seed = i * 1.37;
+      final climb = (t * (0.18 + i * 0.015) + seed) % 1.0; // 0..1 loop
+      final sx = math.sin(seed * 3.1) * rx * 0.6;
+      final px = sx + math.sin(t * 0.8 + seed) * rx * 0.08; // gentle sway
+      final py = -ry * 0.2 - climb * ry * 1.5; // rise above the rim
+      final fade = (1.0 - climb) * climb * 4.0; // fade in then out
+      final r = ry * (0.16 + climb * 0.34);
+      wisp.color = _steam.withValues(alpha: (0.10 * fade).clamp(0.0, 0.16));
+      canvas.drawCircle(center.translate(px, py), r, wisp);
+    }
+    // Ember flecks: tiny hot sparks rising + winking out.
+    final fleck = Paint();
+    for (var i = 0; i < 9; i++) {
+      final seed = i * 0.71 + 0.3;
+      final climb = (t * (0.32 + i * 0.02) + seed) % 1.0;
+      final fx = math.sin(seed * 5.7) * rx * 0.7;
+      final px = fx + math.sin(t * 1.6 + seed) * rx * 0.06;
+      final py = -ry * 0.1 - climb * ry * 1.7;
+      final twinkle = 0.5 + 0.5 * math.sin(t * 9.0 + seed * 4);
+      final fade = (1.0 - climb) * twinkle;
+      final r = (1.3 + 1.1 * (1.0 - climb)) * unit;
+      fleck.color = Color.lerp(_ember, _flame, climb)!
+          .withValues(alpha: (0.5 * fade).clamp(0.0, 0.7));
+      canvas.drawCircle(center.translate(px, py), r, fleck);
+    }
+  }
+
   /// Dashed horizontal center line + two horizontal goal lines (the win
   /// thresholds, north + south). [centerY] is the pit center row; [topGoalY] /
   /// [bottomGoalY] are the goal horizontals.
+  ///
+  /// [lead] in -1..1 (-1 = top) lights the goal line the marker is pushing
+  /// toward with a danger glow so the pull direction reads at a glance. [t] is
+  /// the animation clock. Both default to 0 (additive — existing callers valid).
   static void drawFieldLines(
     Canvas canvas,
     Size size,
     double midX,
     double centerY,
     double topGoalY,
-    double bottomGoalY,
-  ) {
+    double bottomGoalY, {
+    double lead = 0,
+    double t = 0,
+  }) {
     final goalHalf = size.width * _goalLineHalfFrac;
 
     // Dashed horizontal center line through the pit.
@@ -246,20 +383,46 @@ class TugRenderer {
     }
 
     // Top + bottom goal lines with small chevrons so they read as "the line".
-    _goalLine(canvas, topGoalY, midX, goalHalf, -1);
-    _goalLine(canvas, bottomGoalY, midX, goalHalf, 1);
+    // The line nearer to losing (marker pushing toward it) gets a danger glow.
+    final l = lead.clamp(-1.0, 1.0);
+    final pulse = 0.5 + 0.5 * math.sin(t * 6.0);
+    _goalLine(canvas, topGoalY, midX, goalHalf, -1,
+        danger: (-l).clamp(0.0, 1.0), pulse: pulse);
+    _goalLine(canvas, bottomGoalY, midX, goalHalf, 1,
+        danger: l.clamp(0.0, 1.0), pulse: pulse);
   }
 
   static void _goalLine(
-      Canvas canvas, double y, double midX, double half, double dir) {
+    Canvas canvas,
+    double y,
+    double midX,
+    double half,
+    double dir, {
+    double danger = 0,
+    double pulse = 0,
+  }) {
+    // Danger underglow: wide faint warm stroke beneath the line (no blur).
+    if (danger > 0.04) {
+      canvas.drawLine(
+        Offset(midX - half, y),
+        Offset(midX + half, y),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 9 + 6 * danger
+          ..strokeCap = StrokeCap.round
+          ..color = _flame.withValues(
+              alpha: (0.22 * danger * (0.6 + 0.4 * pulse)).clamp(0.0, 0.6)),
+      );
+    }
+    final lineColor = Color.lerp(_white, _ember, danger * 0.8)!;
     final paint = Paint()
-      ..color = _white.withValues(alpha: 0.5)
-      ..strokeWidth = 3
+      ..color = lineColor.withValues(alpha: 0.5 + 0.45 * danger)
+      ..strokeWidth = 3 + 1.2 * danger
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(Offset(midX - half, y), Offset(midX + half, y), paint);
     // Chevron flags pointing inward (toward the pit).
     final flag = Paint()
-      ..color = _white.withValues(alpha: 0.28)
+      ..color = lineColor.withValues(alpha: 0.28 + 0.4 * danger)
       ..strokeWidth = 2;
     canvas.drawLine(
         Offset(midX - half, y), Offset(midX - half + 8, y + dir * 12), flag);
@@ -268,8 +431,14 @@ class TugRenderer {
   }
 
   /// The rope as a near-vertical curve bowing through the [knot], drawn from
-  /// [topHand] to [bottomHand], with a braided sheen. [bow] is the sideways
+  /// [topHand] to [bottomHand], with a real braided weave. [bow] is the sideways
   /// wobble depth (px). Tinted grip wraps mark each team's grip.
+  ///
+  /// Optional [t] (animation seconds) drives a tension-shimmer highlight that
+  /// travels along the rope, and [taut] in 0..1 (rises near a win) flattens the
+  /// bow, tightens the weave, and adds a fine vibration. Both default to 0 so
+  /// existing callers and tests are unaffected (additive, visual-only). The
+  /// woven twin strands themselves are always drawn (pure geometry).
   static void drawRope(
     Canvas canvas,
     Offset topHand,
@@ -277,16 +446,24 @@ class TugRenderer {
     Offset knot,
     double bow,
     Color topTint,
-    Color bottomTint,
-  ) {
+    Color bottomTint, {
+    double t = 0,
+    double taut = 0,
+  }) {
     final span = bottomHand.dy - topHand.dy;
     if (span.abs() < 1) return;
 
+    final tt = taut.clamp(0.0, 1.0);
+    // Near a win the bow flattens (rope pulls straight + tight).
+    final bowEff = bow * (1.0 - 0.45 * tt);
+    // Fine high-frequency vibration when the rope is straining toward a win.
+    final shake = tt > 0.01 ? math.sin(t * 48.0) * (2.2 * tt) : 0.0;
+
     // Two control legs so the apex of the bow sits at the knot (sideways wobble).
-    final topCtrl = Offset(
-        knot.dx + bow * 0.6, topHand.dy + (knot.dy - topHand.dy) * 0.5);
-    final bottomCtrl = Offset(
-        knot.dx + bow * 0.6, knot.dy + (bottomHand.dy - knot.dy) * 0.5);
+    final topCtrl = Offset(knot.dx + bowEff * 0.6 + shake,
+        topHand.dy + (knot.dy - topHand.dy) * 0.5);
+    final bottomCtrl = Offset(knot.dx + bowEff * 0.6 + shake,
+        knot.dy + (bottomHand.dy - knot.dy) * 0.5);
 
     final path = Path()
       ..moveTo(topHand.dx, topHand.dy)
@@ -304,7 +481,8 @@ class TugRenderer {
         ..color = _black.withValues(alpha: 0.16),
     );
 
-    // Dark underside → body → bright braid (stacked for a round 3-D rope).
+    // Dark underside → body (stacked for a round 3-D rope). The flat highlight
+    // line is replaced by twin helical strands below for a real woven look.
     canvas.drawPath(
       path,
       Paint()
@@ -321,18 +499,148 @@ class TugRenderer {
         ..strokeCap = StrokeCap.round
         ..color = _ropeDark,
     );
-    canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = _ropeBraidW
-        ..strokeCap = StrokeCap.round
-        ..color = _ropeCore,
-    );
+
+    // Braided weave + travelling tension shimmer (sampled along the bezier).
+    _drawBraid(canvas, topHand, topCtrl, knot, bottomCtrl, bottomHand, tt, t);
 
     // Tinted grip wraps near each team's hands.
     _gripWrap(canvas, topHand, topCtrl, topTint);
     _gripWrap(canvas, bottomHand, bottomCtrl, bottomTint);
+  }
+
+  /// Evaluate the two-segment quadratic-bezier rope at [u] in 0..1, returning
+  /// the point and the unit tangent. First half = top→knot, second = knot→bottom.
+  static (Offset, Offset) _ropeSample(
+    Offset p0,
+    Offset c0,
+    Offset mid,
+    Offset c1,
+    Offset p1,
+    double u,
+  ) {
+    final Offset a, b, c;
+    final double s;
+    if (u <= 0.5) {
+      a = p0;
+      b = c0;
+      c = mid;
+      s = u / 0.5;
+    } else {
+      a = mid;
+      b = c1;
+      c = p1;
+      s = (u - 0.5) / 0.5;
+    }
+    final mt = 1 - s;
+    final pos = a * (mt * mt) + b * (2 * mt * s) + c * (s * s);
+    var tan = (b - a) * (2 * mt) + (c - b) * (2 * s);
+    final d = tan.distance;
+    if (d > 0.0001) tan = tan / d;
+    return (pos, tan);
+  }
+
+  /// Twin helical strands woven down the rope + a bright shimmer ripple that
+  /// travels along it. The strands are two sine offsets in phase opposition,
+  /// laid perpendicular to the rope tangent so the weave wraps the body.
+  static void _drawBraid(
+    Canvas canvas,
+    Offset p0,
+    Offset c0,
+    Offset mid,
+    Offset c1,
+    Offset p1,
+    double taut,
+    double t,
+  ) {
+    final amp = _ropeBodyW * _braidAmpFrac;
+    // Taut rope = more twists packed in + a touch brighter strands.
+    final twists = _braidTwists * (1.0 + 0.25 * taut);
+    final strandBright = (0.75 + 0.2 * taut).clamp(0.0, 1.0);
+
+    // Shimmer head sweeps top→bottom on a loop; brighter when taut.
+    final shimmerU = (t * 0.45) % 1.0;
+    final shimmerBright = (0.35 + 0.5 * taut).clamp(0.0, 1.0);
+    const shimmerHalf = 0.10; // half-width of the highlight band in u-space
+
+    final strandA = <Offset>[];
+    final strandB = <Offset>[];
+    final shimmerPts = <Offset>[];
+    final shimmerCore = <Offset>[];
+
+    for (var i = 0; i <= _ropeSamples; i++) {
+      final u = i / _ropeSamples;
+      final (pos, tan) = _ropeSample(p0, c0, mid, c1, p1, u);
+      // Perpendicular to the tangent (rotate 90°).
+      final nrm = Offset(-tan.dy, tan.dx);
+      final ang = u * twists * math.pi * 2;
+      final off = math.sin(ang) * amp;
+      strandA.add(pos + nrm * off);
+      strandB.add(pos - nrm * off); // opposite phase = interlocked weave
+
+      // Shimmer: collect the points within the travelling band.
+      final dist = (u - shimmerU).abs();
+      if (dist < shimmerHalf) {
+        shimmerPts.add(pos);
+        // The crisp core rides the very center of the band.
+        if (dist < shimmerHalf * 0.4) shimmerCore.add(pos);
+      }
+    }
+
+    // Strand shading: a darker wide pass under a bright crisp pass (fake round).
+    final strandShade = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _ropeStrandW + 1.6
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = _ropeShade.withValues(alpha: 0.55);
+    final strandLine = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _ropeStrandW
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = _ropeCore.withValues(alpha: strandBright);
+
+    final pathA = _polyline(strandA);
+    final pathB = _polyline(strandB);
+    canvas.drawPath(pathA, strandShade);
+    canvas.drawPath(pathB, strandShade);
+    canvas.drawPath(pathA, strandLine);
+    canvas.drawPath(pathB, strandLine);
+
+    // Travelling tension shimmer: wide faint halo under a crisp hot line, both
+    // following the rope centerline within the moving band (no blur).
+    if (shimmerPts.length >= 2) {
+      canvas.drawPath(
+        _polyline(shimmerPts),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _ropeBodyW + 5
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = _ropeShimmer.withValues(alpha: 0.10 + 0.16 * shimmerBright),
+      );
+    }
+    if (shimmerCore.length >= 2) {
+      canvas.drawPath(
+        _polyline(shimmerCore),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = _white.withValues(alpha: 0.5 + 0.4 * shimmerBright),
+      );
+    }
+  }
+
+  static Path _polyline(List<Offset> pts) {
+    final path = Path();
+    if (pts.isEmpty) return path;
+    path.moveTo(pts.first.dx, pts.first.dy);
+    for (var i = 1; i < pts.length; i++) {
+      path.lineTo(pts[i].dx, pts[i].dy);
+    }
+    return path;
   }
 
   static void _gripWrap(Canvas canvas, Offset hand, Offset ctrl, Color tint) {
@@ -363,9 +671,42 @@ class TugRenderer {
     double t,
   ) {
     final l = lead.clamp(-1.0, 1.0);
+    final mag = l.abs();
+    final winTint = l <= 0 ? topTint : bottomTint;
     final tint = l <= 0
-        ? Color.lerp(_white, topTint, (-l).clamp(0.0, 1.0))!
-        : Color.lerp(_white, bottomTint, l.clamp(0.0, 1.0))!;
+        ? Color.lerp(_white, topTint, mag)!
+        : Color.lerp(_white, bottomTint, mag)!;
+
+    // Pull-direction glow: a soft halo on the knot biased toward the winning
+    // end, growing with the lead, so the direction of force reads instantly.
+    // Stacked translucent discs (no blur), offset up/down toward that side.
+    if (mag > 0.03) {
+      final glowPulse = 0.6 + 0.4 * math.sin(t * 5.0);
+      final glowAt = knot.translate(0, l * 16);
+      canvas.drawCircle(
+        glowAt,
+        16 + 14 * mag,
+        Paint()
+          ..color = winTint.withValues(alpha: (0.10 + 0.18 * mag) * glowPulse),
+      );
+      canvas.drawCircle(
+        glowAt,
+        9 + 8 * mag,
+        Paint()
+          ..color = winTint.withValues(alpha: (0.18 + 0.26 * mag) * glowPulse),
+      );
+      // A short directional arrow streak pointing the way the marker is sliding.
+      final dir = l <= 0 ? -1.0 : 1.0;
+      canvas.drawLine(
+        knot,
+        knot.translate(0, dir * (14 + 18 * mag)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round
+          ..color = winTint.withValues(alpha: (0.4 * mag).clamp(0.0, 0.6)),
+      );
+    }
 
     // Pole binding knot on the rope.
     canvas.drawCircle(knot, 9, Paint()..color = _ropeDark);
@@ -387,6 +728,15 @@ class TugRenderer {
       ..lineTo(knot.dx + 4, knot.dy + 3)
       ..close();
     canvas.drawPath(flag, Paint()..color = tint);
+    // Subtle inner sheen on the pennant for a glassy fabric feel.
+    canvas.drawLine(
+      Offset(knot.dx + 6, knot.dy - 1),
+      Offset(tip.dx * 0.7 + knot.dx * 0.3, tip.dy * 0.7 + knot.dy * 0.3),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = _white.withValues(alpha: 0.35),
+    );
     canvas.drawPath(
       flag,
       Paint()

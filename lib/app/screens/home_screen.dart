@@ -78,19 +78,11 @@ class HomeScreen extends ConsumerWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: <Widget>[
-                            const _Hero(),
-                            const SizedBox(height: GlassTokens.gap),
-                            _PrimaryPlayButton()
-                                .animate()
-                                .fadeIn(
-                                  delay: 200.ms,
-                                  duration: GlassTokens.entrance,
-                                )
-                                .slideY(
-                                  begin: 0.3,
-                                  end: 0,
-                                  curve: Curves.easeOutCubic,
-                                ),
+                            // Hero + QUICK PLAY are bundled so pressing play can
+                            // make the mascots cheer. They are the first beats of
+                            // the orchestrated entrance cascade (hero → quick
+                            // play → grid → showcase → teaser).
+                            const _HeroBlock(),
                             const SizedBox(height: GlassTokens.gapSmall),
                             _ActionGrid(dailyAvailable: dailyAvailable),
                             const SizedBox(height: GlassTokens.gap + 4),
@@ -167,9 +159,14 @@ class _TopBar extends StatelessWidget {
 }
 
 /// The hero: the two-word gradient logo + subtitle, with the animated mascot
-/// lineup as the centerpiece beneath it.
+/// lineup as the centerpiece beneath it. The logo reads like an arcade marquee —
+/// a continuous light bar sweeps across the letters and a soft colored bloom
+/// drifts behind them.
 class _Hero extends StatelessWidget {
-  const _Hero();
+  const _Hero({this.cheerSignal});
+
+  /// Forwarded to the mascot lineup so the crew can cheer on QUICK PLAY.
+  final Listenable? cheerSignal;
 
   @override
   Widget build(BuildContext context) {
@@ -177,30 +174,27 @@ class _Hero extends StatelessWidget {
       fontSize: _kTitleSize,
     );
     // Kept as two separate words ("STICK" / "PARTY") so the smoke test can find
-    // each independently, while still reading as the "STICK PARTY" logo.
+    // each independently, while still reading as the "STICK PARTY" logo. Each
+    // word carries a travelling sheen bar; the bloom behind gives marquee depth.
     final Widget title = Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        gradientText(
-          'STICK',
+        _MarqueeWord(
+          text: 'STICK',
           style: titleStyle,
-          textAlign: TextAlign.center,
           gradient: const LinearGradient(
             colors: <Color>[GlassColors.violet, GlassColors.magenta],
           ),
-        )
-            .animate(onPlay: (AnimationController c) => c.repeat(reverse: true))
-            .shimmer(
-              duration: 2600.ms,
-              color: GlassColors.frost.withValues(alpha: 0.5),
-            ),
-        gradientText(
-          'PARTY',
+        ),
+        _MarqueeWord(
+          text: 'PARTY',
           style: titleStyle,
-          textAlign: TextAlign.center,
           gradient: const LinearGradient(
             colors: <Color>[GlassColors.magenta, GlassColors.cyan],
           ),
+          // Offset the second word's sweep so the light reads as one continuous
+          // bar travelling down the whole logo rather than two in lockstep.
+          phase: 0.5,
         ),
         const SizedBox(height: 8),
         Text(
@@ -213,12 +207,22 @@ class _Hero extends StatelessWidget {
 
     return Column(
       children: <Widget>[
-        title
-            .animate()
-            .fadeIn(duration: 600.ms)
-            .scale(begin: const Offset(0.92, 0.92), end: const Offset(1, 1)),
+        // Bloom sits behind the type; the title floats above it in the stack.
+        Stack(
+          alignment: Alignment.center,
+          children: <Widget>[
+            const Positioned.fill(child: _TitleBloom()),
+            title
+                .animate()
+                .fadeIn(duration: 600.ms)
+                .scale(
+                  begin: const Offset(0.92, 0.92),
+                  end: const Offset(1, 1),
+                ),
+          ],
+        ),
         const SizedBox(height: 6),
-        const HomeMascots()
+        HomeMascots(cheerSignal: cheerSignal)
             .animate()
             .fadeIn(delay: 120.ms, duration: 700.ms)
             .slideY(begin: 0.15, end: 0, curve: Curves.easeOutCubic),
@@ -227,8 +231,205 @@ class _Hero extends StatelessWidget {
   }
 }
 
-/// The prominent QUICK PLAY call-to-action.
+/// Bundles the hero (logo + mascots) with the QUICK PLAY button and owns a tiny
+/// [ChangeNotifier]: tapping play pings it, and the mascot lineup reacts with a
+/// celebratory hop. Navigation is unchanged — the cheer fires alongside the push.
+class _HeroBlock extends StatefulWidget {
+  const _HeroBlock();
+
+  @override
+  State<_HeroBlock> createState() => _HeroBlockState();
+}
+
+class _HeroBlockState extends State<_HeroBlock> {
+  final _CheerSignal _cheer = _CheerSignal();
+
+  @override
+  void dispose() {
+    _cheer.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _Hero(cheerSignal: _cheer)
+            .animate()
+            .fadeIn(duration: GlassTokens.entrance)
+            .slideY(begin: -0.08, end: 0, curve: Curves.easeOutCubic),
+        const SizedBox(height: GlassTokens.gap),
+        _PrimaryPlayButton(onPlayPressed: _cheer.ping)
+            .animate()
+            .fadeIn(delay: 200.ms, duration: GlassTokens.entrance)
+            .slideY(begin: 0.3, end: 0, curve: Curves.easeOutCubic),
+      ],
+    );
+  }
+}
+
+/// A trivial broadcast signal: [ping] notifies listeners (the mascots) with no
+/// payload. Wraps [ChangeNotifier] only to expose a public notify method.
+class _CheerSignal extends ChangeNotifier {
+  void ping() => notifyListeners();
+}
+
+/// One word of the logo: gradient-filled type with a continuous light bar that
+/// travels across the glyphs (the "marquee sheen"). Built as a masked moving
+/// highlight so it reads as a sweeping bar rather than the all-over twinkle of a
+/// plain shimmer. Cheap: a single repeating controller drives a [LinearGradient]
+/// shader; no per-frame blur.
+class _MarqueeWord extends StatelessWidget {
+  const _MarqueeWord({
+    required this.text,
+    required this.style,
+    required this.gradient,
+    this.phase = 0.0,
+  });
+
+  final String text;
+  final TextStyle style;
+  final LinearGradient gradient;
+
+  /// 0..1 offset into the sweep cycle, so stacked words feel like one bar.
+  final double phase;
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget base = gradientText(
+      text,
+      style: style,
+      textAlign: TextAlign.center,
+      gradient: gradient,
+    );
+    return base
+        .animate(onPlay: (AnimationController c) => c.repeat())
+        .custom(
+          duration: 2600.ms,
+          builder: (BuildContext context, double value, Widget child) {
+            // Travel a narrow bright band from left to right across the word.
+            final double t = (value + phase) % 1.0;
+            final double center = -0.35 + t * 1.7;
+            return ShaderMask(
+              blendMode: BlendMode.srcATop,
+              shaderCallback: (Rect bounds) => LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: <Color>[
+                  Colors.transparent,
+                  GlassColors.frost.withValues(alpha: 0.0),
+                  GlassColors.frost.withValues(alpha: 0.85),
+                  GlassColors.frost.withValues(alpha: 0.0),
+                  Colors.transparent,
+                ],
+                stops: <double>[
+                  (center - 0.22).clamp(0.0, 1.0),
+                  (center - 0.10).clamp(0.0, 1.0),
+                  center.clamp(0.0, 1.0),
+                  (center + 0.10).clamp(0.0, 1.0),
+                  (center + 0.22).clamp(0.0, 1.0),
+                ],
+              ).createShader(bounds),
+              child: child,
+            );
+          },
+        );
+  }
+}
+
+/// A soft, slowly breathing colored bloom that sits behind the logo for marquee
+/// depth — three stacked radial glows in the brand accents that pulse together.
+/// Visual-only and pointer-transparent; one repeating controller scales them.
+class _TitleBloom extends StatelessWidget {
+  const _TitleBloom();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Center(
+        child: SizedBox(
+          width: 320,
+          height: 150,
+          child:
+              Stack(
+                alignment: Alignment.center,
+                children: const <Widget>[
+                  _BloomBlob(
+                    color: GlassColors.violet,
+                    size: 230,
+                    dx: -70,
+                    alpha: 0.30,
+                  ),
+                  _BloomBlob(
+                    color: GlassColors.magenta,
+                    size: 200,
+                    dx: 0,
+                    alpha: 0.26,
+                  ),
+                  _BloomBlob(
+                    color: GlassColors.cyan,
+                    size: 220,
+                    dx: 70,
+                    alpha: 0.24,
+                  ),
+                ],
+              )
+                  .animate(
+                    onPlay: (AnimationController c) => c.repeat(reverse: true),
+                  )
+                  .scaleXY(begin: 0.92, end: 1.06, duration: 3200.ms)
+                  .fadeIn(duration: 800.ms),
+        ),
+      ),
+    );
+  }
+}
+
+/// A single radial glow blob used by [_TitleBloom]. Painted with a radial
+/// gradient (no [ImageFilter] blur) so it stays cheap on the always-on menu.
+class _BloomBlob extends StatelessWidget {
+  const _BloomBlob({
+    required this.color,
+    required this.size,
+    required this.dx,
+    required this.alpha,
+  });
+
+  final Color color;
+  final double size;
+  final double dx;
+  final double alpha;
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.translate(
+      offset: Offset(dx, 0),
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: <Color>[
+              color.withValues(alpha: alpha),
+              color.withValues(alpha: 0.0),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The prominent QUICK PLAY call-to-action. Fires [onPlayPressed] (a cosmetic
+/// cheer cue) just before routing into setup; routing itself is unchanged.
 class _PrimaryPlayButton extends StatelessWidget {
+  const _PrimaryPlayButton({this.onPlayPressed});
+
+  /// Optional cosmetic hook invoked on tap (makes the mascots cheer).
+  final VoidCallback? onPlayPressed;
+
   @override
   Widget build(BuildContext context) {
     return GlassButton(
@@ -237,10 +438,13 @@ class _PrimaryPlayButton extends StatelessWidget {
       primary: true,
       accent: GlassColors.violet,
       height: _kPrimaryHeight,
-      onTap: () => context.push(
-        AppRoutes.setup,
-        extra: const SetupArgs(isCup: false),
-      ),
+      onTap: () {
+        onPlayPressed?.call();
+        context.push(
+          AppRoutes.setup,
+          extra: const SetupArgs(isCup: false),
+        );
+      },
     );
   }
 }
