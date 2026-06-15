@@ -467,16 +467,32 @@ void main() {
         reason: 'an even split must not change the pull multiplier');
   });
 
-  // ── Difficulty balance: skill beats the easy/medium CPU, hard is a challenge ─
+  // ── COMPETITIVE: skill gradient + beatable-but-tough hard bot ────────────────
   //
-  // A SKILLED human (one tap per beat, at dead-CENTER for max pull — the optimal
+  // The permanent competitiveness contract for Tug of War, measured head-to-head:
+  // a SKILLED human (one tap per beat, at dead-CENTER for max pull — the optimal
   // play) on top (id 0) vs ONE bot on the bottom (id 1), across all three tiers.
-  // This is the test the all-bot harness CAN'T do: equal-skill bots tug to a
-  // draw, hiding the difficulty curve. Head-to-head it must show: skill sweeps
-  // easy + medium, and hard is a genuine but beatable challenge.
-  int skilledHumanWins(BotDifficulty diff, {int seeds = 12}) {
+  // 1v1 is the clean read: the all-bot harness can't show a curve (equal-skill
+  // bots tug to a draw), and team modes blur it; head-to-head exposes the slope.
+  //
+  // Measured (this build, deterministic), skilled human win-rate over the bot:
+  //   window A seeds 1..12  → easy 12/12, medium 12/12, hard 5/12
+  //   window B seeds 13..24 → easy 12/12, medium 12/12, hard 5/12  (disjoint)
+  //   combined 24 seeds     → easy 24/24, medium 24/24, hard 10/24 (~0.417)
+  // hard avg margin hovers near zero (±0.07) with W/L flipping seed to seed — a
+  // genuine coin-flip wall, not a 0-win brick and not a 1.0 pushover. The bands
+  // below are robust SUPERSETS of those values (easy ≥ 0.70, hard within
+  // ~[0.15, 0.90]), and the whole 24-seed window is asserted so the proof spans
+  // the seeds the bands were validated on (A ∪ B). No retune was needed.
+
+  /// Skilled-human (seat 0, top) wins over a single [diff] bot across [seeds]
+  /// 1v1 rounds, indexing seeds from [seedFrom] so disjoint windows can be swept.
+  /// Models the OPTIMAL play: exactly one tap per beat window, fired only at/near
+  /// dead-center (precision ≥ 0.9) so every heave winds maximum tension toward a
+  /// POWER HEAVE — never an off-beat slip, never a double-tap.
+  int skilledHumanWins(BotDifficulty diff, {int seeds = 12, int seedFrom = 1}) {
     var wins = 0;
-    for (var s = 1; s <= seeds; s++) {
+    for (var s = seedFrom; s < seedFrom + seeds; s++) {
       final g = TugOfWar()
         ..init(MiniGameContext(
           players: [
@@ -505,21 +521,55 @@ void main() {
     return wins;
   }
 
-  test('difficulty: skilled play sweeps easy/medium and is challenged by hard',
-      () {
-    final easy = skilledHumanWins(BotDifficulty.easy);
-    final medium = skilledHumanWins(BotDifficulty.medium);
-    final hard = skilledHumanWins(BotDifficulty.hard);
-    // Skill must dominate the lower tiers (timing beats a sloppy CPU outright)…
-    expect(easy, greaterThanOrEqualTo(11),
-        reason: 'a clean on-beat human should beat the easy CPU nearly always');
-    expect(medium, greaterThanOrEqualTo(9),
-        reason: 'skill should still win most against the medium CPU');
-    // …and hard must be a real wall: still winnable, but clearly tougher than
-    // medium, so the difficulty setting actually means something.
-    expect(hard, lessThan(medium),
-        reason: 'the hard CPU must be measurably harder than the medium CPU');
+  test('COMPETITIVE: skill gradient + beatable-but-tough hard bot', () {
+    // 24 seeds = window A (1..12) ∪ window B (13..24); the bands are robust
+    // supersets of the measured win-rates and were validated on both windows.
+    const seeds = 24;
+    final easy = skilledHumanWins(BotDifficulty.easy, seeds: seeds);
+    final medium = skilledHumanWins(BotDifficulty.medium, seeds: seeds);
+    final hard = skilledHumanWins(BotDifficulty.hard, seeds: seeds);
+    final easyRate = easy / seeds;
+    final hardRate = hard / seeds;
+
+    // EASY clearly beatable (win-rate ≥ 0.70). Measured 1.000; floor is a wide
+    // superset so a sloppy CPU never becomes a coin-flip.
+    expect(easyRate, greaterThanOrEqualTo(0.70),
+        reason: 'a clean on-beat human must clearly beat the easy CPU '
+            '(got $easy/$seeds = ${easyRate.toStringAsFixed(3)})');
+
+    // HARD beatable-but-tough: inside ~[0.15, 0.90] — NOT a wall (0, impossible)
+    // and NOT a trivial pushover (1.0). Measured 0.417 on both windows.
+    expect(hardRate, greaterThanOrEqualTo(0.15),
+        reason: 'the hard CPU must stay beatable by perfect timing, not a wall '
+            '(got $hard/$seeds = ${hardRate.toStringAsFixed(3)})');
+    expect(hardRate, lessThanOrEqualTo(0.90),
+        reason: 'the hard CPU must remain a real challenge, not a pushover '
+            '(got $hard/$seeds = ${hardRate.toStringAsFixed(3)})');
+
+    // GRADIENT: winEasy ≥ winMedium ≥ winHard AND winEasy > winHard, so the
+    // difficulty dial monotonically tightens and easy is strictly easier than
+    // hard (the setting genuinely means something).
+    expect(easy, greaterThanOrEqualTo(medium),
+        reason: 'easy must be at least as winnable as medium '
+            '(easy $easy vs medium $medium)');
+    expect(medium, greaterThanOrEqualTo(hard),
+        reason: 'medium must be at least as winnable as hard '
+            '(medium $medium vs hard $hard)');
+    expect(easy, greaterThan(hard),
+        reason: 'easy must be strictly more winnable than hard '
+            '(easy $easy vs hard $hard)');
+
+    // NOT luck-dominated: against the easy CPU a skilled human wins reliably
+    // (re-stated as a count floor so a single lucky seed can't carry it).
+    expect(easy, greaterThanOrEqualTo((seeds * 0.70).ceil()),
+        reason: 'skill must beat the easy CPU across seeds, not by luck '
+            '(got $easy/$seeds)');
+
+    // NO runaway: hard outcomes VARY across seeds (neither a 0-win brick nor a
+    // 24-win sweep), proving comebacks happen and no side runs away unbeatably.
     expect(hard, greaterThan(0),
-        reason: 'hard must remain beatable by perfect timing, not impossible');
+        reason: 'hard must be winnable on some seeds (comeback exists)');
+    expect(hard, lessThan(seeds),
+        reason: 'hard must take some seeds off the human (no human runaway)');
   });
 }

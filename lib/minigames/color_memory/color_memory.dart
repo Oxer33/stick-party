@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../art/fx/juice.dart';
 import '../../art/stick/stick_figure.dart';
 import '../../art/stick/stick_style.dart';
@@ -108,6 +110,25 @@ class ColorMemory extends MiniGameBase {
         modes: [GameMode.ffa],
         inputHint: 'TAP',
       );
+
+  // ── Test-only window (what a player who WATCHED the light show perceives) ────
+  // The competitive test drives a realistic skilled human in seat 0: it must know
+  // the sequence it just watched flash, and which beat is live, to reproduce by
+  // tapping pads — exactly the information a human at the table has. These leak no
+  // hidden per-frame state beyond what the on-screen light show + HUD already show
+  // (the sequence is rendered as it flashes; the phase is the on-field banner).
+  @visibleForTesting
+  List<int> get debugSequence => List<int>.unmodifiable(_sequence);
+  @visibleForTesting
+  bool get debugInputPhase => _phase == _Phase.input;
+  @visibleForTesting
+  bool get debugAppendPhase => _phase == _Phase.appending;
+  @visibleForTesting
+  int? get debugAppenderId => _appenderId;
+  @visibleForTesting
+  bool get debugAlive0 => _padOf(0)?.alive ?? false;
+  @visibleForTesting
+  int get debugProgress0 => _padOf(0)?.progress ?? 0;
 
   // ── Rules / timing tuning (no magic numbers inline) ─────────────────────────
   static const int _palette = 4;

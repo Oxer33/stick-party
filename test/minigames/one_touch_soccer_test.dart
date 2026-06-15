@@ -480,4 +480,191 @@ void main() {
           reason: 'skilled trap-and-shoot must beat the masher across seeds');
     });
   });
+
+  group('COMPETITIVE: skill gradient + beatable-but-tough hard bot', () {
+    // A SKILLED but HUMAN sim drives seat 0 (id 0 → even → attacks the TOP
+    // goal) in a clean 1v1 (duel) vs ONE bot. It is competent — traps the loose
+    // ball, carries it goalward, places a charged shot — but NOT frame-perfect:
+    // it reacts on a ~150 ms cadence with a touch of steering wobble and has to
+    // physically run, the same lag+wobble the spam test models. Measured (16
+    // seeds/tier, two disjoint windows + an 8-window robustness sweep offline):
+    //   easy   : win-rate 1.00  (clearly beatable)
+    //   medium : win-rate 1.00
+    //   hard   : win-rate 0.62–0.88  (beatable-but-tough; bot wins ~15–40%)
+    // so the bands below are robust supersets validated on disjoint seeds. This
+    // is the permanent lock against the game drifting into a pushover (hard → 1)
+    // or a wall (hard → 0). 2v2 reads the same shape (hard ≈ 0.69) and is noted
+    // in the audit; the 1v1 duel is the clean competitive read asserted here.
+    const decisionEvery = 9; // ~150 ms human decision cadence
+    const wobbleRad = 0.18; // skilled-but-human steering wobble
+
+    Offset wobble(Offset dir, SeededRng rng) {
+      final a = rng.jitter(wobbleRad);
+      return Offset(dir.dx * math.cos(a) - dir.dy * math.sin(a),
+          dir.dx * math.sin(a) + dir.dy * math.cos(a));
+    }
+
+    OneTouchSoccer buildDuel(int seed, BotDifficulty diff) => OneTouchSoccer()
+      ..init(MiniGameContext(
+        players: [
+          const PlayerSlot(id: 0, name: 'SKILL', colorArgb: 0xFFFFFFFF),
+          PlayerSlot.defaults(1, isBot: true),
+        ],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+        mode: GameMode.duel1v1,
+        difficulty: diff,
+      ));
+
+    // The skilled-human duel runner, returning the seat-0 win-rate, win count
+    // and the SET of distinct seat-0 final scores across [seeds]. Drives the
+    // REAL input path for seat 0: chase the loose ball → stationary TAP to TRAP
+    // → carry it goalward → release + TAP to place a charged shot near goal.
+    ({double rate, int wins, int total, Set<int> seat0Scores}) measure(
+        BotDifficulty diff, List<int> seeds) {
+      var wins = 0;
+      final scores = <int>{};
+      for (final seed in seeds) {
+        final g = buildDuel(seed, diff);
+        // Re-run once to capture the win, once to read the score set cheaply is
+        // wasteful — instead inline a single run and read both.
+        final rng = SeededRng(seed * 977 + 41);
+        const step = 1 / 60;
+        const anchor = Offset(0.5, 0.5);
+        const goalNorm = Offset(0.5, 0.04);
+        var f = 0;
+        var pressedDown = false;
+        var shootCd = 0;
+        var steer = const Offset(0, -1);
+        while (g.status != MiniGameStatus.finished && f < 60 * 80) {
+          final ballN = g.ballPosNormForTest();
+          final meN = g.strikerPosNormForTest(0);
+          final possessor = g.possessorForTest();
+          final iOwn = possessor == 0;
+          final toBall = ballN - meN;
+          final ballDist = toBall.distance;
+          final decide = f % decisionEvery == 0;
+          if (shootCd > 0) shootCd--;
+          if (iOwn) {
+            if (decide) {
+              final toGoal = goalNorm - meN;
+              final gd = toGoal.distance;
+              final raw = gd < 1e-6 ? const Offset(0, -1) : toGoal / gd;
+              steer = wobble(raw, rng);
+            }
+            if (!pressedDown) {
+              g.onInput(const PlayerInput(
+                  playerId: 0, phase: InputPhase.down, normPos: anchor));
+              pressedDown = true;
+            }
+            g.onInput(PlayerInput(
+                playerId: 0,
+                phase: InputPhase.holdTick,
+                normPos: anchor + steer * 0.16));
+            g.update(step);
+            f++;
+            if (meN.dy < 0.30 && shootCd == 0) {
+              g.onInput(PlayerInput(
+                  playerId: 0,
+                  phase: InputPhase.up,
+                  normPos: anchor + steer * 0.16));
+              pressedDown = false;
+              g.onInput(const PlayerInput(
+                  playerId: 0, phase: InputPhase.down, normPos: anchor));
+              g.onInput(const PlayerInput(
+                  playerId: 0, phase: InputPhase.up, normPos: anchor));
+              shootCd = 18;
+            }
+            continue;
+          }
+          const trapNormRange = 0.072;
+          if (possessor == null && ballDist <= trapNormRange) {
+            if (pressedDown) {
+              g.onInput(const PlayerInput(
+                  playerId: 0, phase: InputPhase.up, normPos: anchor));
+              pressedDown = false;
+            }
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.down, normPos: anchor));
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.up, normPos: anchor));
+            g.update(step);
+            f++;
+            continue;
+          }
+          if (decide) {
+            final raw =
+                ballDist < 1e-6 ? const Offset(0, -1) : toBall / ballDist;
+            steer = wobble(raw, rng);
+          }
+          if (!pressedDown) {
+            g.onInput(const PlayerInput(
+                playerId: 0, phase: InputPhase.down, normPos: anchor));
+            pressedDown = true;
+          }
+          g.onInput(PlayerInput(
+              playerId: 0,
+              phase: InputPhase.holdTick,
+              normPos: anchor + steer * 0.16));
+          g.update(step);
+          f++;
+        }
+        if (g.winResult!.ranking.first == 0) wins++;
+        scores.add(g.scores.of(0).round());
+      }
+      return (
+        rate: wins / seeds.length,
+        wins: wins,
+        total: seeds.length,
+        seat0Scores: scores
+      );
+    }
+
+    // Two DISJOINT 16-seed windows: assert the bands hold on both.
+    final windowA = [for (var i = 0; i < 16; i++) i * 7 + 3];
+    final windowB = [for (var i = 0; i < 16; i++) i * 13 + 101];
+
+    for (final entry in {'A': windowA, 'B': windowB}.entries) {
+      final label = entry.key;
+      final seeds = entry.value;
+      test('window $label — easy beatable, hard tough, monotone gradient', () {
+        final easy = measure(BotDifficulty.easy, seeds);
+        final medium = measure(BotDifficulty.medium, seeds);
+        final hard = measure(BotDifficulty.hard, seeds);
+
+        // EASY clearly beatable.
+        expect(easy.rate, greaterThanOrEqualTo(0.70),
+            reason: '[$label] a skilled human should crush the easy bot '
+                '(got ${easy.wins}/${easy.total})');
+
+        // HARD beatable-but-tough: neither a wall (0) nor a pushover (1).
+        expect(hard.rate, greaterThanOrEqualTo(0.15),
+            reason: '[$label] the hard bot must not be an unbeatable wall '
+                '(human won only ${hard.wins}/${hard.total})');
+        expect(hard.rate, lessThanOrEqualTo(0.90),
+            reason: '[$label] the hard bot must not be a pushover '
+                '(human won ${hard.wins}/${hard.total}) — it has to win some');
+
+        // MONOTONE skill gradient, with a strict easy>hard separation.
+        expect(easy.rate, greaterThanOrEqualTo(medium.rate),
+            reason: '[$label] easy must be at least as winnable as medium');
+        expect(medium.rate, greaterThanOrEqualTo(hard.rate),
+            reason: '[$label] medium must be at least as winnable as hard');
+        expect(easy.rate, greaterThan(hard.rate),
+            reason: '[$label] easy must be strictly more winnable than hard');
+
+        // NOT luck-dominated: vs easy the skilled human wins reliably (the
+        // 0.70 floor above already encodes this on a robust band).
+        // NO runaway: vs hard the outcome VARIES across seeds (the bot steals
+        // games and pushes others close — a comeback exists), so the seat-0
+        // hard score is not a single pinned value.
+        expect(hard.wins, lessThan(hard.total),
+            reason: '[$label] the hard bot must win at least one duel');
+        expect(hard.seat0Scores.length, greaterThan(1),
+            reason: '[$label] hard outcomes must vary across seeds (no runaway '
+                'pin) — got scores ${hard.seat0Scores}');
+      });
+    }
+  });
 }

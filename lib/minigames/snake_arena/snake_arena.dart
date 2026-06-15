@@ -1180,6 +1180,49 @@ class SnakeArena extends MiniGameBase {
   /// so a staged scenario resolves deterministically without timing/seed noise.
   @visibleForTesting
   void stepOnceForTest() => _advanceAll();
+
+  /// SKILLED-HUMAN PROXY (test only). Steer the *human* (clock-less) snake [id]
+  /// with the exact same [SnakeBot] policy a HARD bot uses — the flood-fill
+  /// survival read + food pull + head-on dodge + deliberate cut-off drive, fed
+  /// the game's own wall/body predicates — but at a FIXED skilled profile
+  /// (errorRate 0, accuracy 1.0) that does NOT depend on [ctx.botProfile]. That
+  /// pins seat 0 to clean, deliberate "reads ahead and survives/cuts off" play
+  /// so the round's only difficulty variable is the OPPONENT, letting a test
+  /// measure a competitive skill gradient. Returns false (no-op) if [id] has no
+  /// living snake or the round is over. Issuing it once per logical step makes
+  /// seat 0 the best available faithful stand-in for a skilled human (snake
+  /// needs lookahead a frame-by-frame human-sim can't fairly emulate by tapping).
+  @visibleForTesting
+  bool skilledSteerForTest(int id) {
+    if (status != MiniGameStatus.running) return false;
+    Snake? me;
+    for (final s in _snakes) {
+      if (s.playerId == id && s.alive) {
+        me = s;
+        break;
+      }
+    }
+    if (me == null) return false;
+    const skilled = BotProfile(reactionSec: 0.05, errorRate: 0.0, accuracy: 1.0);
+    final bot = SnakeBot(
+      snakes: _snakes,
+      food: _food,
+      cols: _cols,
+      rows: _rows,
+      profile: skilled,
+      rng: ctx.rng,
+      hitsWall: _hitsWall,
+      hitsBody: (c, mover) => _hitsAnyBody(c, ignoreTailOf: mover),
+      foodBias: _botFoodBias,
+      lookahead: _botLookahead,
+      floodCap: _botFloodCap,
+      spaceWeight: _botSpaceWeight,
+      headOnPenalty: _botHeadOnPenalty,
+      interceptWeight: _botInterceptWeight, // full skilled cut-off drive
+    );
+    bot.steer(me);
+    return true;
+  }
 }
 
 /// A death spark scheduled to fire after [delay] seconds at [at]. Used to stagger

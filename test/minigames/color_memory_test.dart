@@ -445,4 +445,185 @@ void main() {
     expect(botAheadEverywhere, isTrue,
         reason: 'the memoriser must lead by a full recall point, not a flair');
   });
+
+  // ══ COMPETITIVE: skill gradient + beatable-but-tough hard bot ════════════════
+  //
+  // The blind-spam laws above prove memory skill beats NO skill. This block
+  // proves the harder claim: against a REALISTIC SKILLED HUMAN the bots form a
+  // real difficulty gradient — easy is clearly beatable, hard is tough but never
+  // a wall or a pushover. Color Memory is last-player-standing, so the contest is
+  // "who's recall lapses first": the human must out-survive the bot's per-round
+  // slip plan ([ColorMemory._rollBotMistakeStep], scaled by BotProfile.errorRate).
+  //
+  // ── The realistic skilled-human model (seat 0) ──────────────────────────────
+  // A perfect-recall human would trivially outlast every bot (≈100% at all
+  // difficulties = a degenerate flat gradient — confirmed in measurement at
+  // pRecall=1.0). So seat 0 is modelled as a HIGH-but-IMPERFECT memoriser:
+  //   * it WATCHED the light show, so it knows the sequence (via debugSequence) —
+  //     exactly the information a human at the table has;
+  //   * it recalls each color independently with probability [_pRecall] = 0.95
+  //     (< 1): the chance it clears a length-L pattern is 0.95^(L-1), decaying
+  //     with depth, so depth genuinely contests the bots instead of trivialising
+  //     them;
+  //   * round 1 (length 1) is cleared reliably (the game's forgiving retry);
+  //   * it reproduces FAST — a tap every 3 frames during the input phase — so it
+  //     generally answers before the bots (which hold the first answer a beat),
+  //     the skilled-human reaction edge the game already assumes;
+  //   * when it wins a round it taps a color in the append beat to keep building.
+  // Fully deterministic (its recall / wrong-pad / append choices run off their own
+  // seeded RNGs), so this whole gradient is reproducible frame-for-frame.
+  //
+  // ── Why 1v1 ─────────────────────────────────────────────────────────────────
+  // The duel isolates the human-vs-ONE-bot contest with the clearest read (no
+  // third-party KO order muddying the survival race) and is the canonical PvP
+  // shape. Measured win-rates @ pRecall=0.95 over three disjoint 12-seed windows:
+  //   easy   0.75 / 0.83 / 0.75
+  //   medium 0.75 / 0.83 / 0.58
+  //   hard   0.50 / 0.50 / 0.50
+  // The bands below are robust supersets of those values, asserted on the two
+  // disjoint windows used here (the third window was a measurement cross-check).
+  const pRecall = 0.95;
+
+  // Seat-0 plate quadrants in a 2p layout (player 0 sits in the bottom band;
+  // with no render() _lastSize stays 1x1, so normPos doubles as the plate coord).
+  // slot 0=red(TL) 1=blue(TR) 2=green(BL) 3=yellow(BR).
+  const duelQuads = <Offset>[
+    Offset(0.40, 0.64),
+    Offset(0.60, 0.64),
+    Offset(0.40, 0.84),
+    Offset(0.60, 0.84),
+  ];
+
+  // One 1v1 match: realistic skilled human (seat 0) vs one bot of [diff].
+  // Returns true iff the human finishes first in the ranking (wins the match).
+  bool skilledHumanWins(int seed, BotDifficulty diff) {
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1, isBot: true)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(seed),
+      zones: ZoneLayout.forPlayers(2),
+      difficulty: diff,
+    );
+    final g = ColorMemory()..init(ctx);
+    final recallRng = SeededRng(seed * 7919 + 13);
+    final wrongRng = SeededRng(seed * 104729 + 7);
+    final appendRng = SeededRng(seed * 1299709 + 5);
+
+    var n = 0;
+    var lastTapStep = -1; // commit at most one tap per step (wait for it to land)
+    while (g.status != MiniGameStatus.finished && n++ < 60 * 120) {
+      g.update(1 / 60);
+      if (n % 3 != 0) continue;
+      if (g.debugInputPhase && g.debugAlive0) {
+        final seq = g.debugSequence;
+        final step = g.debugProgress0;
+        if (step >= seq.length) continue; // already cleared this round
+        if (step == lastTapStep) continue; // our last tap hasn't resolved yet
+        lastTapStep = step;
+        // Round 1 is cleared reliably; deeper rounds recall each color with
+        // probability pRecall (an imperfect memoriser).
+        final correct = seq.length <= 1 || recallRng.next() < pRecall;
+        final want = seq[step];
+        final slot = correct ? want : (want + 1 + wrongRng.intRange(0, 3)) % 4;
+        g.onInput(PlayerInput.down(0, duelQuads[slot]));
+      } else if (g.debugAppendPhase && g.debugAppenderId == 0) {
+        // Won the round → append any color (cosmetic for balance; grows either way).
+        g.onInput(PlayerInput.down(0, duelQuads[appendRng.intRange(0, 4)]));
+        lastTapStep = -1;
+      } else {
+        lastTapStep = -1;
+      }
+    }
+    expect(g.status, MiniGameStatus.finished,
+        reason: 'seed=$seed diff=${diff.name} must finish');
+    return g.winResult!.ranking.first == 0;
+  }
+
+  // Win-rate of the realistic skilled human vs [diff] over a seed [window].
+  double winRate(List<int> window, BotDifficulty diff) {
+    var wins = 0;
+    for (final seed in window) {
+      if (skilledHumanWins(seed, diff)) wins++;
+    }
+    return wins / window.length;
+  }
+
+  // Two DISJOINT 12-seed windows (≥12 each). Every assertion runs on both, so a
+  // band only passes if it holds on independent seed sets (robust, not cherry-
+  // picked). 12 ≥ the required floor.
+  const windowA = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const windowB = [13, 14, 15, 42, 99, 123, 256, 777, 2024, 31, 57, 88];
+
+  test('COMPETITIVE: EASY is clearly beatable (win-rate ≥ 0.70, both windows)',
+      () {
+    for (final window in [windowA, windowB]) {
+      final wr = winRate(window, BotDifficulty.easy);
+      expect(wr, greaterThanOrEqualTo(0.70),
+          reason: 'a skilled human must clearly beat the EASY bot '
+              '(got ${wr.toStringAsFixed(2)} on window starting ${window.first})');
+    }
+  });
+
+  test('COMPETITIVE: HARD is beatable-but-tough (win-rate in [0.15, 0.90], both '
+      'windows — not a wall, not a pushover)', () {
+    for (final window in [windowA, windowB]) {
+      final wr = winRate(window, BotDifficulty.hard);
+      expect(wr, greaterThanOrEqualTo(0.15),
+          reason: 'the HARD bot must not be an unbeatable wall '
+              '(got ${wr.toStringAsFixed(2)} on window starting ${window.first})');
+      expect(wr, lessThanOrEqualTo(0.90),
+          reason: 'the HARD bot must not be a trivial pushover '
+              '(got ${wr.toStringAsFixed(2)} on window starting ${window.first})');
+    }
+  });
+
+  test('COMPETITIVE: a clean difficulty GRADIENT (winEasy ≥ winMedium ≥ winHard '
+      'and winEasy > winHard)', () {
+    for (final window in [windowA, windowB]) {
+      final e = winRate(window, BotDifficulty.easy);
+      final m = winRate(window, BotDifficulty.medium);
+      final h = winRate(window, BotDifficulty.hard);
+      // Monotone non-increasing across difficulty. A one-seed tolerance (≈0.083)
+      // on the adjacent easy≥medium / medium≥hard steps absorbs single-seed noise
+      // where two tiers measure equal, without admitting an inverted gradient.
+      const slack = 1.0 / 12 + 1e-9;
+      expect(e, greaterThanOrEqualTo(m - slack),
+          reason: 'easy ($e) must not rank below medium ($m) — window '
+              '${window.first}');
+      expect(m, greaterThanOrEqualTo(h - slack),
+          reason: 'medium ($m) must not rank below hard ($h) — window '
+              '${window.first}');
+      // The end-to-end gradient is decisive (no tolerance): easy clearly tops hard.
+      expect(e, greaterThan(h),
+          reason: 'easy ($e) must beat the field more often than hard ($h) — '
+              'window ${window.first}');
+    }
+  });
+
+  test('COMPETITIVE: not luck-dominated — the skilled human beats EASY reliably, '
+      'yet outcomes still VARY (no runaway)', () {
+    // Reliability: a clear majority of EASY matches go to the human on BOTH
+    // windows (already enforced ≥0.70 above; restated as the "skill, not luck"
+    // claim). Variety: across the full 24-seed sweep the human neither always
+    // wins nor always loses to the HARD bot — the result is genuinely contested,
+    // so the gradient is a real spread of outcomes, not a fixed coin.
+    var easyWinsAll = 0, easyN = 0;
+    var hardWins = 0, hardN = 0;
+    for (final window in [windowA, windowB]) {
+      for (final seed in window) {
+        easyN++;
+        if (skilledHumanWins(seed, BotDifficulty.easy)) easyWinsAll++;
+        hardN++;
+        if (skilledHumanWins(seed, BotDifficulty.hard)) hardWins++;
+      }
+    }
+    expect(easyWinsAll / easyN, greaterThan(0.5),
+        reason: 'vs EASY the skilled human wins the clear majority '
+            '($easyWinsAll/$easyN) — skill, not luck');
+    // No runaway in either direction vs HARD: some wins, some losses.
+    expect(hardWins, greaterThan(0),
+        reason: 'the human must take at least some HARD matches (not a wall)');
+    expect(hardWins, lessThan(hardN),
+        reason: 'the human must NOT sweep every HARD match (not a pushover)');
+  });
 }

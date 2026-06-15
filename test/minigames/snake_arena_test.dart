@@ -413,6 +413,127 @@ void main() {
     expect(totalCutOffs, greaterThan(0),
         reason: 'hard bots must land deliberate cut-offs ($totalCutOffs total)');
   });
+
+  // ── COMPETITIVE BALANCE (permanent) ───────────────────────────────────────────
+
+  test(
+      'COMPETITIVE: skill gradient + beatable-but-tough hard bot (1v1, 24 seeds)',
+      () {
+    // The ANTI-SPAM tests above PROVE blind play loses; THIS test PROVES the game
+    // is competitively BALANCED — stronger play wins MORE, the hardest bot is a
+    // real fight but not a wall, and the difficulty dial actually moves the needle.
+    //
+    // PROXY (stated plainly): a faithful frame-by-frame human-sim is INFEASIBLE
+    // for snake — good play needs multi-cell lookahead a tap-stream can't fairly
+    // emulate. So seat 0 is driven by [SnakeArena.skilledSteerForTest], the SAME
+    // flood-fill survival + food-pull + head-on-dodge + deliberate-cut-off policy
+    // a HARD bot uses, pinned at a FIXED skilled profile (errorRate 0, accuracy 1)
+    // that does NOT depend on ctx.difficulty. That makes the OPPONENT's difficulty
+    // the only variable, so the measured win-rate gradient cleanly proves
+    // "stronger play wins more" even though both sides are bot-policy driven.
+    //
+    // CONFIG: a clean 1v1 (seat 0 skilled vs ONE bot at difficulty d). 1v1 is the
+    // cleanest head-to-head read AND the only config whose easy>=medium>=hard
+    // gradient is monotonic across every measured seed window (a 3p/4p FFA muddies
+    // the easy/medium leg because both mostly self-crash). "Win" = the round's
+    // survival/length RANK (ranking.first), the game's real outcome.
+    //
+    // Measured (these 24 seeds): easy 0.958, medium 0.792, hard 0.625. Disjoint
+    // window below re-validates. Bands are robust supersets, not the point values.
+    const seeds = [
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+    ];
+
+    final easy = _skilledVsBot1v1(BotDifficulty.easy, seeds);
+    final medium = _skilledVsBot1v1(BotDifficulty.medium, seeds);
+    final hard = _skilledVsBot1v1(BotDifficulty.hard, seeds);
+
+    final n = seeds.length;
+    final winEasy = easy.wins / n;
+    final winMedium = medium.wins / n;
+    final winHard = hard.wins / n;
+
+    // EASY clearly beatable: a deliberate player wins the large majority.
+    expect(winEasy, greaterThanOrEqualTo(0.70),
+        reason: 'easy bot must be clearly beatable (win-rate $winEasy)');
+
+    // HARD beatable-but-tough: not an unwinnable wall (>0) and not a trivial
+    // pushover (<1) — a genuine fight.
+    expect(winHard, greaterThanOrEqualTo(0.15),
+        reason: 'hard bot must not be an unwinnable wall (win-rate $winHard)');
+    expect(winHard, lessThanOrEqualTo(0.90),
+        reason: 'hard bot must not be a trivial pushover (win-rate $winHard)');
+
+    // GRADIENT: difficulty must matter, monotonically, with a real spread.
+    expect(winEasy, greaterThanOrEqualTo(winMedium),
+        reason: 'easy ($winEasy) must be >= medium ($winMedium)');
+    expect(winMedium, greaterThanOrEqualTo(winHard),
+        reason: 'medium ($winMedium) must be >= hard ($winHard)');
+    expect(winEasy, greaterThan(winHard),
+        reason: 'difficulty must matter: easy ($winEasy) > hard ($winHard)');
+
+    // NOT luck-dominated: vs easy, skilled play wins RELIABLY (most seeds) and by
+    // a positive average length margin — it is skill, not coin-flips.
+    expect(easy.wins, greaterThanOrEqualTo((n * 0.7).ceil()),
+        reason: 'easy wins must be reliable across seeds (${easy.wins}/$n)');
+    final easyAvgMargin =
+        easy.margins.fold<num>(0, (a, b) => a + b) / easy.margins.length;
+    expect(easyAvgMargin, greaterThan(0),
+        reason: 'skilled play must beat easy by a positive avg length margin');
+
+    // NO runaway: vs HARD the outcome must genuinely SWING across seeds — there
+    // must be BOTH rounds the skilled seat WINS and rounds it LOSES (on survival
+    // rank), so it is a contest, not one repeated fixed result. (We assert this on
+    // the round RANK, not a +/-5 score gap: in 1v1 snake the round ENDS the instant
+    // the loser dies, so the winner's length barely exceeds the loser's — a loss is
+    // intrinsically a near-tie in length. Rank is the faithful swing signal here.)
+    expect(hard.wins, greaterThan(0),
+        reason: 'vs hard, the skilled seat must WIN some rounds (no wall)');
+    expect(hard.wins, lessThan(n),
+        reason: 'vs hard, the skilled seat must LOSE some rounds (real contest)');
+    // And when it wins, it can win DECISIVELY (a clear length lead exists), so a
+    // win is a real domination on some seeds, not a one-cell photo finish.
+    expect(hard.margins.any((m) => m >= 5), isTrue,
+        reason: 'vs hard, some seed must be a clear skilled WIN (margin >= +5)');
+  });
+
+  test('COMPETITIVE: the gradient holds on a DISJOINT seed window', () {
+    // Re-validate the same bands on a fully disjoint 20-seed window so the result
+    // is a robust property of the tuning, not an artifact of one lucky seed set.
+    // Measured (these seeds): easy 1.000, medium 0.850, hard 0.550.
+    const seeds = [
+      101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+      111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
+    ];
+
+    final easy = _skilledVsBot1v1(BotDifficulty.easy, seeds);
+    final medium = _skilledVsBot1v1(BotDifficulty.medium, seeds);
+    final hard = _skilledVsBot1v1(BotDifficulty.hard, seeds);
+
+    final n = seeds.length;
+    final winEasy = easy.wins / n;
+    final winMedium = medium.wins / n;
+    final winHard = hard.wins / n;
+
+    expect(winEasy, greaterThanOrEqualTo(0.70),
+        reason: 'easy beatable on the disjoint window (win-rate $winEasy)');
+    expect(winHard, greaterThanOrEqualTo(0.15),
+        reason: 'hard not a wall on the disjoint window (win-rate $winHard)');
+    expect(winHard, lessThanOrEqualTo(0.90),
+        reason: 'hard not a pushover on the disjoint window (win-rate $winHard)');
+    expect(winEasy, greaterThanOrEqualTo(winMedium),
+        reason: 'easy ($winEasy) >= medium ($winMedium) on disjoint window');
+    expect(winMedium, greaterThanOrEqualTo(winHard),
+        reason: 'medium ($winMedium) >= hard ($winHard) on disjoint window');
+    expect(winEasy, greaterThan(winHard),
+        reason: 'easy ($winEasy) > hard ($winHard) on disjoint window');
+    // Still a real contest vs hard on the second window: wins AND losses both occur.
+    expect(hard.wins, greaterThan(0),
+        reason: 'vs hard (disjoint), the skilled seat must win some rounds');
+    expect(hard.wins, lessThan(n),
+        reason: 'vs hard (disjoint), the skilled seat must lose some rounds');
+  });
 }
 
 /// A 1-player human (non-bot) context — used to measure how a blind random-turner
@@ -430,4 +551,48 @@ MiniGameContext ctxHumanSolo(int seed) => MiniGameContext(
 /// [rng] is a fixed per-seed [math.Random] so the spam stream is deterministic.
 void _spamTurnBlindly(SnakeArena g, int id, math.Random rng) {
   g.onInput(PlayerInput.down(id, Offset(rng.nextDouble(), 0.5)));
+}
+
+/// Aggregate outcome of a skilled-vs-bot 1v1 sweep across seeds: how many rounds
+/// the skilled seat-0 WON (on survival/length rank) and the per-seed length margin
+/// (seat0 length − bot length at the finish).
+class _DuelStats {
+  final int wins;
+  final List<num> margins;
+  const _DuelStats(this.wins, this.margins);
+}
+
+/// Run a clean 1v1 for every [seed]: a SKILLED seat 0 (driven by the game's own
+/// hard-bot routing+intercept policy at a fixed skilled profile via
+/// [SnakeArena.skilledSteerForTest]) vs ONE bot in seat 1 at difficulty [d]
+/// (which sets [MiniGameContext.botProfile] through BotProfile.forDifficulty).
+/// Both snakes obey the SAME seeded sim; the only difference is the opponent's
+/// skill, so seat-0 win-rate measures the difficulty gradient directly. Returns
+/// seat-0 round wins + per-seed final length margins.
+_DuelStats _skilledVsBot1v1(BotDifficulty d, List<int> seeds) {
+  var wins = 0;
+  final margins = <num>[];
+  for (final seed in seeds) {
+    final g = SnakeArena()
+      ..init(MiniGameContext(
+        players: [
+          PlayerSlot.defaults(0), // skilled human-proxy (hard-bot policy)
+          PlayerSlot.defaults(1, isBot: true), // bot at difficulty d
+        ],
+        arena: const Size(800, 1200),
+        rng: SeededRng(seed),
+        zones: ZoneLayout.forPlayers(2),
+        difficulty: d,
+      ));
+    var frames = 0;
+    while (g.status != MiniGameStatus.finished && frames++ < 60 * 80) {
+      g.update(1 / 60);
+      g.skilledSteerForTest(0); // seat 0 reads ahead + survives/cuts off
+    }
+    final me = g.scores.of(0);
+    final bot = g.scores.of(1);
+    if (g.winResult!.ranking.first == 0) wins++;
+    margins.add(me - bot);
+  }
+  return _DuelStats(wins, margins);
 }

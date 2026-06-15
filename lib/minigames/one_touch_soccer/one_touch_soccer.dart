@@ -139,6 +139,31 @@ class OneTouchSoccer extends MiniGameBase {
   static const double _trailLifeSec = 0.20;
   static const int _trailLen = 12;
 
+  // ── Tackle: an OPPONENT can STRIP a carrier (contestable possession) ─────────
+  // Possession is not a free pass to the net: an opposing striker that puts its
+  // BODY on the carrier can knock the ball loose — a real challenge the carrier
+  // must out-run or beat by shooting EARLY. Without this a trapped ball was an
+  // uncontested stroll to point-blank and a skilled human swept every tier 1.0;
+  // the tackle is what makes the lone 1v1 opponent (which has no keeper) able to
+  // contest at all. The challenger must be on the DEFENDING side of the ball
+  // (between the carrier and its own goal — a real interception, not a foul from
+  // behind), within [_tackleRangeFactor] of the carrier. Success scales with the
+  // challenger's accuracy so a HARD bot strips reliably and an EASY bot rarely —
+  // the on-defense skill gradient. The freed ball pops loose toward the
+  // challenger's attacking goal at a sub-gate pace (never a gifted scoring shot)
+  // and the stripped carrier is locked out of an instant re-trap for a beat.
+  static const double _tackleRangeFactor = 1.55; // of contact (R+r)*kickContact
+  static const double _tackleCooldownSec = 0.22; // per challenger between attempts
+  static const double _tackleReclaimSec = 0.42; // stripped owner can't re-trap for this
+  static const double _tackleSuccessFloor = 0.18; // even an easy bot occasionally strips
+  static const double _tackleSuccessCeil = 0.96; // a hard bot is firm but not automatic
+  static const double _tackleHumanSuccess = 0.85; // a human who bodies the carrier wins it
+  static const double _tackleLooseSpeed = 90.0; // freed-ball pop speed (sub goal-gate)
+  // A challenger counts as "goal-side" of the carrier (a fair interception) when
+  // it is at least this fraction of the carrier→own-goal direction ahead — i.e.
+  // genuinely between the carrier and the net it defends, not trailing behind.
+  static const double _tackleGoalSideBias = -0.15;
+
   // ── Goal / celebration tuning ───────────────────────────────────────────────
   static const double _kickoffPauseSec = 1.25; // sim frozen after a goal
   static const double _bulgeDurationSec = 0.9; // net ripple length
@@ -188,6 +213,14 @@ class OneTouchSoccer extends MiniGameBase {
   // ball goalward. So the bot earns its shot power exactly like a skilled human,
   // and never floor-pokes the way a masher does.
   static const double _botShootPossession = 0.18;
+  // A bot's athleticism (top running speed) scales with accuracy: an EASY bot is
+  // a step SLOW (a beatable footrace to loose balls), a HARD bot is a touch
+  // FASTER than the base striker so it wins more 50-50s and presses the carrier
+  // hard enough to strip — the difference between a hard bot that contests a
+  // skilled human and one that trails it all match. Neutral-ish at low accuracy
+  // so easy/medium stay clearly beatable; only a sharp bot earns the edge.
+  static const double _botSpeedAtAccuracy0 = 0.92; // accuracy 0 → a step slow
+  static const double _botSpeedAtAccuracy1 = 1.14; // accuracy 1 → a step quick
   // A bot attempts an active TRAP when a loose ball is within this*trapRange and
   // slow enough to catch. Its trap SUCCEEDS scaled by accuracy: a hard bot snaps
   // the claim, an easy bot frequently mistimes it and turns the ball over — the
@@ -262,9 +295,14 @@ class OneTouchSoccer extends MiniGameBase {
   /// when the ball is loose (a live shot, or nobody close). Recomputed each frame.
   int? _possessor;
 
-  /// Per-striker lockout after THEY shoot: they cannot re-own the ball until this
-  /// elapses, so a shot actually travels instead of re-sticking to the shooter.
+  /// Per-striker lockout after THEY shoot OR are stripped: they cannot re-own the
+  /// ball until this elapses, so a shot/strip actually frees the ball instead of
+  /// it re-sticking to the same player.
   final Map<int, double> _shootCd = <int, double>{};
+
+  /// Per-challenger cooldown between TACKLE attempts, so a strip is a discrete
+  /// challenge (not an every-frame coin flip). Ticked down each frame.
+  final Map<int, double> _tackleCd = <int, double>{};
 
   /// Touch bookkeeping to tell a TRAP/SHOOT tap from a run/move drag: where the
   /// finger pressed, how long it has been held, and whether it has dragged far.
@@ -405,6 +443,7 @@ class OneTouchSoccer extends MiniGameBase {
       _possessionSec[p.id] = 0;
       _cumPossession[p.id] = 0;
       _shootCd[p.id] = 0;
+      _tackleCd[p.id] = 0;
       _trapArm[p.id] = 0;
       _whiffFlash[p.id] = 0;
       if (p.isBot) {
@@ -454,6 +493,15 @@ class OneTouchSoccer extends MiniGameBase {
   /// player covers the pitch faster, exactly 1 on even teams or the larger side.
   double _speedFactorOf(int id) =>
       1.0 + _fairnessSpeedPerExtra * _extraFoesFor(_attacksTop[id] ?? true);
+
+  /// Bot-only athleticism multiplier scaled by accuracy: an easy bot is a step
+  /// slow, a hard bot a step quick. Humans are always 1.0 (unscaled), so this is
+  /// purely the bot footrace gradient and never alters a human's speed.
+  double _botAthleticismOf(int id) {
+    if (!_botClocks.containsKey(id)) return 1.0;
+    return _lerp(_botSpeedAtAccuracy0, _botSpeedAtAccuracy1,
+        ctx.botProfile.accuracy.clamp(0.0, 1.0));
+  }
 
   /// Shot-power multiplier for [id]: >1 on the short-handed side so its shots fly
   /// harder, exactly 1 on even teams or the larger side.
@@ -602,6 +650,7 @@ class OneTouchSoccer extends MiniGameBase {
     _steerStrikers(sdt);
     _arena.update(sdt);
     _resolveTraps(sdt); // active CLAIM: an open trap window catches a loose ball
+    _resolveTackles(sdt); // an opponent on the carrier's body can STRIP it loose
     _holdPossession(sdt); // glue an owned ball to feet + bank settled possession
 
     _pads.tick(sdt, ctx.rng, _pitch);
@@ -647,6 +696,8 @@ class OneTouchSoccer extends MiniGameBase {
       }
       final cd = _shootCd[id] ?? 0;
       if (cd > 0) _shootCd[id] = math.max(0, cd - dt);
+      final tcd = _tackleCd[id] ?? 0;
+      if (tcd > 0) _tackleCd[id] = math.max(0, tcd - dt);
       final wf = _whiffFlash[id] ?? 0;
       if (wf > 0) _whiffFlash[id] = math.max(0, wf - dt);
     }
@@ -663,7 +714,9 @@ class OneTouchSoccer extends MiniGameBase {
       final body = _bodyOf(id);
       if (body == null) continue;
       // Short-handed strikers run faster (factor > 1); even teams are neutral.
-      final maxSpeed = baseSpeed * _speedFactorOf(id);
+      // Bots also carry an accuracy-scaled athleticism factor (easy slow, hard
+      // quick) so the footrace to the ball expresses the skill gradient.
+      final maxSpeed = baseSpeed * _speedFactorOf(id) * _botAthleticismOf(id);
       final desired = _desiredVelocity(id, entry.value, maxSpeed);
 
       // Frame-rate-independent exponential approach toward the target velocity.
@@ -777,6 +830,89 @@ class OneTouchSoccer extends MiniGameBase {
     if (self == null) return;
     SoccerFx.fireWhiffFeedback(_juice,
         feet: self.pos.translate(0, _playerRadius), radius: _playerRadius);
+  }
+
+  /// The TACKLE: an OPPONENT whose body is on the carrier (and is goal-side of it
+  /// — a fair interception between the carrier and the net it defends) can STRIP
+  /// the ball loose. Possession is therefore contestable: a carrier can no longer
+  /// stroll uncontested to point-blank, it must out-run the challenge or shoot
+  /// EARLY. Success scales with the challenger's accuracy (a hard bot strips
+  /// firmly, an easy bot rarely), giving the skill gradient on DEFENSE. The freed
+  /// ball pops loose toward the challenger's attacking goal at a sub-gate pace
+  /// (never a gifted scoring shot), the stripped carrier is locked out of an
+  /// instant re-trap, and the challenger is credited the last touch.
+  void _resolveTackles(double dt) {
+    final owner = _possessor;
+    if (owner == null) return;
+    final ownerBody = _bodyOf(owner);
+    if (ownerBody == null) return;
+    final ownerAttacksTop = _attacksTop[owner] ?? true;
+
+    final range = (_playerRadius + _ballRadius) *
+        _kickContactFactor *
+        _tackleRangeFactor;
+
+    int? challenger;
+    var best = double.infinity;
+    for (final id in _joysticks.keys) {
+      if (id == owner) continue;
+      if ((_attacksTop[id] ?? true) == ownerAttacksTop) continue; // same side
+      if ((_tackleCd[id] ?? 0) > 0) continue; // still cooling down
+      final b = _bodyOf(id);
+      if (b == null) continue;
+      final to = ownerBody.pos - b.pos;
+      final d = to.distance;
+      if (d > range) continue; // not on the carrier's body
+      // Fair interception: the challenger must be GOAL-SIDE of the carrier — at
+      // least roughly between the carrier and the net the challenger defends, so
+      // a strip is a block of the carrier's path, never a hack from behind.
+      final towardChallengerGoal =
+          _normalize(_ownGoalCenterOf(id) - ownerBody.pos);
+      final dirToOwner = d <= 1e-6 ? Offset.zero : to / d;
+      final goalSide = dirToOwner.dx * towardChallengerGoal.dx +
+          dirToOwner.dy * towardChallengerGoal.dy;
+      if (goalSide < _tackleGoalSideBias) continue; // trailing behind: no strip
+      if (d < best) {
+        best = d;
+        challenger = id;
+      }
+    }
+    if (challenger == null) return;
+
+    // Roll the strip, scaled by the challenger's skill.
+    final isBot = _botClocks.containsKey(challenger);
+    final success = isBot
+        ? ctx.botProfile.accuracy
+            .clamp(_tackleSuccessFloor, _tackleSuccessCeil)
+        : _tackleHumanSuccess;
+    _tackleCd[challenger] = _tackleCooldownSec; // a discrete attempt either way
+    if (!ctx.rng.chance(success)) return; // mistimed challenge — carrier keeps it
+
+    _strip(owner: owner, challenger: challenger);
+  }
+
+  /// Knock the ball loose from [owner] to a loose state credited to [challenger].
+  /// Pops it toward the challenger's attacking goal at a sub-gate speed (chaos,
+  /// not a free shot), locks the stripped owner out of an instant re-trap and
+  /// pops a turnover cue at the owner's feet (humans only — bots strip silently).
+  void _strip({required int owner, required int challenger}) {
+    final cb = _bodyOf(challenger);
+    final ob = _bodyOf(owner);
+    if (cb == null || ob == null) return;
+    final dir = _normalize(_opponentGoalTarget(challenger) - _ball.pos);
+    _ball.vel =
+        (dir == Offset.zero ? const Offset(0, -1) : dir) * _tackleLooseSpeed;
+    _ballSquash = 1.0;
+    _possessor = null;
+    _possessionSec[owner] = 0;
+    _shootCd[owner] = _tackleReclaimSec; // the stripped player can't re-trap yet
+    _lastTouchAttacksTop = _attacksTop[challenger]; // the tackler touched it last
+    // Reuse the turnover cue at the dispossessed carrier's feet (humans only).
+    _whiffFlash[owner] = _whiffFlashSec;
+    if (!_botClocks.containsKey(owner)) {
+      SoccerFx.fireWhiffFeedback(_juice,
+          feet: ob.pos.translate(0, _playerRadius), radius: _playerRadius);
+    }
   }
 
   /// Glue an OWNED ball to its possessor's feet and bank settled possession (the
@@ -948,6 +1084,25 @@ class OneTouchSoccer extends MiniGameBase {
       if (controlled && _selfInAttackingHalf(attacksTop, self.pos)) {
         _shoot(playerId);
       }
+    } else if (_possessor != null && _possessor != playerId) {
+      // An OPPONENT carries the ball → PRESS its BODY to win a tackle. Aim a
+      // step GOAL-SIDE of the carrier (cut off its path to the net it attacks)
+      // so the press arrives between the carrier and the goal — a legal strip —
+      // rather than trailing behind it. This is what lets a lone 1v1 bot
+      // actually contest a human's carry instead of watching it stroll in.
+      final carrier = _bodyOf(_possessor!);
+      if (carrier != null) {
+        final carrierAttacksTop = _attacksTop[_possessor!] ?? true;
+        // The line the carrier is driving toward (its attacking goal).
+        final carrierGoal = SoccerFx.opponentGoalTarget(
+            carrierAttacksTop, _goalMouth.center, _topLine, _bottomLine);
+        final cutDir = _normalize(carrierGoal - carrier.pos);
+        // Intercept just in FRONT of the carrier on its path to goal.
+        final intercept = carrier.pos + cutDir * (_playerRadius * 1.2);
+        aim = _normalize(intercept - self.pos);
+      } else {
+        aim = _normalize(toBall);
+      }
     } else {
       aim = _normalize(toBall); // chase a loose ball to win it
       _botTryTrap(playerId, dist);
@@ -1016,6 +1171,11 @@ class OneTouchSoccer extends MiniGameBase {
   /// Center of the goal this player is attacking (where contact should drive).
   Offset _opponentGoalTarget(int playerId) => SoccerFx.opponentGoalTarget(
       _attacksTop[playerId] ?? true, _goalMouth.center, _topLine, _bottomLine);
+
+  /// Center of the goal this player DEFENDS (the opposite line). Used by the
+  /// tackle to require a challenger be goal-side of the carrier (a fair block).
+  Offset _ownGoalCenterOf(int playerId) => SoccerFx.opponentGoalTarget(
+      !(_attacksTop[playerId] ?? true), _goalMouth.center, _topLine, _bottomLine);
 
   /// Advance every striker figure. [freezeLocoIdle] pins locomotion to idle
   /// (used during the kickoff pause so reaction actions play over a still base
@@ -1148,6 +1308,7 @@ class OneTouchSoccer extends MiniGameBase {
     for (final id in _joysticks.keys) {
       _possessionSec[id] = 0;
       _shootCd[id] = 0;
+      _tackleCd[id] = 0;
       _trapArm[id] = 0;
       _whiffFlash[id] = 0;
     }
@@ -1439,6 +1600,11 @@ class OneTouchSoccer extends MiniGameBase {
     if (d < 1e-6) return Offset.zero;
     return v / d;
   }
+
+  /// Linear interpolate [a]→[b] by [t] (t clamped 0..1). Used to scale a bot's
+  /// shot-selection distance with BotProfile accuracy (the on-offense gradient).
+  static double _lerp(double a, double b, double t) =>
+      a + (b - a) * t.clamp(0.0, 1.0);
 
   /// Rotate a vector by [radians] (used to add bot heading jitter).
   static Offset _rotate(Offset v, double radians) {
