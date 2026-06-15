@@ -197,6 +197,69 @@ class AppLocalizationsEs extends AppLocalizations {
   String get hint_drag => 'ARRASTRA';
 
   @override
+  String get howto_sumo_smash =>
+      'Toca para embestir, mantén para resistir. ¡Saca a los rivales del ring!';
+
+  @override
+  String get howto_bumper_balls =>
+      'Arrastra hacia atrás para apuntar y suelta para lanzarte. ¡Rebota en los postes y echa a los rivales!';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Arrastra para correr, toca para controlar el balón y toca para chutar. ¡Marca más goles que nadie!';
+
+  @override
+  String get howto_tank_duel =>
+      'Arrastra para apuntar, mantén para cargar el arco y suelta para disparar. ¡Acierta al tanque enemigo!';
+
+  @override
+  String get howto_archer_pop =>
+      'Arrastra hacia atrás para apuntar y cargar, suelta para disparar. ¡Revienta los blancos en movimiento!';
+
+  @override
+  String get howto_chicken_jump =>
+      'Toca para saltar, mantén para un doble salto arriesgado. ¡Sube lo más alto que puedas!';
+
+  @override
+  String get howto_falling_dodge =>
+      'Toca a izquierda o derecha para esquivar los bloques que caen. ¡Esquivar al límite da más puntos!';
+
+  @override
+  String get howto_tap_sprint =>
+      'Toca con ritmo constante para correr, mantén y suelta para saltar las vallas. ¡Llega primero!';
+
+  @override
+  String get howto_tug_of_war =>
+      'Toca a tiempo para tirar; a tensión máxima sale el TIRÓN POTENTE. ¡Gana la pulseada!';
+
+  @override
+  String get howto_button_masher =>
+      'Toca para subir un peldaño, en el hueco entre las barras que giran. ¡Llega a la cima!';
+
+  @override
+  String get howto_reaction_duel =>
+      'Espera y toca justo cuando se ponga VERDE. ¡No piques con las fintas!';
+
+  @override
+  String get howto_snake_arena =>
+      'Toca a izquierda o derecha para girar. ¡Come para crecer, corta a los rivales y sobrevive más tiempo!';
+
+  @override
+  String get howto_paint_splash =>
+      'Toca en cadena las celdas libres y las de los rivales para salpicarlas. ¡Cubre la mayor área!';
+
+  @override
+  String get howto_catch_the_star =>
+      'Arrastra para mover tu cesta. ¡Atrapa las estrellas y esquiva las bombas!';
+
+  @override
+  String get howto_color_memory =>
+      'Observa el orden de los colores y luego tócalo de vuelta. ¡Gana quien recuerde hasta el final!';
+
+  @override
+  String get howto_tap_to_start => 'Toca para empezar';
+
+  @override
   String get cupSetupTitle => 'CONFIG. DE COPA';
 
   @override

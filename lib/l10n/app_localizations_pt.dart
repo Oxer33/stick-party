@@ -197,6 +197,69 @@ class AppLocalizationsPt extends AppLocalizations {
   String get hint_drag => 'ARRASTE';
 
   @override
+  String get howto_sumo_smash =>
+      'Toque para investir, segure para se firmar. Empurre os rivais para fora do ringue!';
+
+  @override
+  String get howto_bumper_balls =>
+      'Arraste para trás para mirar e solte para lançar. Ricocheteie nos pinos e derrube os rivais!';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Arraste para correr, toque para dominar a bola e toque para chutar. Marque mais gols que todos!';
+
+  @override
+  String get howto_tank_duel =>
+      'Arraste para mirar, segure para carregar o arco e solte para atirar. Acerte o tanque inimigo!';
+
+  @override
+  String get howto_archer_pop =>
+      'Arraste para trás para mirar e carregar, solte para atirar. Estoure os alvos em movimento!';
+
+  @override
+  String get howto_chicken_jump =>
+      'Toque para pular, segure para um pulo duplo arriscado. Suba o mais alto que conseguir!';
+
+  @override
+  String get howto_falling_dodge =>
+      'Toque à esquerda ou à direita para desviar dos blocos que caem. Desviar no limite vale mais pontos!';
+
+  @override
+  String get howto_tap_sprint =>
+      'Toque num ritmo constante para correr, segure e solte para saltar os obstáculos. Termine em primeiro!';
+
+  @override
+  String get howto_tug_of_war =>
+      'Toque no ritmo para puxar; com tensão máxima vem o PUXÃO PODEROSO. Vença o cabo de guerra!';
+
+  @override
+  String get howto_button_masher =>
+      'Toque para subir um degrau, no vão entre as barras que giram. Chegue ao topo!';
+
+  @override
+  String get howto_reaction_duel =>
+      'Espere e toque no instante em que ficar VERDE. Não caia nas fintas!';
+
+  @override
+  String get howto_snake_arena =>
+      'Toque à esquerda ou à direita para virar. Coma para crescer, corte os rivais e sobreviva por mais tempo!';
+
+  @override
+  String get howto_paint_splash =>
+      'Toque em sequência nas células livres e nas dos rivais para respingar. Cubra a maior área!';
+
+  @override
+  String get howto_catch_the_star =>
+      'Arraste para mover sua cesta. Pegue as estrelas e desvie das bombas!';
+
+  @override
+  String get howto_color_memory =>
+      'Observe a ordem das cores e depois toque de volta. Quem lembrar até o fim vence!';
+
+  @override
+  String get howto_tap_to_start => 'Toque para começar';
+
+  @override
   String get cupSetupTitle => 'CONFIG. DA COPA';
 
   @override

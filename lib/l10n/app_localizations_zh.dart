@@ -195,6 +195,54 @@ class AppLocalizationsZh extends AppLocalizations {
   String get hint_drag => '拖动';
 
   @override
+  String get howto_sumo_smash => '点击猛冲，长按稳住。把对手推出圈外！';
+
+  @override
+  String get howto_bumper_balls => '向后拖动瞄准，松手发射。借柱子反弹，把对手撞飞！';
+
+  @override
+  String get howto_one_touch_soccer => '拖动奔跑，点击停球，点击射门。进球最多者获胜！';
+
+  @override
+  String get howto_tank_duel => '拖动瞄准，长按蓄力调整弧线，松手开炮。击中敌方坦克！';
+
+  @override
+  String get howto_archer_pop => '向后拖动瞄准并蓄力，松手射击。射爆移动的靶子！';
+
+  @override
+  String get howto_chicken_jump => '点击起跳，长按来个冒险的二段跳。爬得越高越好！';
+
+  @override
+  String get howto_falling_dodge => '点击左右躲开掉落的方块。越晚闪避得分越高！';
+
+  @override
+  String get howto_tap_sprint => '稳定节奏点击奔跑，长按后松手跨栏。抢先冲过终点！';
+
+  @override
+  String get howto_tug_of_war => '踩着节拍点击发力；蓄满后触发强力猛拉。赢下这场拔河！';
+
+  @override
+  String get howto_button_masher => '趁旋转横杆的空隙点击，一级级往上爬。登顶吧！';
+
+  @override
+  String get howto_reaction_duel => '等待，变绿的瞬间立刻点击。别被假动作骗了！';
+
+  @override
+  String get howto_snake_arena => '点击左右转向。进食长大，切断对手，活到最后！';
+
+  @override
+  String get howto_paint_splash => '连续点击空白格和对手的格子来泼漆。占据最大面积！';
+
+  @override
+  String get howto_catch_the_star => '拖动移动你的篮子。接住星星，躲开炸弹！';
+
+  @override
+  String get howto_color_memory => '记住颜色顺序，再点击复现。记得最久的人获胜！';
+
+  @override
+  String get howto_tap_to_start => '点击开始';
+
+  @override
   String get cupSetupTitle => '锦标赛设置';
 
   @override

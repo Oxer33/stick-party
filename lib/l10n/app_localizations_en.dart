@@ -196,6 +196,69 @@ class AppLocalizationsEn extends AppLocalizations {
   String get hint_drag => 'DRAG';
 
   @override
+  String get howto_sumo_smash =>
+      'Tap to lunge, hold to brace. Shove rivals out of the ring!';
+
+  @override
+  String get howto_bumper_balls =>
+      'Drag back to aim, release to launch. Bank off pegs to knock rivals off!';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Drag to run, tap to trap the ball, tap to shoot. Score the most goals!';
+
+  @override
+  String get howto_tank_duel =>
+      'Drag to aim, hold to charge the arc, release to fire. Hit the enemy tank!';
+
+  @override
+  String get howto_archer_pop =>
+      'Drag back to aim and power up, release to shoot. Pop the moving targets!';
+
+  @override
+  String get howto_chicken_jump =>
+      'Tap to hop up, hold for a risky double-leap. Climb as high as you can!';
+
+  @override
+  String get howto_falling_dodge =>
+      'Tap left or right to dodge the falling blocks. Late dodges score more!';
+
+  @override
+  String get howto_tap_sprint =>
+      'Tap a steady rhythm to run, hold then release to vault hurdles. Finish first!';
+
+  @override
+  String get howto_tug_of_war =>
+      'Tap on the beat to heave; full tension means a POWER HEAVE. Win the pull!';
+
+  @override
+  String get howto_button_masher =>
+      'Tap to climb a rung, in the gap between the sweeping bars. Reach the top!';
+
+  @override
+  String get howto_reaction_duel =>
+      'Wait, then tap the instant it turns GREEN. Don\'t fall for the fakes!';
+
+  @override
+  String get howto_snake_arena =>
+      'Tap left or right to turn. Eat to grow, cut off rivals, survive longest!';
+
+  @override
+  String get howto_paint_splash =>
+      'Tap fresh and rival cells in a chain to splat. Cover the most area!';
+
+  @override
+  String get howto_catch_the_star =>
+      'Drag to move your basket. Catch the stars and dodge the bombs!';
+
+  @override
+  String get howto_color_memory =>
+      'Watch the color order, then tap it back. Last one remembering wins!';
+
+  @override
+  String get howto_tap_to_start => 'Tap to start';
+
+  @override
   String get cupSetupTitle => 'CUP SETUP';
 
   @override

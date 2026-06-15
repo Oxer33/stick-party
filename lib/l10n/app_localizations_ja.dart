@@ -195,6 +195,55 @@ class AppLocalizationsJa extends AppLocalizations {
   String get hint_drag => 'ドラッグ';
 
   @override
+  String get howto_sumo_smash => 'タップで突進、長押しでふんばろう。ライバルを土俵の外へ押し出せ！';
+
+  @override
+  String get howto_bumper_balls => '後ろにドラッグして狙い、はなして発射。ピンに当てて跳ね返り、ライバルを弾き飛ばせ！';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'ドラッグで走り、タップでトラップ、タップでシュート。いちばん多くゴールを決めろ！';
+
+  @override
+  String get howto_tank_duel => 'ドラッグで狙い、長押しで弾道をためて、はなして発射。敵の戦車に当てろ！';
+
+  @override
+  String get howto_archer_pop => '後ろにドラッグして狙い、力をためて、はなして放て。動く的を撃ちぬけ！';
+
+  @override
+  String get howto_chicken_jump => 'タップでジャンプ、長押しでリスキーな二段ジャンプ。できるだけ高く登れ！';
+
+  @override
+  String get howto_falling_dodge => '左右をタップして落ちてくるブロックをよけろ。ギリギリでよけるほど高得点！';
+
+  @override
+  String get howto_tap_sprint => '一定のリズムでタップして走り、長押しからはなしてハードルを跳べ。１着でゴール！';
+
+  @override
+  String get howto_tug_of_war => 'タイミングよくタップで引っぱれ。最大までためると強力な大引きが発動。綱引きに勝て！';
+
+  @override
+  String get howto_button_masher => '回るバーのすき間でタップして一段ずつ登れ。てっぺんを目指せ！';
+
+  @override
+  String get howto_reaction_duel => '待って、グリーンになった瞬間にタップ。フェイントにひっかかるな！';
+
+  @override
+  String get howto_snake_arena => '左右をタップして曲がろう。食べて伸びて、ライバルの進路をふさぎ、最後まで生き残れ！';
+
+  @override
+  String get howto_paint_splash => '空きマスとライバルのマスを連続でタップして塗りまくれ。いちばん広く塗ったら勝ち！';
+
+  @override
+  String get howto_catch_the_star => 'ドラッグでバスケットを動かそう。スターをキャッチして爆弾をよけろ！';
+
+  @override
+  String get howto_color_memory => '色の順番を見て、そのとおりにタップし返せ。最後まで覚えていた人が勝ち！';
+
+  @override
+  String get howto_tap_to_start => 'タップでスタート';
+
+  @override
   String get cupSetupTitle => 'カップ設定';
 
   @override

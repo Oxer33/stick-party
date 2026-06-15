@@ -8,6 +8,7 @@ import 'package:stick_party/app/widgets/mini_game_view.dart';
 import 'package:stick_party/engine/bots.dart';
 import 'package:stick_party/engine/mini_game.dart';
 import 'package:stick_party/engine/player_manager.dart';
+import 'package:stick_party/l10n/app_localizations.dart';
 
 void main() {
   testWidgets('runs an all-bot round to a finish', (WidgetTester tester) async {
@@ -19,6 +20,8 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: SizedBox(
             width: 800,
@@ -66,6 +69,8 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: SizedBox(
             width: 600,

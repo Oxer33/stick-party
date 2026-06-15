@@ -197,6 +197,69 @@ class AppLocalizationsRu extends AppLocalizations {
   String get hint_drag => 'ТЯНИ';
 
   @override
+  String get howto_sumo_smash =>
+      'Тапай для рывка, держи для упора. Вытолкни соперников за круг!';
+
+  @override
+  String get howto_bumper_balls =>
+      'Тяни назад для прицела, отпусти для запуска. Отскакивай от штырей и сбивай соперников!';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Тяни, чтобы бежать, тапай, чтобы принять мяч, и тапай, чтобы пробить. Забей больше всех голов!';
+
+  @override
+  String get howto_tank_duel =>
+      'Тяни для прицела, держи, чтобы зарядить дугу, отпусти для выстрела. Попади по вражескому танку!';
+
+  @override
+  String get howto_archer_pop =>
+      'Тяни назад для прицела и набора силы, отпусти для выстрела. Лопай движущиеся мишени!';
+
+  @override
+  String get howto_chicken_jump =>
+      'Тапай для прыжка, держи для рискованного двойного прыжка. Заберись как можно выше!';
+
+  @override
+  String get howto_falling_dodge =>
+      'Тапай влево или вправо, уворачиваясь от падающих блоков. За уворот в последний миг — больше очков!';
+
+  @override
+  String get howto_tap_sprint =>
+      'Тапай в ровном ритме, чтобы бежать, держи и отпускай, чтобы брать барьеры. Финишируй первым!';
+
+  @override
+  String get howto_tug_of_war =>
+      'Тапай в такт, чтобы тянуть; при полном натяжении сработает МОЩНЫЙ РЫВОК. Победи в перетягивании!';
+
+  @override
+  String get howto_button_masher =>
+      'Тапай, чтобы подняться на ступень, в просвете между вращающимися полосами. Доберись до вершины!';
+
+  @override
+  String get howto_reaction_duel =>
+      'Жди, потом тапни в тот же миг, как загорится ЗЕЛЁНЫЙ. Не попадись на обманки!';
+
+  @override
+  String get howto_snake_arena =>
+      'Тапай влево или вправо для поворота. Ешь и расти, подрезай соперников и продержись дольше всех!';
+
+  @override
+  String get howto_paint_splash =>
+      'Тапай подряд по свободным и чужим клеткам, чтобы заляпать их. Закрась больше всех площади!';
+
+  @override
+  String get howto_catch_the_star =>
+      'Тяни, чтобы двигать корзину. Лови звёзды и уворачивайся от бомб!';
+
+  @override
+  String get howto_color_memory =>
+      'Запомни порядок цветов и повтори его тапами. Победит тот, кто запомнит дольше всех!';
+
+  @override
+  String get howto_tap_to_start => 'Нажми, чтобы начать';
+
+  @override
   String get cupSetupTitle => 'НАСТРОЙКА КУБКА';
 
   @override

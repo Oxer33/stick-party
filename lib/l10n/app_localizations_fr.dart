@@ -197,6 +197,69 @@ class AppLocalizationsFr extends AppLocalizations {
   String get hint_drag => 'GLISSE';
 
   @override
+  String get howto_sumo_smash =>
+      'Tape pour foncer, maintiens pour t\'arc-bouter. Pousse les rivaux hors du ring !';
+
+  @override
+  String get howto_bumper_balls =>
+      'Glisse vers l\'arrière pour viser, relâche pour te lancer. Rebondis sur les plots et éjecte les rivaux !';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Glisse pour courir, tape pour contrôler le ballon et tape pour tirer. Marque le plus de buts !';
+
+  @override
+  String get howto_tank_duel =>
+      'Glisse pour viser, maintiens pour charger la trajectoire, relâche pour tirer. Touche le tank ennemi !';
+
+  @override
+  String get howto_archer_pop =>
+      'Glisse vers l\'arrière pour viser et charger, relâche pour tirer. Éclate les cibles mobiles !';
+
+  @override
+  String get howto_chicken_jump =>
+      'Tape pour sauter, maintiens pour un double saut risqué. Grimpe le plus haut possible !';
+
+  @override
+  String get howto_falling_dodge =>
+      'Tape à gauche ou à droite pour esquiver les blocs qui tombent. Esquiver au dernier moment rapporte plus !';
+
+  @override
+  String get howto_tap_sprint =>
+      'Tape à un rythme régulier pour courir, maintiens puis relâche pour franchir les haies. Finis premier !';
+
+  @override
+  String get howto_tug_of_war =>
+      'Tape en rythme pour tirer ; à tension maxi, c\'est la TRACTION PUISSANTE. Gagne le tir à la corde !';
+
+  @override
+  String get howto_button_masher =>
+      'Tape pour monter d\'un barreau, dans l\'espace entre les barres qui tournent. Atteins le sommet !';
+
+  @override
+  String get howto_reaction_duel =>
+      'Attends, puis tape dès que ça passe au VERT. Ne te fais pas avoir par les feintes !';
+
+  @override
+  String get howto_snake_arena =>
+      'Tape à gauche ou à droite pour tourner. Mange pour grandir, coupe la route aux rivaux et survis le plus longtemps !';
+
+  @override
+  String get howto_paint_splash =>
+      'Tape à la chaîne les cases libres et celles des rivaux pour les éclabousser. Couvre la plus grande surface !';
+
+  @override
+  String get howto_catch_the_star =>
+      'Glisse pour déplacer ton panier. Attrape les étoiles et esquive les bombes !';
+
+  @override
+  String get howto_color_memory =>
+      'Observe l\'ordre des couleurs, puis retape-le. Le dernier à s\'en souvenir gagne !';
+
+  @override
+  String get howto_tap_to_start => 'Touchez pour commencer';
+
+  @override
   String get cupSetupTitle => 'CONFIG. DE COUPE';
 
   @override

@@ -480,6 +480,102 @@ abstract class AppLocalizations {
   /// **'DRAG'**
   String get hint_drag;
 
+  /// How-to-play line for the Sumo Smash minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to lunge, hold to brace. Shove rivals out of the ring!'**
+  String get howto_sumo_smash;
+
+  /// How-to-play line for the Bumper Balls minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Drag back to aim, release to launch. Bank off pegs to knock rivals off!'**
+  String get howto_bumper_balls;
+
+  /// How-to-play line for the One-Touch Soccer minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Drag to run, tap to trap the ball, tap to shoot. Score the most goals!'**
+  String get howto_one_touch_soccer;
+
+  /// How-to-play line for the Tank Duel minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Drag to aim, hold to charge the arc, release to fire. Hit the enemy tank!'**
+  String get howto_tank_duel;
+
+  /// How-to-play line for the Archer Pop minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Drag back to aim and power up, release to shoot. Pop the moving targets!'**
+  String get howto_archer_pop;
+
+  /// How-to-play line for the Chicken Jump minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to hop up, hold for a risky double-leap. Climb as high as you can!'**
+  String get howto_chicken_jump;
+
+  /// How-to-play line for the Falling Dodge minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap left or right to dodge the falling blocks. Late dodges score more!'**
+  String get howto_falling_dodge;
+
+  /// How-to-play line for the Tap Sprint minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap a steady rhythm to run, hold then release to vault hurdles. Finish first!'**
+  String get howto_tap_sprint;
+
+  /// How-to-play line for the Tug of War minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap on the beat to heave; full tension means a POWER HEAVE. Win the pull!'**
+  String get howto_tug_of_war;
+
+  /// How-to-play line for the Button Masher minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to climb a rung, in the gap between the sweeping bars. Reach the top!'**
+  String get howto_button_masher;
+
+  /// How-to-play line for the Reaction Duel minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait, then tap the instant it turns GREEN. Don\'t fall for the fakes!'**
+  String get howto_reaction_duel;
+
+  /// How-to-play line for the Snake Arena minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap left or right to turn. Eat to grow, cut off rivals, survive longest!'**
+  String get howto_snake_arena;
+
+  /// How-to-play line for the Paint Splash minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap fresh and rival cells in a chain to splat. Cover the most area!'**
+  String get howto_paint_splash;
+
+  /// How-to-play line for the Catch the Star minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Drag to move your basket. Catch the stars and dodge the bombs!'**
+  String get howto_catch_the_star;
+
+  /// How-to-play line for the Color Memory minigame, shown on the pre-game splash. Keep to one short sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Watch the color order, then tap it back. Last one remembering wins!'**
+  String get howto_color_memory;
+
+  /// Prompt on the pre-game splash telling the player to tap to begin the round. Keep short.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to start'**
+  String get howto_tap_to_start;
+
   /// Title of the players setup screen when configuring a cup / tournament. Shown in all caps.
   ///
   /// In en, this message translates to:

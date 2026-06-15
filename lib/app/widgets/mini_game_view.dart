@@ -16,7 +16,10 @@ import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import '../../engine/registry.dart';
+import '../../l10n/app_localizations.dart';
+import '../screens/game_select_screen.dart' show localizedGameName;
 import 'glass_tokens.dart';
+import 'how_to_play_overlay.dart';
 import 'start_cue_overlay.dart';
 
 /// Tuning for the runner shell (no magic numbers at call sites).
@@ -29,6 +32,11 @@ class _RunnerTune {
 
   /// How long "GO!" lingers after the count reaches zero (part of countdownSec).
   static const double goFlashSec = 0.8;
+
+  /// Seconds the pre-game "how to play" splash holds before it auto-advances
+  /// into the countdown, if no player taps to start sooner. The countdown +
+  /// input stay suppressed until then.
+  static const double introAutoSec = 7.0;
 
   /// Maximum simulated step per frame (caps physics blow-ups after a stall).
   static const double maxDt = 1 / 30;
@@ -93,6 +101,12 @@ class _MiniGameViewState extends State<MiniGameView>
   double _countdown = _RunnerTune.countdownSec;
   bool _finished = false;
 
+  /// The pre-game how-to splash holds before the countdown until a player taps
+  /// to start or [_RunnerTune.introAutoSec] elapses. Set true immediately when
+  /// input hints are disabled (e.g. tests) so the splash is skipped entirely.
+  bool _introDone = false;
+  double _introElapsed = 0;
+
   /// Repaint signal for the CustomPaint — bumped each frame so we never call
   /// setState on the whole widget for the canvas.
   final ValueNotifier<int> _frame = ValueNotifier<int>(0);
@@ -107,6 +121,9 @@ class _MiniGameViewState extends State<MiniGameView>
   void initState() {
     super.initState();
     _meta = createMiniGame(widget.gameId).meta;
+    // No splash when hints are off (tests / hint-disabled play): jump straight
+    // to the countdown so nothing waits on a tap.
+    _introDone = !widget.showInputHints;
     _ticker = createTicker(_onTick)..start();
   }
 
@@ -162,6 +179,17 @@ class _MiniGameViewState extends State<MiniGameView>
       return;
     }
 
+    // Hold the pre-game how-to splash: the countdown does not start ticking
+    // until a player taps to start (overlay → _dismissIntro) or it
+    // auto-advances after [introAutoSec].
+    if (!_introDone) {
+      _introElapsed += dt;
+      _hudTick.value++; // pulse the splash prompt
+      _frame.value++; // keep painting the static field underneath
+      if (_introElapsed >= _RunnerTune.introAutoSec) _dismissIntro();
+      return;
+    }
+
     if (!_countdownDone) {
       _countdown -= dt;
       _hudTick.value++; // refresh the count overlay
@@ -181,6 +209,27 @@ class _MiniGameViewState extends State<MiniGameView>
     }
     _frame.value++;
     _hudTick.value++; // refresh live scores
+  }
+
+  /// Dismiss the pre-game how-to splash and let the countdown begin. Safe to
+  /// call from the ticker (auto-advance) or the overlay tap; ignores repeats.
+  void _dismissIntro() {
+    if (!mounted || _introDone) return;
+    setState(() => _introDone = true);
+  }
+
+  /// The pre-game how-to splash: localized name + a one-line controls/goal +
+  /// the control glyph + a tap-to-start prompt. Tapping it calls [_dismissIntro].
+  Widget _introOverlay(BuildContext context) {
+    final AppLocalizations l10n = AppLocalizations.of(context);
+    return HowToPlayOverlay(
+      gameName: localizedGameName(l10n, _meta),
+      howTo: localizedHowTo(l10n, widget.gameId),
+      tapToStart: l10n.howto_tap_to_start,
+      inputHint: _meta.inputHint,
+      onStart: _dismissIntro,
+      repaint: _hudTick,
+    );
   }
 
   /// Synthesizes per-frame [InputPhase.holdTick] events for any pointer still
@@ -290,6 +339,9 @@ class _MiniGameViewState extends State<MiniGameView>
                 hudTick: _hudTick,
                 remaining: () => _countdown,
               ),
+              // Pre-game how-to splash, above the field + countdown cues but
+              // below the quit button (so a player can still back out).
+              if (!_introDone && _game != null) _introOverlay(context),
               Positioned(
                 top: 8,
                 right: 8,

@@ -198,6 +198,69 @@ class AppLocalizationsDe extends AppLocalizations {
   String get hint_drag => 'ZIEHEN';
 
   @override
+  String get howto_sumo_smash =>
+      'Tippe für einen Stoß, halte zum Abstützen. Schubse die Rivalen aus dem Ring!';
+
+  @override
+  String get howto_bumper_balls =>
+      'Zieh zurück zum Zielen, lass los zum Abschuss. Pralle an Pflöcken ab und kicke Rivalen raus!';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Zieh zum Laufen, tippe zum Annehmen, tippe zum Schießen. Schieß die meisten Tore!';
+
+  @override
+  String get howto_tank_duel =>
+      'Zieh zum Zielen, halte zum Aufladen des Bogens, lass los zum Feuern. Triff den feindlichen Panzer!';
+
+  @override
+  String get howto_archer_pop =>
+      'Zieh zurück zum Zielen und Aufladen, lass los zum Schießen. Triff die beweglichen Ziele!';
+
+  @override
+  String get howto_chicken_jump =>
+      'Tippe zum Hüpfen, halte für einen riskanten Doppelsprung. Klettere so hoch du kannst!';
+
+  @override
+  String get howto_falling_dodge =>
+      'Tippe links oder rechts, um den fallenden Blöcken auszuweichen. Spätes Ausweichen bringt mehr Punkte!';
+
+  @override
+  String get howto_tap_sprint =>
+      'Tippe im gleichmäßigen Rhythmus zum Laufen, halte und lass los für Hürden. Komm als Erster ins Ziel!';
+
+  @override
+  String get howto_tug_of_war =>
+      'Tippe im Takt zum Ziehen; bei voller Spannung gibt\'s einen KRAFTZUG. Gewinn das Tauziehen!';
+
+  @override
+  String get howto_button_masher =>
+      'Tippe für eine Sprosse, in der Lücke zwischen den kreisenden Balken. Erreiche die Spitze!';
+
+  @override
+  String get howto_reaction_duel =>
+      'Warte, dann tippe in dem Moment, in dem es GRÜN wird. Fall nicht auf die Finten herein!';
+
+  @override
+  String get howto_snake_arena =>
+      'Tippe links oder rechts zum Abbiegen. Friss zum Wachsen, schneide Rivalen ab und überlebe am längsten!';
+
+  @override
+  String get howto_paint_splash =>
+      'Tippe freie und gegnerische Felder in einer Kette an zum Klecksen. Färbe die größte Fläche ein!';
+
+  @override
+  String get howto_catch_the_star =>
+      'Zieh, um deinen Korb zu bewegen. Fang die Sterne und weiche den Bomben aus!';
+
+  @override
+  String get howto_color_memory =>
+      'Merk dir die Farbreihenfolge und tippe sie nach. Wer sich am längsten erinnert, gewinnt!';
+
+  @override
+  String get howto_tap_to_start => 'Zum Starten tippen';
+
+  @override
   String get cupSetupTitle => 'CUP-SETUP';
 
   @override

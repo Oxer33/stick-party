@@ -249,6 +249,70 @@
   "@hint_drag": {
     "description": "Input-hint chip meaning the player drags a finger. Shown in all caps; keep very short."
   },
+  "howto_sumo_smash": "Tap to lunge, hold to brace. Shove rivals out of the ring!",
+  "@howto_sumo_smash": {
+    "description": "How-to-play line for the Sumo Smash minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_bumper_balls": "Drag back to aim, release to launch. Bank off pegs to knock rivals off!",
+  "@howto_bumper_balls": {
+    "description": "How-to-play line for the Bumper Balls minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_one_touch_soccer": "Drag to run, tap to trap the ball, tap to shoot. Score the most goals!",
+  "@howto_one_touch_soccer": {
+    "description": "How-to-play line for the One-Touch Soccer minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_tank_duel": "Drag to aim, hold to charge the arc, release to fire. Hit the enemy tank!",
+  "@howto_tank_duel": {
+    "description": "How-to-play line for the Tank Duel minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_archer_pop": "Drag back to aim and power up, release to shoot. Pop the moving targets!",
+  "@howto_archer_pop": {
+    "description": "How-to-play line for the Archer Pop minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_chicken_jump": "Tap to hop up, hold for a risky double-leap. Climb as high as you can!",
+  "@howto_chicken_jump": {
+    "description": "How-to-play line for the Chicken Jump minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_falling_dodge": "Tap left or right to dodge the falling blocks. Late dodges score more!",
+  "@howto_falling_dodge": {
+    "description": "How-to-play line for the Falling Dodge minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_tap_sprint": "Tap a steady rhythm to run, hold then release to vault hurdles. Finish first!",
+  "@howto_tap_sprint": {
+    "description": "How-to-play line for the Tap Sprint minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_tug_of_war": "Tap on the beat to heave; full tension means a POWER HEAVE. Win the pull!",
+  "@howto_tug_of_war": {
+    "description": "How-to-play line for the Tug of War minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_button_masher": "Tap to climb a rung, in the gap between the sweeping bars. Reach the top!",
+  "@howto_button_masher": {
+    "description": "How-to-play line for the Button Masher minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_reaction_duel": "Wait, then tap the instant it turns GREEN. Don't fall for the fakes!",
+  "@howto_reaction_duel": {
+    "description": "How-to-play line for the Reaction Duel minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_snake_arena": "Tap left or right to turn. Eat to grow, cut off rivals, survive longest!",
+  "@howto_snake_arena": {
+    "description": "How-to-play line for the Snake Arena minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_paint_splash": "Tap fresh and rival cells in a chain to splat. Cover the most area!",
+  "@howto_paint_splash": {
+    "description": "How-to-play line for the Paint Splash minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_catch_the_star": "Drag to move your basket. Catch the stars and dodge the bombs!",
+  "@howto_catch_the_star": {
+    "description": "How-to-play line for the Catch the Star minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_color_memory": "Watch the color order, then tap it back. Last one remembering wins!",
+  "@howto_color_memory": {
+    "description": "How-to-play line for the Color Memory minigame, shown on the pre-game splash. Keep to one short sentence."
+  },
+  "howto_tap_to_start": "Tap to start",
+  "@howto_tap_to_start": {
+    "description": "Prompt on the pre-game splash telling the player to tap to begin the round. Keep short."
+  },
   "cupSetupTitle": "CUP SETUP",
   "@cupSetupTitle": {
     "description": "Title of the players setup screen when configuring a cup / tournament. Shown in all caps."

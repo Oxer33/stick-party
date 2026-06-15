@@ -197,6 +197,69 @@ class AppLocalizationsIt extends AppLocalizations {
   String get hint_drag => 'TRASCINA';
 
   @override
+  String get howto_sumo_smash =>
+      'Tocca per spingerti, tieni premuto per resistere. Butta gli avversari fuori dal ring!';
+
+  @override
+  String get howto_bumper_balls =>
+      'Trascina indietro per mirare, rilascia per lanciarti. Rimbalza sui paletti e sbalza i rivali!';
+
+  @override
+  String get howto_one_touch_soccer =>
+      'Trascina per correre, tocca per fermare la palla e tocca per tirare. Segna più gol di tutti!';
+
+  @override
+  String get howto_tank_duel =>
+      'Trascina per mirare, tieni premuto per caricare il tiro, rilascia per sparare. Colpisci il carro nemico!';
+
+  @override
+  String get howto_archer_pop =>
+      'Trascina indietro per mirare e caricare, rilascia per scoccare. Colpisci i bersagli in movimento!';
+
+  @override
+  String get howto_chicken_jump =>
+      'Tocca per saltare, tieni premuto per un doppio salto rischioso. Sali più in alto che puoi!';
+
+  @override
+  String get howto_falling_dodge =>
+      'Tocca a sinistra o a destra per schivare i blocchi che cadono. Schivare all\'ultimo vale di più!';
+
+  @override
+  String get howto_tap_sprint =>
+      'Tocca a ritmo costante per correre, tieni e rilascia per saltare gli ostacoli. Arriva primo!';
+
+  @override
+  String get howto_tug_of_war =>
+      'Tocca a tempo per tirare; a tensione massima scatta il TIRONE POTENTE. Vinci la sfida!';
+
+  @override
+  String get howto_button_masher =>
+      'Tocca per salire un gradino, nel varco tra le barre che ruotano. Arriva in cima!';
+
+  @override
+  String get howto_reaction_duel =>
+      'Aspetta, poi tocca appena diventa VERDE. Non cascarci con le finte!';
+
+  @override
+  String get howto_snake_arena =>
+      'Tocca a sinistra o a destra per girare. Mangia per crescere, taglia la strada ai rivali e sopravvivi più a lungo!';
+
+  @override
+  String get howto_paint_splash =>
+      'Tocca in sequenza le celle libere e quelle dei rivali per schizzarle. Copri più area di tutti!';
+
+  @override
+  String get howto_catch_the_star =>
+      'Trascina per spostare il cesto. Prendi le stelle e schiva le bombe!';
+
+  @override
+  String get howto_color_memory =>
+      'Osserva l\'ordine dei colori, poi ripetilo toccando. Vince chi ricorda fino alla fine!';
+
+  @override
+  String get howto_tap_to_start => 'Tocca per iniziare';
+
+  @override
   String get cupSetupTitle => 'CONFIG. COPPA';
 
   @override
