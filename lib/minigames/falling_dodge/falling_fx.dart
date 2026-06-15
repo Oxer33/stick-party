@@ -292,6 +292,20 @@ class FallingTrackPainter {
           t.lanes.spacing.abs() * 0.5, t.alive);
     }
 
+    // Tap-split guide: a faint dashed vertical line through the runner marks the
+    // LEFT/RIGHT boundary — tap left of it to hop left, right of it to hop right
+    // — so the directional control is never a guess (the split moves WITH you).
+    if (t.alive && !t.figure.isRagdoll) {
+      final guide = Paint()
+        ..strokeWidth = math.max(1.0, t.band.width * 0.004)
+        ..color = t.color.withValues(alpha: 0.16);
+      const dash = 10.0;
+      for (var y = t.band.top + 4; y < t.runnerY; y += dash * 2) {
+        canvas.drawLine(Offset(runnerX, y),
+            Offset(runnerX, math.min(y + dash, t.runnerY)), guide);
+      }
+    }
+
     // Directional control affordance: small left/right hop hints flanking the
     // live runner. A side dims when blocked by a wall (already at the end lane).
     if (t.alive && !t.figure.isRagdoll) {

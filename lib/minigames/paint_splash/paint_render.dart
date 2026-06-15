@@ -518,6 +518,30 @@ class PaintRenderer {
       );
     }
 
+    // A little paint DROP at the gauge's foot so the ring instantly reads as an
+    // INK meter (not décor). It hollows to an outline when ink runs low, and is
+    // filled while there's paint — a wordless, language-free "this is ink".
+    final dropC = center.translate(0, ringR + unit * 0.6);
+    final dr = unit * 0.42;
+    final drop = Path()
+      ..moveTo(dropC.dx, dropC.dy - dr)
+      ..cubicTo(dropC.dx + dr, dropC.dy - dr * 0.1, dropC.dx + dr * 0.85,
+          dropC.dy + dr * 0.9, dropC.dx, dropC.dy + dr)
+      ..cubicTo(dropC.dx - dr * 0.85, dropC.dy + dr * 0.9, dropC.dx - dr,
+          dropC.dy - dr * 0.1, dropC.dx, dropC.dy - dr)
+      ..close();
+    if (lowInk) {
+      canvas.drawPath(
+        drop,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, unit * 0.1)
+          ..color = _inkWarn.withValues(alpha: 0.9),
+      );
+    } else {
+      canvas.drawPath(drop, Paint()..color = gaugeColor.withValues(alpha: 0.85));
+    }
+
     // Crosshair ticks (aim read).
     final tick = Paint()
       ..strokeWidth = math.max(1.0, unit * 0.12)

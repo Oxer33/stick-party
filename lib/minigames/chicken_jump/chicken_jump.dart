@@ -1113,6 +1113,25 @@ class ChickenJump extends MiniGameBase {
       Offset(c.columnX, rungY - c.figureLift),
     );
 
+    // Cadence "plant your foot" tell: while the hop cooldown runs, a small arc at
+    // the climber's feet fills back up — so a tap eaten by the cadence gate reads
+    // as "wait a beat", not as input lag. (A hidden cooldown feels broken.)
+    if (c.alive && !c.figure.isRagdoll && c.hopCd > 0 && !_inWarmup) {
+      final frac = (1.0 - c.hopCd / _Tuning.hopCooldownSec).clamp(0.0, 1.0);
+      final r = c.column.width * 0.16;
+      canvas.drawArc(
+        Rect.fromCircle(center: Offset(c.columnX, rungY), radius: r),
+        -math.pi / 2,
+        math.pi * 2 * frac,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, r * 0.3)
+          ..strokeCap = StrokeCap.round
+          ..color = c.color.withValues(alpha: 0.55),
+      );
+    }
+
     // A bobbing "TAP to hop" arrow over the climber during the warmup so the one
     // control is unmistakable before the lava starts to rise.
     if (c.alive && _inWarmup) {

@@ -832,6 +832,19 @@ class ColorMemory extends MiniGameBase {
       alive: pad.alive,
       mountOnLeft: index.isEven,
     );
+
+    // During the winner's APPEND beat the OTHER alive players are waiting (their
+    // taps do nothing), so dim their whole zone to a soft scrim — no more silent
+    // dead pads that a player taps in vain. The top banner names who is adding.
+    if (_phase == _Phase.appending &&
+        pad.alive &&
+        pad.playerId != _appenderId) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            block, Radius.circular(block.shortestSide * 0.12)),
+        Paint()..color = const Color(0xFF05070D).withValues(alpha: 0.5),
+      );
+    }
   }
 
   // ---- Layout helpers -------------------------------------------------------
