@@ -61,26 +61,32 @@ void _wrestler(Canvas c, double px, double py, double s, double mirror, Color gl
 void _clashHalo(Canvas c) {
   c.drawCircle(
     const Offset(512, 432),
-    62,
+    112,
     Paint()
-      ..shader = ui.Gradient.radial(const Offset(512, 432), 62,
-          const <Color>[Color(0x33FFFFFF), Color(0x00FFFFFF)]),
+      ..shader = ui.Gradient.radial(const Offset(512, 432), 112,
+          const <Color>[Color(0x42FFFFFF), Color(0x00FFFFFF)]),
   );
-  c.drawCircle(const Offset(512, 432), 30, Paint()..color = const Color(0x33FBBF24));
+  c.drawCircle(const Offset(512, 432), 64, Paint()..color = const Color(0x40FBBF24));
+  c.drawCircle(const Offset(512, 432), 36, Paint()..color = const Color(0x4DFB7234));
 }
 
 void _clashCore(Canvas c) {
   const ctr = Offset(512, 432);
-  final spark = _stroke(4, const Color(0xFFFFE9B8));
-  for (var i = 0; i < 8; i++) {
-    final a = i * math.pi / 4;
+  final rayLong = _stroke(6, const Color(0xFFFFE9B8));
+  final rayShort = _stroke(3.4, const Color(0xFFFFF6DE));
+  for (var i = 0; i < 12; i++) {
+    final a = i * math.pi / 6;
+    final long = i.isEven;
+    final r1 = long ? 18.0 : 14.0;
+    final r2 = long ? 58.0 : 36.0;
     c.drawLine(
-      Offset(ctr.dx + math.cos(a) * 14, ctr.dy + math.sin(a) * 14),
-      Offset(ctr.dx + math.cos(a) * 26, ctr.dy + math.sin(a) * 26),
-      spark,
+      Offset(ctr.dx + math.cos(a) * r1, ctr.dy + math.sin(a) * r1),
+      Offset(ctr.dx + math.cos(a) * r2, ctr.dy + math.sin(a) * r2),
+      long ? rayLong : rayShort,
     );
   }
-  c.drawCircle(ctr, 9, Paint()..color = _white);
+  c.drawCircle(ctr, 18, Paint()..color = const Color(0xFFFBBF24));
+  c.drawCircle(ctr, 11, Paint()..color = _white);
 }
 
 void _footShadows(Canvas c, double a) {
@@ -108,6 +114,20 @@ void _dust(Canvas c) {
   for (final o in const <Offset>[Offset(232, 612), Offset(792, 612), Offset(262, 628), Offset(762, 628)]) {
     c.drawCircle(o, 5, sp);
   }
+}
+
+void _dohyo(Canvas c) {
+  const ctr = Offset(512, 656);
+  Rect e(double rx, double ry) => Rect.fromCenter(center: ctr, width: rx * 2, height: ry * 2);
+  Paint ring(double w, Color col) => Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = w
+    ..color = col;
+  c.drawOval(e(270, 62), Paint()..color = const Color(0x14FBBF24)); // clay platform
+  c.drawOval(e(270, 62), ring(16, const Color(0x2EFBBF24))); // outer halo
+  c.drawOval(e(270, 62), ring(6, const Color(0x80FBBF24))); // mid ring
+  c.drawOval(e(270, 62), ring(2.6, const Color(0xCCFFE6B0))); // bright rim
+  c.drawOval(e(202, 46), ring(3, const Color(0x40FB7234))); // inner raked ring
 }
 
 void _bg(Canvas c) {
@@ -144,6 +164,7 @@ void _bg(Canvas c) {
 
 void _icon(Canvas c, bool withBg) {
   if (withBg) _bg(c);
+  _dohyo(c);
   _clashHalo(c);
   _footShadows(c, withBg ? 0.30 : 0.22);
   _wrestler(c, 397, 554, 3.6, 1, _flame);
