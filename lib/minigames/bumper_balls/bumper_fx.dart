@@ -22,6 +22,14 @@ class BallState {
   double aim; // launch heading (radians) — OPPOSITE the live pull; for the HUD
   Offset downPos = Offset.zero; // press point (screen px)
   Offset dragPos = Offset.zero; // current finger point while pulling (screen px)
+  // Normalized (0..1) FULL-SCREEN press point captured at InputPhase.down. The
+  // zone-relative aim helper anchors the pull to THIS, not the avatar, so a
+  // top-seat (rotated) player drags INTO the arena, not back at their own rim.
+  Offset pressNorm = Offset.zero;
+  // Finger-anchored, rotation-corrected pull-back vector (screen px from the
+  // ball) for the visible slingshot band — derived from the zone aim, so the
+  // telegraph matches where the launch will actually fire.
+  Offset pullBackVec = Offset.zero;
   bool aiming = false; // true while the finger is down building a pull
   bool hasPull = false; // true once the pull has cleared the dead-zone
   double pullFrac = 0; // 0..1 pull distance as a share of the max pull

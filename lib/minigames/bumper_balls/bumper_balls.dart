@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import '../../art/fx/juice.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/push_arena.dart';
+import '../../engine/helpers/zone_aim.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'bumper_fx.dart';
@@ -427,6 +428,11 @@ class BumperBalls extends MiniGameBase {
           s.aiming = true; // begin a pull
           s.hasPull = false;
           s.pullFrac = 0;
+          // Anchor the slingshot to the FULL-SCREEN press point (normalized),
+          // NOT the avatar — the zone-aim helper resolves direction from the
+          // gesture WITHIN the player's zone, rotation-corrected per seat.
+          s.pressNorm = input.normPos;
+          s.pullBackVec = Offset.zero;
           s.downPos = _screen(input.normPos);
           s.dragPos = s.downPos;
         }
@@ -438,39 +444,70 @@ class BumperBalls extends MiniGameBase {
         if (s.aiming) {
           s.aiming = false;
           _updatePull(input, body, s); // a final move still counts
-          // Power is the VISIBLE pull fraction — no charge, no auto-aim. A pull
-          // under the dead-zone is a dud nudge that goes nowhere; a judged pull
-          // launches opposite the drag with momentum ∝ the pull.
-          _launch(input.playerId, body, s.aim, s.hasPull ? s.pullFrac : 0.0);
+          // A judged pull (cleared the zone deadzone) launches OPPOSITE the drag
+          // with power ∝ the resolved pull fraction. KID-SAFE FALLBACK: a tap
+          // with no real drag still gently nudges the ball toward the nearest
+          // rival (a feeble power-0 dud), so a young player who just taps is not
+          // stranded — only a judged pull earns a real launch.
+          if (s.hasPull) {
+            _launch(input.playerId, body, s.aim, s.pullFrac);
+          } else {
+            final auto = _aimAtNearest(input.playerId) ?? s.aim;
+            _launch(input.playerId, body, auto, 0.0);
+          }
           s.pullFrac = 0;
           s.hasPull = false;
+          s.pullBackVec = Offset.zero;
         }
     }
   }
 
-  /// Capture the live slingshot pull from the finger position. The pull VECTOR
-  /// is finger−ball; the launch heading [BallState.aim] is OPPOSITE it (drag
-  /// back, fire forward), and [BallState.pullFrac] is the pull distance clamped
-  /// to [_maxPullPx]. A pull shorter than [_minPullFrac] of the min side leaves
-  /// the launch a dud, so a tap-in-place fires nowhere. A bare per-frame tick
-  /// with no position is ignored (keeps the last captured pull).
+  /// Capture the live slingshot pull from the finger position using the shared
+  /// ZONE-RELATIVE aim helper. The aim is resolved from the gesture WITHIN the
+  /// player's own zone (anchored to the press point, NOT the avatar) and
+  /// rotation-corrected per seat, so a top-edge (rot2) player drags INTO the
+  /// arena instead of back at their own rim, and a confined zone still reaches
+  /// full power. The slingshot fires OPPOSITE the pull, so the launch heading
+  /// [BallState.aim] is the resolved drag angle + pi; [BallState.pullFrac] is
+  /// the helper's 0..1 pull strength. Below the helper's deadzone (!hasDrag) the
+  /// pull is a dud, so a tap-in-place fires nowhere. A bare per-frame tick with
+  /// no position is ignored (keeps the last captured pull).
   void _updatePull(PlayerInput input, Body body, BallState s) {
     if (!s.aiming) return;
     if (input.normPos == Offset.zero) return; // a bare tick carries no pos
-    final touch = _screen(input.normPos);
-    s.dragPos = touch;
-    final pull = touch - body.pos; // finger relative to the ball
-    final dist = pull.distance;
-    final minSide = math.min(_size.width, _size.height);
-    if (dist < minSide * _minPullFrac) {
-      s.hasPull = false; // still within the dead-zone — a dud so far
+    s.dragPos = _screen(input.normPos);
+
+    final zone = ctx.zones.forPlayer(input.playerId);
+    if (zone == null) {
+      s.hasPull = false;
       s.pullFrac = 0;
       return;
     }
-    // Launch opposite the pull (the slingshot fires away from the drag).
-    s.aim = math.atan2(-pull.dy, -pull.dx);
-    s.pullFrac = (dist / _maxPullPx).clamp(0.0, 1.0);
+    final za = resolveZoneAim(
+      zone: zone,
+      pressNorm: s.pressNorm,
+      curNorm: input.normPos,
+      arena: _size,
+      deadzoneFrac: _minPullFrac,
+      maxPullFrac: _maxPullFrac,
+    );
+    if (!za.hasDrag) {
+      s.hasPull = false; // still within the dead-zone — a dud so far
+      s.pullFrac = 0;
+      s.pullBackVec = Offset.zero;
+      return;
+    }
+    // The slingshot fires OPPOSITE the pull: the resolved [za.angle] is the pull
+    // direction, so the launch heading is angle + pi. Avatar position no longer
+    // affects the manual aim DIRECTION.
+    s.aim = za.angle + math.pi;
+    s.pullFrac = za.pullFrac;
     s.hasPull = true;
+    // Finger-anchored pull-back vector for the visible band: points along the
+    // pull (away from the launch) so the telegraph matches the resolved aim
+    // rather than the raw out-of-zone finger position.
+    final pullDir = Offset(math.cos(za.angle), math.sin(za.angle));
+    s.pullBackVec = pullDir * (za.pullFrac * _maxPullPx);
   }
 
   Offset _screen(Offset norm) =>
@@ -1408,7 +1445,9 @@ class BumperBalls extends MiniGameBase {
           color,
           aim: state.aim,
           power: state.pullFrac,
-          pullBack: state.dragPos - b.pos,
+          // Finger-anchored, rotation-corrected pull (points opposite the launch)
+          // so the band matches the resolved zone aim, not the raw finger px.
+          pullBack: state.pullBackVec,
           maxPreviewLen: _previewMaxLen,
         );
       }

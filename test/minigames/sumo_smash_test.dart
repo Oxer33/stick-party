@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -429,6 +430,39 @@ void main() {
     }
     expect(g.status, MiniGameStatus.finished);
     expect(g.winResult!.ranking.toSet(), {0, 1, 2});
+  });
+
+  // ── ZONE-RELATIVE AIM: a top-seat human drag aims INTO the arena ─────────────
+
+  test('ROTATION-CORRECT AIM: a rot2 (top-seat) human drag toward their own '
+      'body edge aims INTO the arena (down the screen), not inverted', () {
+    // 2p split: seat 1 owns the TOP half (rotationQuarters == 2). Its finger is
+    // confined to the top zone while its avatar sits at the top of the central
+    // dohyo. Dragging from the press point toward the top SCREEN edge is "away
+    // from my body" for that flipped seat, which must resolve — via the shared
+    // zone-aim helper, through the REAL onInput path — to a DOWNWARD (into-arena)
+    // aim (sin(aim) > 0). A naive avatar-relative / un-rotated computation would
+    // point UP (sin < 0): inverted, the bug this fix removes.
+    final ctx = MiniGameContext(
+      players: [PlayerSlot.defaults(0), PlayerSlot.defaults(1)],
+      arena: const Size(800, 1200),
+      rng: SeededRng(2),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = SumoSmash()..init(ctx);
+    g.update(1 / 60); // settle one frame so seat 1 can act
+
+    // Press near the centre of the top zone, then drag UP toward the top edge.
+    g.onInput(PlayerInput.down(1, const Offset(0.5, 0.25)));
+    g.onInput(const PlayerInput(
+      playerId: 1,
+      phase: InputPhase.holdTick,
+      normPos: Offset(0.5, 0.05),
+    ));
+    final aim = g.debugAimOf(1)!;
+    expect(math.sin(aim), greaterThan(0),
+        reason: 'top-seat drag aimed UP (out of the arena) — rotation not '
+            'corrected (aim=$aim rad)');
   });
 
   // ── The READ: brace repels + stuns a lunge; a braced foe holds ──────────────

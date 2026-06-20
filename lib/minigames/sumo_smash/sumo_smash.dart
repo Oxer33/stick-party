@@ -9,6 +9,7 @@ import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../engine/bots.dart';
 import '../../engine/helpers/push_arena.dart';
+import '../../engine/helpers/zone_aim.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'sumo_fx.dart';
@@ -117,10 +118,10 @@ class SumoSmash extends MiniGameBase {
   // typical slide so the masher cannot re-aim inward to save itself mid-flight.
   static const double _repelImpulse = 3.2; // × ringRadius
   static const double _stunSec = 0.6; // repelled-lunger lockout (drifts, exposed)
-  // Drag aim: the touch must travel at least this far (fraction of the min screen
-  // side) from the press point before it counts as a deliberate aim; a smaller
-  // wiggle is a no-drag tap (→ aim at nearest, the kid-safe default).
-  static const double _aimDragDeadzone = 0.018;
+  // Drag aim deadzone is owned by the shared [resolveZoneAim] helper: the touch
+  // must clear the helper's zone-relative deadzone before it counts as a
+  // deliberate aim; a smaller wiggle is a no-drag tap (→ aim at nearest, the
+  // kid-safe default).
   static const double _trailLifeSec = 0.26;
 
   // ── Knockback (contact) tuning ──────────────────────────────────────────────
@@ -348,17 +349,18 @@ class SumoSmash extends MiniGameBase {
           f.pressing = true;
           f.pressHeld = 0;
           f.hasDragAim = false; // a plain tap stays on the nearest-rival aim
-          f.downPos = Offset(
-            input.normPos.dx * _size.width,
-            input.normPos.dy * _size.height,
-          );
+          // Anchor the gesture to where the finger went down, in FULL-SCREEN
+          // normalized space. Manual aim is then computed zone-relative +
+          // rotation-corrected from this press point — NOT from the avatar's
+          // world position — so it works in 2-4p splits and for top-edge seats.
+          f.pressNorm = input.normPos;
         }
       case InputPhase.holdTick:
         // A real DRAG (finger travels from the press point) re-aims by hand.
-        _applyDragAim(input, body, f);
+        _applyDragAim(input, f);
       case InputPhase.up:
         if (!f.pressing) break;
-        _applyDragAim(input, body, f); // a final flick can still steer the lunge
+        _applyDragAim(input, f); // a final flick can still steer the lunge
         final wasBracing = f.bracing;
         final held = f.pressHeld;
         f.pressing = false;
@@ -375,21 +377,26 @@ class SumoSmash extends MiniGameBase {
     }
   }
 
-  /// Set the fighter's aim from the drag vector (touch [input.normPos] relative
-  /// to the wrestler), in true screen pixels so the angle is not skewed by the
-  /// portrait aspect. A move shorter than [_aimDragDeadzone] (or a synthetic
-  /// hold-tick with no position) is ignored, leaving the prior chosen aim — or
-  /// the nearest-opponent fallback — intact.
-  void _applyDragAim(PlayerInput input, Body body, _Fighter f) {
+  /// Set the fighter's aim from the in-ZONE drag gesture, anchored to the press
+  /// point (NOT the avatar's world position). Uses the shared [resolveZoneAim]
+  /// helper so the angle is rotation-corrected (a top-edge seat's "drag away
+  /// from my body" aims INTO the arena, not inverted) and reaches full power on
+  /// a short drag inside a small split-screen zone. A drag that hasn't cleared
+  /// the helper's deadzone (or a synthetic hold-tick with no position) leaves
+  /// the prior chosen aim — or the nearest-opponent fallback — intact.
+  void _applyDragAim(PlayerInput input, _Fighter f) {
     if (!f.pressing) return;
     if (input.normPos == Offset.zero) return; // a bare per-frame tick has no pos
-    final touch = Offset(
-      input.normPos.dx * _size.width,
-      input.normPos.dy * _size.height,
+    final zone = ctx.zones.forPlayer(input.playerId);
+    if (zone == null) return; // no zone routed → keep the nearest-rival aim
+    final resolved = resolveZoneAim(
+      zone: zone,
+      pressNorm: f.pressNorm,
+      curNorm: input.normPos,
+      arena: ctx.arena,
     );
-    final minSide = math.min(_size.width, _size.height);
-    if ((touch - f.downPos).distance < minSide * _aimDragDeadzone) return;
-    f.aim = math.atan2(touch.dy - body.pos.dy, touch.dx - body.pos.dx);
+    if (!resolved.hasDrag) return; // a sub-deadzone wiggle stays a no-drag tap
+    f.aim = resolved.angle;
     f.hasDragAim = true;
   }
 
@@ -1451,6 +1458,12 @@ class SumoSmash extends MiniGameBase {
   /// Elapsed sim seconds this round.
   @visibleForTesting
   double get debugElapsed => _elapsed;
+
+  /// The fighter's current aim angle (radians, screen space), or null if missing.
+  /// Lets a test assert that a manual drag resolved to an INTO-the-arena angle
+  /// (rotation-corrected for top-edge seats) via the real [onInput] path.
+  @visibleForTesting
+  double? debugAimOf(int id) => _fighters[id]?.aim;
 }
 
 /// Per-player control + brawl state for the LUNGE/BRACE model.
@@ -1466,7 +1479,7 @@ class SumoSmash extends MiniGameBase {
 /// Mutable round-scoped state (allowed for the duration of one round).
 class _Fighter {
   double aim; // current aim angle (radians) — set by the player's drag / nearest
-  Offset downPos = Offset.zero; // touch point at press, to tell a tap from a drag
+  Offset pressNorm = Offset.zero; // full-screen normalized point at finger-down
 
   // ── Press / mode ──
   bool pressing = false; // finger is down (intent not yet resolved)

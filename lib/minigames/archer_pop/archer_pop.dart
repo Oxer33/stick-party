@@ -9,6 +9,8 @@ import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../core/math2.dart';
 import '../../engine/bots.dart';
+import '../../engine/helpers/zone_aim.dart';
+import '../../engine/input_zones.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'archer_fx.dart';
@@ -211,7 +213,6 @@ class ArcherPop extends MiniGameBase {
   late double _scale;
   late double _horizonY;
   late Offset _sun;
-  late double _maxDragPx;
 
   final List<_Archer> _archers = <_Archer>[];
   final List<_Arrow> _arrows = <_Arrow>[];
@@ -237,7 +238,6 @@ class ArcherPop extends MiniGameBase {
     _size = ctx.arena;
     final minSide = math.min(_size.width, _size.height);
     _scale = (minSide / _baseScaleRef).clamp(0.7, 1.7);
-    _maxDragPx = minSide * _maxDragFrac;
     _horizonY = _size.height * _horizonFactor;
     _sun = Offset(_size.width * 0.74, _size.height * 0.16);
 
@@ -349,23 +349,24 @@ class ArcherPop extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        // Begin a draw anchored at the touch point. The aim/power are derived
-        // from how far + which way the finger then drags from here.
-        archer.dragStart = _toArena(input.normPos);
-        archer.dragNow = archer.dragStart;
+        // Begin a draw anchored at the PRESS point (full-screen normalized). The
+        // aim/power are derived ZONE-RELATIVE from how far + which way the finger
+        // then drags from here — never from the avatar's world position.
+        archer.pressNorm = input.normPos;
+        archer.curNorm = input.normPos;
         archer.drawing = true;
       case InputPhase.holdTick:
         // A move sample carries a position; a positionless per-frame tick
         // (normPos == Offset.zero) just means the finger is still down.
         if (archer.drawing && input.normPos != Offset.zero) {
-          archer.dragNow = _toArena(input.normPos);
+          archer.curNorm = input.normPos;
         }
       case InputPhase.up:
         if (!archer.drawing) return;
         final shot = _resolveDraw(archer);
         archer.drawing = false;
-        archer.dragStart = null;
-        archer.dragNow = null;
+        archer.pressNorm = null;
+        archer.curNorm = null;
         // THE GATE: only a deliberate draw (power ≥ _minPower) looses. A bare
         // tap relaxes the bow and spends no arrow — you cannot clear a target by
         // an incidental press.
@@ -373,22 +374,46 @@ class ArcherPop extends MiniGameBase {
     }
   }
 
-  /// Map a full-screen 0..1 touch into arena pixels.
-  Offset _toArena(Offset norm) =>
-      Offset(norm.dx * _size.width, norm.dy * _size.height);
+  /// Canonical "into the arena" direction the [resolveZoneAim] helper normalizes
+  /// every seat's gesture against: the rot0/bottom-seat inward normal, straight
+  /// UP the screen (atan2 convention, +y down). The helper rotation-corrects a
+  /// drag so its offset from this is seat-independent; we re-anchor that offset
+  /// onto THIS archer's own inward normal ([_Archer.restAngle]) to get the real
+  /// screen-space launch — so a top-seat (rot2) pull is not inverted.
+  static const double _refInward = -math.pi / 2;
 
   /// Resolve the current draw to an aim (angle + power), or null when the pull
   /// is below the usable threshold (a tap, not a shot). Slingshot feel: you
   /// loose OPPOSITE the pull, and the pull length sets power.
+  ///
+  /// Aim is computed ZONE-RELATIVE + rotation-corrected via [resolveZoneAim]
+  /// (finger-anchored to the press point, NOT to the avatar's world position),
+  /// so it works in 2-4p splits and a top-seat (rot2) drag aims INTO the arena
+  /// instead of inverted. The helper's angle is in a canonical frame; we map it
+  /// back onto this seat's inward normal and add π (loose opposite the pull).
   _Shot? _resolveDraw(_Archer a) {
-    final start = a.dragStart, now = a.dragNow;
-    if (start == null || now == null) return null;
-    final pull = start - now; // launch is opposite the drag
-    final dist = pull.distance;
-    if (dist < 1e-3) return null;
-    final power = (dist / _maxDragPx).clamp(0.0, 1.0);
+    final press = a.pressNorm, cur = a.curNorm;
+    if (press == null || cur == null) return null;
+    final zone = ctx.zones.forPlayer(a.playerId) ??
+        PlayerZone(
+            playerId: a.playerId, normRect: const Rect.fromLTRB(0, 0, 1, 1));
+    final aim = resolveZoneAim(
+      zone: zone,
+      pressNorm: press,
+      curNorm: cur,
+      arena: _size,
+      maxPullFrac: _maxDragFrac,
+    );
+    // Kid-safe gate: a tap with no real drag looses nothing (no auto-aim here;
+    // the bow simply relaxes and spends no arrow).
+    if (!aim.hasDrag) return null;
+    final power = aim.pullFrac.clamp(0.0, 1.0);
     if (power < _minPower) return null; // ← anti-incidental-clear gate
-    return _Shot(math.atan2(pull.dy, pull.dx), power);
+    // Map the canonical gesture onto this seat's inward normal, then loose
+    // OPPOSITE the pull (slingshot): launch = restAngle + (gesture − refInward) + π.
+    final launch =
+        a.restAngle + wrapAngle(aim.angle - _refInward + math.pi);
+    return _Shot(launch, power);
   }
 
   double _speedFor(double power) =>
@@ -1245,6 +1270,17 @@ class ArcherPop extends MiniGameBase {
   @visibleForTesting
   int get debugArrowCount => _arrows.length;
 
+  /// Launch velocity of [id]'s most recent in-flight arrow, or null if none.
+  /// Test seam: lets a rotation test assert a top-seat (rot2) human drag looses
+  /// INTO the arena (e.g. dy > 0 for the top seat) instead of inverted.
+  @visibleForTesting
+  Offset? debugLastArrowVel(int id) {
+    for (var i = _arrows.length - 1; i >= 0; i--) {
+      if (_arrows[i].ownerId == id) return _arrows[i].vel;
+    }
+    return null;
+  }
+
   /// Remaining ammo for a player (the scarce quiver).
   @visibleForTesting
   int debugAmmo(int id) => _archerOf(id)?.ammo ?? 0;
@@ -1325,24 +1361,60 @@ class ArcherPop extends MiniGameBase {
     return a.ammo < before;
   }
 
-  /// Synthesize a slingshot drag (down→drag→up) for [angle]/[power] routed
-  /// through [onInput], so a test shot exercises the same gate a human does.
+  /// Synthesize a slingshot drag (down→drag→up) for the intended LAUNCH [angle]
+  /// + [power], routed through [onInput], so a test shot exercises the same
+  /// zone-relative gate a human does. The synthetic gesture is built so that —
+  /// after [resolveZoneAim]'s rotation correction + the fire-opposite-the-pull
+  /// rule — the loosed angle equals [angle] for ANY seat (rot0 bottom, rot2 top).
   void _driveDrag(int id, double angle, double power) {
     final a = _archerOf(id);
     if (a == null) return;
-    final origin = _muzzleOf(a);
-    final dir = Offset(math.cos(angle), math.sin(angle));
-    final pullPx = power.clamp(_minPower, 1.0) * _maxDragPx;
-    final now = origin - dir * pullPx; // launch is opposite the pull
+    final zone = ctx.zones.forPlayer(a.playerId) ??
+        PlayerZone(playerId: a.playerId, normRect: const Rect.fromLTRB(0, 0, 1, 1));
+    // The press anchors inside the player's zone (the zone center is always
+    // valid for any layout); the drag then sets aim + power from there.
+    final pressNorm = zone.normRect.center;
+    // Invert _resolveDraw's mapping. There:
+    //   launch = restAngle + wrap(aim.angle − refInward + π)
+    // so for a desired launch [angle] the helper's canonical angle is:
+    //   aim.angle = refInward + (angle − restAngle) − π
+    // and aim.angle = atan2(rotateByQuarters(rawDrag, q)). Undo the zone
+    // rotation to recover the RAW screen-drag direction to synthesize.
+    final wantAim = _refInward + (angle - a.restAngle) - math.pi;
+    final wantCorrected = Offset(math.cos(wantAim), math.sin(wantAim));
+    final rawDir =
+        _rotateByQuarters(wantCorrected, (4 - zone.rotationQuarters) % 4);
+    // Pull length in pixels so resolveZoneAim yields pullFrac == power: the
+    // helper measures distance against the zone's shorter side × maxPullFrac.
+    final zoneWPx = zone.normRect.width * _size.width;
+    final zoneHPx = zone.normRect.height * _size.height;
+    final refSide = math.min(zoneWPx, zoneHPx);
+    final pullPx = power.clamp(_minPower, 1.0) * refSide * _maxDragFrac;
+    final pressPx = Offset(pressNorm.dx * _size.width, pressNorm.dy * _size.height);
+    final curPx = pressPx + rawDir * pullPx;
+    final curNorm = Offset(curPx.dx / _size.width, curPx.dy / _size.height);
     onInput(PlayerInput(
-        playerId: id, phase: InputPhase.down, normPos: _toNorm(origin)));
+        playerId: id, phase: InputPhase.down, normPos: pressNorm));
     onInput(PlayerInput(
-        playerId: id, phase: InputPhase.holdTick, normPos: _toNorm(now)));
+        playerId: id, phase: InputPhase.holdTick, normPos: curNorm));
     onInput(PlayerInput(playerId: id, phase: InputPhase.up));
   }
 
-  Offset _toNorm(Offset arena) =>
-      Offset(arena.dx / _size.width, arena.dy / _size.height);
+  /// Rotate [v] clockwise by [quarters] × 90° in screen space (mirrors the
+  /// helper's correction so [_driveDrag] can build a gesture that resolves to a
+  /// known launch angle for any seat).
+  static Offset _rotateByQuarters(Offset v, int quarters) {
+    switch (quarters % 4) {
+      case 1:
+        return Offset(-v.dy, v.dx);
+      case 2:
+        return Offset(-v.dx, -v.dy);
+      case 3:
+        return Offset(v.dy, -v.dx);
+      default:
+        return v;
+    }
+  }
 
   /// Nearest live, OPEN (non-bomb, non-shielded) scoring target to a player's
   /// muzzle — the clean shot a skilled player takes. Used by the anti-spam test
@@ -1391,8 +1463,11 @@ class _Archer {
   double aimAngle;
   double aimPower = 0;
   bool drawing = false;
-  Offset? dragStart; // arena px where the draw began
-  Offset? dragNow; // arena px of the latest drag sample
+  // Full-screen normalized (0..1) press point + latest sample. The manual aim is
+  // resolved ZONE-RELATIVE + rotation-corrected from these (see resolveZoneAim),
+  // so a top-seat player's drag aims INTO the arena, not inverted.
+  Offset? pressNorm; // 0..1 full-screen point where the draw began
+  Offset? curNorm; // 0..1 full-screen point of the latest drag sample
 
   double loose = 0; // loose-flash timer
   double bullseyeFlash = 0; // 1 → 0 recent center-strike glow on the badge

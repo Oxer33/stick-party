@@ -568,6 +568,40 @@ void main() {
         reason: 'a tap must keep the sticky manual aim, not move it');
   });
 
+  test('rot2 TOP-SEAT human drag aims INTO the arena (not inverted), via onInput',
+      () {
+    // The zone-aim rotation correctness fix: P1 sits on the TOP edge (rot2). Its
+    // inward normal points DOWN-screen (+y, sin > 0). A top-seat player drags
+    // "away from my body" — downward, into the field — within its own top zone.
+    // The real onInput path (down at the press point, then a holdTick drag deeper
+    // into the field) must resolve the barrel to point INTO the arena (sin > 0),
+    // NOT flip it back up toward the top rim. Avatar world position must not
+    // affect this — the aim is measured purely from the gesture within the zone.
+    final players = [
+      PlayerSlot.defaults(0),
+      PlayerSlot.defaults(1), // human top seat (rot2)
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(31),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = TankDuel()..init(ctx);
+    // Top zone is the upper half (y in [0, 0.5]); press near the top edge, then
+    // drag DOWN toward the arena center — the player's "into the field" gesture.
+    g.onInput(const PlayerInput(
+        playerId: 1, phase: InputPhase.down, normPos: Offset(0.5, 0.12)));
+    g.onInput(const PlayerInput(
+        playerId: 1, phase: InputPhase.holdTick, normPos: Offset(0.5, 0.40)));
+    final angle = g.debugAimAngle(1);
+    // Into the arena for a top tank = downward = sin(angle) > 0. An inverted
+    // (un-rotation-corrected) result would point up the screen (sin < 0).
+    expect(math.sin(angle), greaterThan(0),
+        reason: 'top-seat drag into the field must aim DOWN into the arena, '
+            'got angle=$angle (sin=${math.sin(angle)})');
+  });
+
   test('tanks STRAFE: the solved lead angle tracks the moving foe over time', () {
     // The moving-target mechanic: the solved lead angle onto the enemy must shift
     // as that enemy strafes (a static foe would never move the lead). Read the

@@ -491,6 +491,64 @@ void main() {
     expect(() => g.render(canvas, size), returnsNormally);
   });
 
+  // ── ROTATION: a top-seat (rot2) human drag aims INTO the arena, not inverted ─
+
+  test('rot2 top-seat human drag launches INTO the arena (rotation-correct), '
+      'driven through the real onInput path', () {
+    // 2-player split: player 1 owns the TOP zone (rotationQuarters == 2) and
+    // spawns at the top of the disc, so "into the arena" is DOWNWARD (+y, toward
+    // centre). A naive avatar/screen-relative aim would invert a top-seat pull;
+    // the shared zone-aim helper rotation-corrects it. We press inside player 1's
+    // top zone and drag the finger DOWNWARD (away from the player's body, deeper
+    // toward the centre), release, then assert the ball actually travels DOWNWARD
+    // into the arena — proof the manual aim is rotation-correct and finger-
+    // anchored (NOT derived from the avatar's world position).
+    final players = [
+      for (var i = 0; i < 2; i++) PlayerSlot.defaults(i, isBot: false),
+    ];
+    final ctx = MiniGameContext(
+      players: players,
+      arena: const Size(800, 1200),
+      rng: SeededRng(5),
+      zones: ZoneLayout.forPlayers(2),
+    );
+    final g = BumperBalls()..init(ctx);
+    g.update(1 / _fps); // start the sim
+
+    final before = g.debugBallPos(1)!;
+    // Press near the top of the screen (inside player 1's zone), then drag the
+    // finger DOWN toward the centre and release — a slingshot pull.
+    g.onInput(PlayerInput.down(1, const Offset(0.5, 0.10)));
+    g.onInput(const PlayerInput(
+      playerId: 1,
+      phase: InputPhase.holdTick,
+      normPos: Offset(0.5, 0.40), // drag DOWNWARD into the arena
+    ));
+    g.onInput(const PlayerInput(
+      playerId: 1,
+      phase: InputPhase.up,
+      normPos: Offset(0.5, 0.40),
+    ));
+    // Let the launch carry a few frames.
+    for (var i = 0; i < 6; i++) {
+      g.update(1 / _fps);
+    }
+    final after = g.debugBallPos(1)!;
+    final dy = after.dy - before.dy;
+    final dx = after.dx - before.dx;
+    // INTO the arena = downward (+y) for a top seat. A rotation-inverted aim
+    // would send it UP/off the top rim instead.
+    expect(
+      dy,
+      greaterThan(0),
+      reason: 'top-seat (rot2) drag did not launch INTO the arena (dy=$dy, '
+          'dx=$dx) — the manual aim is inverted or avatar-relative',
+    );
+    // And it is a real launch, not a dead tap (moved a meaningful distance) —
+    // the direction (dy>0) above is the rotation-correctness proof.
+    expect((after - before).distance, greaterThan(g.debugBodyRadius * 0.5));
+  });
+
   // ── DESIGN LAW: button-spam must LOSE to a measured, aimed slingshot ─────────
 
   test('SPAM LOSES: in a head-to-head duel a blind every-frame tapper (power 0, '

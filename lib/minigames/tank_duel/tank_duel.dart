@@ -10,6 +10,7 @@ import '../../art/stick/stick_skeleton.dart';
 import '../../art/stick/stick_style.dart';
 import '../../core/math2.dart';
 import '../../engine/bots.dart';
+import '../../engine/helpers/zone_aim.dart';
 import '../../engine/mini_game.dart';
 import '../../engine/player_manager.dart';
 import 'manual_aim.dart';
@@ -483,10 +484,13 @@ class TankDuel extends MiniGameBase {
 
     switch (input.phase) {
       case InputPhase.down:
-        // A press/drag always AIMS (sticky manual aim): point the barrel toward
-        // the touch, clamped into the firing band. A touch ON the tank (or the
-        // zero/default sentinel) leaves the aim where it was, so a pure tap fires
-        // down the current aim instead of yanking the barrel to a corner.
+        // Anchor the manual drag-aim to WHERE the finger went down (full-screen
+        // 0..1). The aim is then resolved as a zone-relative, rotation-corrected
+        // gesture from this press point — NOT from the avatar's central world
+        // position — so it works in every 2-4p split and is correct for a
+        // top-seat. A pure tap (no real drag) leaves the aim sticky (auto-aim
+        // fallback) instead of yanking the barrel.
+        tank.pressNorm = input.normPos;
         _aimAtTouch(tank, input.normPos);
         // The breech must be LOADED to even begin a shot. A press while
         // reloading is dead — it neither fires nor starts a charge — so a blind
@@ -519,21 +523,54 @@ class TankDuel extends MiniGameBase {
           // can't sneak a shot out mid-reload either.)
           _fire(input.playerId, power);
         }
+        // The gesture is over: clear the press anchor so a later tap with no
+        // drag falls back to sticky aim instead of measuring off a stale press.
+        tank.pressNorm = Offset.zero;
     }
   }
 
-  /// Steer [tank]'s manual aim toward the full-screen touch [norm] (0..1),
-  /// clamped into its firing band. A zero/default touch (a tap with no position,
-  /// or a touch on the turret pivot) is IGNORED so the aim stays sticky — only a
-  /// real drag onto the field moves the barrel.
-  void _aimAtTouch(_Tank tank, Offset norm) {
-    if (norm == Offset.zero) return; // sentinel / "no position" → keep aim
-    final target = Offset(norm.dx * _size.width, norm.dy * _size.height);
-    final pivot = _turretPivotOf(tank);
-    // A touch essentially on the pivot would be ambiguous; ignore it.
-    if ((target - pivot).distanceSquared < 1) return;
-    tank.barrel.aimToward(pivot, target);
+  /// Steer [tank]'s manual aim from the player's DRAG, measured WITHIN that
+  /// player's input zone and anchored to the press point — never the avatar's
+  /// central world position. [curNorm] is the current full-screen 0..1 touch.
+  ///
+  /// The gesture is resolved by [resolveZoneAim]: it returns a finger-anchored,
+  /// rotation-corrected angle (so a top-seat / rot2 player dragging "away from my
+  /// body" aims INTO the arena, not inverted) plus a drag-detect flag. That angle
+  /// is then CLAMPED onto the tank's firing band ([ManualAim.setAngle]).
+  ///
+  /// KID-SAFE FALLBACK: a tap with no real drag ([ZoneAim.hasDrag] false), a
+  /// sentinel/zero touch, or a missing zone leaves the aim STICKY — so a quick
+  /// tap fires down the current (auto/last) aim instead of yanking the barrel.
+  void _aimAtTouch(_Tank tank, Offset curNorm) {
+    if (curNorm == Offset.zero) return; // sentinel / "no position" → keep aim
+    if (tank.pressNorm == Offset.zero) return; // no live press → keep aim
+    final zone = ctx.zones.forPlayer(tank.playerId);
+    if (zone == null) return; // no zone for this seat → keep aim
+    final aim = resolveZoneAim(
+      zone: zone,
+      pressNorm: tank.pressNorm,
+      curNorm: curNorm,
+      arena: ctx.arena,
+    );
+    // Tap with no real drag → keep sticky aim (kid-safe fallback). Only a real
+    // drag moves the barrel, clamped to the firing band.
+    if (!aim.hasDrag) return;
+    // [aim.angle] is normalized so that "drag INTO the arena" reads as the
+    // rot0/bottom-seat inward normal (screen-up, [_refInward]) for EVERY seat —
+    // that's the helper's rotation correction. Map it back into THIS tank's
+    // screen-space firing band by re-anchoring on the band center (the tank's own
+    // inward normal): take the gesture's offset from the reference inward and
+    // apply it to this seat's inward normal, then clamp to the band. So a top-seat
+    // (rot2) "drag into the arena" aims DOWN into the field, not inverted.
+    final relToInward = wrapAngle(aim.angle - _refInward);
+    tank.barrel.setAngle(tank.barrel.center + relToInward);
   }
+
+  /// The inward-normal direction the [resolveZoneAim] helper normalizes "into the
+  /// arena" to: the rot0/bottom-seat inward, which points straight UP the screen
+  /// (atan2 convention, +y down). A drag into the arena resolves to this for every
+  /// seat, so the offset from it is the seat-independent aim the band re-anchors.
+  static const double _refInward = -math.pi / 2;
 
   /// Launch speed for a shot of the given [power] (0..1). A pure tap (power 0)
   /// fires flat at the base speed; any charge lerps from a slow high-lob speed
@@ -1519,6 +1556,11 @@ class _Tank {
   double holdSec = 0; // how long the current hold has lasted
   double holdPower = 0; // 0..1 charge accrued while holding (scales launch speed)
   double overcharge = 0; // seconds of airdrop double-damage buff remaining
+  // Full-screen 0..1 point where THIS touch went down (InputPhase.down). The
+  // manual drag-aim is measured WITHIN the player's zone from this press anchor
+  // (via resolveZoneAim), so the avatar's central world position no longer
+  // affects the aim DIRECTION. Offset.zero = no live press.
+  Offset pressNorm = Offset.zero;
   double downedAt = -1; // _animClock when destroyed (-1 = still alive); wreck age
   int shotsFired = 0; // shells actually loosed (reload-gated) — proves scarcity
   // BOTS ONLY: a persistent aim error (radians) the bot COMMITS this shot — it
