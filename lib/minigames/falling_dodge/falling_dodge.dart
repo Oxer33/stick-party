@@ -26,10 +26,31 @@ class _Tuning {
 
   // Fall speed: starts at a fair, readable pace and ramps so the round always
   // resolves. Slower start than before so an undecided player still has time to
-  // pick a side and commit; the ramp gets punishing late so even sharp bots get
+  // pick a side and commit; the ramp escalates late so even sharp bots get
   // caught and the round resolves by elimination, not just the time cap.
+  //
+  // The late ramp is deliberately GENTLE ([fallAccel] tuned down from 46): a
+  // steep ramp made hazards traverse a whole band in a couple of frames late
+  // game, so the warm→hot→impact read collapsed to an unparseable flash and the
+  // central skill became unlearnable. With this accel the end-of-round speed
+  // (~886 px/s at the time cap, vs the old ~1406) stays readable. The HOT window
+  // itself is decoupled from this entirely — it is gated off a FIXED-PIXEL band
+  // ([telegraphSpeedCap]) so its on-screen duration is constant regardless.
   static const double fallSpeedStart = 210; // px/s
-  static const double fallAccel = 46; // px/s^2
+  static const double fallAccel = 26; // px/s^2 (gentle late ramp; was 46)
+
+  // ── TELEGRAPH SPEED CAP (the readability fix) ──────────────────────────────
+  // The WARM/HOT windows are gated on an ETA, and ETA depends on fall speed. At
+  // the old late-game speeds the HOT *pixel band* (speed × hotLead) ballooned
+  // past a whole player band, so a hazard was effectively HOT the instant it
+  // spawned — a sub-frame flash no human could read. We cap the speed USED FOR
+  // THE TELEGRAPH (gating + rendered shadow) so the HOT zone always sits at a
+  // FIXED pixel distance above the runner line (~[telegraphSpeedCap]·hotLead px)
+  // and lasts a readable, roughly constant on-screen stretch at every difficulty.
+  // Hazards still FALL at the true (uncapped) speed — only the telegraph's ETA
+  // math is clamped, so the cue stays honest about WHERE the threat is while
+  // staying legible about WHEN to dodge.
+  static const double telegraphSpeedCap = 360; // px/s ceiling for WARM/HOT ETA
 
   // Spawn cadence: shrinks over time (more hazards as it escalates). Late game
   // the floor is tight enough that two hazards can stack in a band, so there is
@@ -132,6 +153,12 @@ class _Tuning {
   static const double dodgeThreatLeadSec = 0.85; // WARM: lookahead that shows the shadow
   static const double dodgeHotLeadSec = 0.36; // HOT: the late window that scores
   static const double dodgeClaimWindowSec = 0.45; // grace to cash a HOT dodge after hopping
+
+  // LEARN-THE-TIMING: the first [hotCueBudget] times the runner's OWN lane flips
+  // HOT, pulse a big "NOW!" flash + scale on that lane so the player LEARNS the
+  // felt late-dodge moment. A small budget = training wheels that come off once
+  // the timing is taught; deterministic off the sim, fires once per HOT window.
+  static const int hotCueBudget = 3; // NOW! cues taught per runner per run
 
   // Survival is only a gentle tiebreaker so EARNED dodges dominate the ranking:
   // a chicken who survives but never dodges-under-threat still loses to a bold
@@ -450,6 +477,7 @@ class FallingDodge extends MiniGameBase {
         }
         _spawnTick(t, sdt);
         _stepHazards(t, sdt);
+        _maybeTeachHotCue(t);
         _tickTokens(t, sdt);
       }
       _tickFigure(t, dt, sdt);
@@ -484,6 +512,7 @@ class FallingDodge extends MiniGameBase {
     t.grazeBannerAt = 0;
     t.grazeFlash = 0;
     t.hopHold = 0;
+    t.hotLaneArmed = false; // re-arm the NOW! cue read after a respawn
     t.hopper.hopTo(lane);
     t.hopper.snapVisual();
     t.figure.exitRagdoll();
@@ -886,7 +915,11 @@ class FallingDodge extends MiniGameBase {
       {double lead = _Tuning.dodgeThreatLeadSec}) {
     for (final h in t.hazards) {
       if (h.lane != lane || h.counted || h.y > t.runnerY) continue;
-      final speed = _fallSpeed * h.speedMul;
+      // ETA is computed off the TELEGRAPH speed (capped), not the true fall
+      // speed, so the WARM/HOT thresholds sit at a FIXED pixel distance above the
+      // runner line — the window stays readable at every difficulty. See
+      // [_telegraphSpeed].
+      final speed = _telegraphSpeed(h.speedMul);
       if (speed <= 0) continue;
       final eta = (t.runnerY - h.y) / speed;
       if (eta >= 0 && eta <= lead) return true;
@@ -894,11 +927,48 @@ class FallingDodge extends MiniGameBase {
     return false;
   }
 
+  /// The fall speed USED FOR THE TELEGRAPH (WARM/HOT gating + the rendered
+  /// shadow), capped at [_Tuning.telegraphSpeedCap]. Hazards still physically
+  /// FALL at the uncapped [_fallSpeed] (see [_stepHazards]); only the ETA that
+  /// decides when a lane reads warm/hot is clamped. This pins the HOT zone to a
+  /// fixed pixel band above the runner line (~cap·hotLead px) so the late-dodge
+  /// cue lasts a readable, roughly constant on-screen stretch no matter how fast
+  /// the round has ramped. [speedMul] folds in the per-kind multiplier.
+  double _telegraphSpeed(double speedMul) =>
+      math.min(_fallSpeed, _Tuning.telegraphSpeedCap) * speedMul;
+
   /// True when [lane] has a hazard inside the narrow HOT window
   /// ([dodgeHotLeadSec]) — the late "now!" stretch. Stepping OFF a HOT lane is
   /// the ONLY hop that stamps a claimable, score-earning dodge.
   bool _laneHotThreatened(TrackFx t, int lane) =>
       _laneThreatened(t, lane, lead: _Tuning.dodgeHotLeadSec);
+
+  /// LEARN-THE-TIMING: the first [hotCueBudget] times the runner's OWN lane
+  /// flips HOT, pulse an unmistakable "NOW!" flash + scale + popup on that lane
+  /// so the player FEELS the late-dodge moment and learns to wait for it. Latched
+  /// per HOT window via [TrackFx.hotLaneArmed] (re-armed when the lane cools) so
+  /// one window teaches exactly once, and capped by the budget so the training
+  /// wheels come off. Deterministic off the sim clock; no new Ticker.
+  void _maybeTeachHotCue(TrackFx t) {
+    if (!t.alive) return;
+    final hot = _laneHotThreatened(t, t.hopper.lane);
+    if (!hot) {
+      t.hotLaneArmed = false; // lane cooled → ready to teach the next window
+      return;
+    }
+    if (t.hotLaneArmed || t.hotCueShown >= _Tuning.hotCueBudget) return;
+    t.hotLaneArmed = true;
+    t.hotCueShown += 1;
+    final x = t.lanes.coordOfVisual(t.hopper.visualLane);
+    // Bright lane flash + a punchy NOW! popup right on the threatened lane.
+    t.flashes.add(FlashFx(lane: t.hopper.lane, life: _Tuning.nearMissFlashSec));
+    _juice.popup(
+      Offset(x, t.runnerY - t.figureLift - 18),
+      'NOW!',
+      const Color(0xFFFF5A4D),
+      size: 22 + 8 * t.figureScale,
+    );
+  }
 
   // ── Elimination / outcome ────────────────────────────────────────────────────
 
@@ -1004,7 +1074,11 @@ class FallingDodge extends MiniGameBase {
         scroll: scroll,
         animClock: _animClock,
         laneCount: _Tuning.laneCount,
-        fallSpeed: _fallSpeed,
+        // The telegraph (warm/hot shadow) is driven by the CAPPED speed so the
+        // rendered cue matches the capped gating exactly — same fixed-pixel HOT
+        // band on screen as the scoring rule uses. The per-kind multiplier is
+        // applied inside the painter via each hazard's speedMul.
+        fallSpeed: math.min(_fallSpeed, _Tuning.telegraphSpeedCap),
         warmLeadSec: _Tuning.dodgeThreatLeadSec,
         hotLeadSec: _Tuning.dodgeHotLeadSec,
       );

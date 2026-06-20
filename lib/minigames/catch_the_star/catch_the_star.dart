@@ -39,9 +39,10 @@ import 'catch_render.dart';
 ///  * GOLD stars are rarer and worth [_goldPoints]; normal stars [_starPoints].
 ///  * The field RAMPS: items fall faster, cross steeper, spawn denser and the
 ///    bomb ratio climbs as the round wears on (readable open → frantic finish). A
-///    basket has movement INERTIA (accelerates toward your finger, decelerates,
-///    capped at [_basketMaxSpeed]) so committing to a far intercept then bailing
-///    off a converging bomb is a real skill, not a tap.
+///    basket GLIDES at a capped speed ([_basketMaxSpeed]): it seeks the cap toward
+///    your finger and brakes into a clean stop, crossing a full lane in ~0.4s — so
+///    a far intercept is REACHABLE and committing to it then bailing off a
+///    converging bomb is a real skill, not a tap.
 ///
 /// ANTI-INCIDENTAL: because catching is overlap-only at the line AND the targets
 /// arrive off-axis on crossing paths, sitting still or sweeping blindly catches
@@ -92,10 +93,15 @@ class CatchTheStar extends MiniGameBase {
   // basket centre AS the item crosses the line. Pure overlap — no tap, no snap.
   static double get _catchOverlap => _basketHalfWidth + _itemHalfWidth;
 
-  // ── Basket control (inertia makes precise positioning a skill) ───────────────
-  static const double _basketAccel = 18.0; // accel toward target (1/sec^2-ish)
-  static const double _basketDamp = 9.0; // velocity damping per sec
-  static const double _basketMaxSpeed = 3.6; // cap on basket speed (norm/sec)
+  // ── Basket control (max-speed GLIDE: a far intercept is reachable) ───────────
+  // The basket SEEKS its cap speed toward the target (short accel ramp, brake in
+  // the final approach band) instead of asymptotically creeping. A full single
+  // lane (≈0.88 traversable) is crossed in ~0.4s, so committing to a far
+  // intercept then bailing off a converging bomb is a REAL, mechanically possible
+  // skill — the "commit early / bail late" read finally works.
+  static const double _basketAccel = 16.0; // ramp toward the cap (norm/sec^2)
+  static const double _basketBrake = 16.0; // decel band approaching the target
+  static const double _basketMaxSpeed = 2.4; // glide cap (norm/sec) — far reach
   static const double _stunSec = 0.9; // basket frozen after catching a bomb
   static const double _laneInset = 0.06; // keep basket off the lane walls
 
@@ -124,11 +130,13 @@ class CatchTheStar extends MiniGameBase {
   static const double _interceptInset = 0.22; // keep shared intercepts off walls
   static const double _minLaunchSpreadFrac = 0.34; // lane-frac between launches
   // The converging bomb lands THIS far (× the catch overlap) to the side of the
-  // star's intercept: just outside the basket mouth, so a precise reader who is
-  // ON the star's crossing point catches it AND the bomb lands beside them — the
-  // crossing is a tight, legible read, not an unavoidable double-hit. A flailer
-  // who is off the mark is the one who drifts under the converging bomb.
-  static const double _crossBombOffsetFrac = 1.35;
+  // star's intercept: clearly outside the basket mouth, so a reader committed to
+  // the star's crossing point catches it AND the bomb lands beside them even with
+  // the small lag of the GLIDE basket — the crossing is a tight, legible read,
+  // not an unavoidable double-hit. (Wider than the old spring needed: the fast
+  // glide can ride slightly off the exact point, so the bomb is set clear of it.)
+  // A flailer who sweeps blindly is the one who still drifts under the bomb.
+  static const double _crossBombOffsetFrac = 1.7;
   // A lone (non-paired) item still slides: it launches off one wall and angles
   // toward a random interior intercept, so even singles must be intercepted.
   static const double _loneDriftMin = 0.18; // min interior intercept offset
@@ -463,10 +471,16 @@ class CatchTheStar extends MiniGameBase {
       ..addAll(survivors);
   }
 
-  /// True when [item] is horizontally within the basket's (comeback-scaled) mouth
-  /// at the moment it crosses the catch line. This is the ONLY way a catch happens.
-  bool _overlapsBasket(_Lane lane, _Item item) =>
-      (item.x - lane.basketX).abs() <= _overlapFor(lane);
+  /// True when [item] is horizontally within the basket's mouth at the moment it
+  /// crosses the catch line — the ONLY way a catch happens. The comeback bonus
+  /// widens the mouth for STARS only (a trailing kid gets a more forgiving star
+  /// scoop); BOMBS always use the BASE mouth so the catch-up never makes a reader
+  /// scoop a bomb they cleanly dodged. The dodge stays a pure, equal-width read.
+  bool _overlapsBasket(_Lane lane, _Item item) {
+    final reach =
+        item.kind == _ItemKind.bomb ? _catchOverlap : _overlapFor(lane);
+    return (item.x - lane.basketX).abs() <= reach;
+  }
 
   /// Effective catch overlap for [lane]: the base mouth plus a subtle comeback
   /// bonus for a player trailing the leader (scaled by the gap, capped). The
@@ -543,26 +557,51 @@ class CatchTheStar extends MiniGameBase {
     _juice.flashScreen(_bombColor, strength: 0.35);
   }
 
-  /// Glide every basket toward its target x with INERTIA: accelerate toward the
-  /// target, damp the velocity, cap the speed, and clamp into the lane. A stunned
-  /// basket ignores its target (it just coasts to a halt) so eating a bomb really
-  /// costs control. Bots get the same physics (their target is set in
-  /// [_driveBots]) so they cannot teleport onto an intercept either.
+  /// Glide every basket toward its target x at (near) its CAP speed: accelerate
+  /// up to [_basketMaxSpeed] toward the target, then brake inside the final
+  /// approach band so it lands cleanly without creeping. Because it actually
+  /// reaches the cap, a FAR intercept is reachable in ~0.4s of a full lane — so
+  /// committing early and bailing late off a converging bomb is a real,
+  /// mechanically possible skill (not the old asymptotic spring that stalled at a
+  /// fraction of the cap). A stunned basket ignores its target and coasts to a
+  /// halt so eating a bomb really costs control. Bots get the same physics (their
+  /// target is set in [_driveBots]) so they cannot teleport onto an intercept.
   void _steerBaskets(double dt) {
     if (dt <= 0) return;
     for (final lane in _lanes) {
-      // Stunned: no steering force, just damp to a stop.
-      final toTarget = lane.stun > 0 ? 0.0 : (lane.targetX - lane.basketX);
-      var v = lane.basketVel + toTarget * _basketAccel * dt;
-      v -= v * (_basketDamp * dt).clamp(0.0, 1.0);
-      if (v > _basketMaxSpeed) v = _basketMaxSpeed;
-      if (v < -_basketMaxSpeed) v = -_basketMaxSpeed;
+      final v = lane.stun > 0
+          ? _coastToHalt(lane.basketVel, dt)
+          : _glideVel(lane.basketVel, lane.targetX - lane.basketX, dt);
       final nextX = lane.basketX + v * dt;
       final clamped = _clampX(lane.zone, nextX);
-      if (clamped != nextX) v = 0; // hit a wall: kill the velocity
-      lane.basketVel = v;
+      lane.basketVel = (clamped != nextX) ? 0.0 : v; // wall: kill the velocity
       lane.basketX = clamped;
     }
+  }
+
+  /// A stunned basket steers nowhere: brake its current velocity to rest.
+  double _coastToHalt(double vel, double dt) {
+    final drop = _basketBrake * dt;
+    if (vel.abs() <= drop) return 0.0;
+    return vel - drop * vel.sign;
+  }
+
+  /// Velocity for a basket that wants to reach a target [toTarget] away. It seeks
+  /// the cap toward the target but limits to the speed it can still BRAKE from
+  /// before the target, so it glides at full speed across the gap then decelerates
+  /// into a clean stop on the mark — the read becomes a real commit, not a creep.
+  double _glideVel(double vel, double toTarget, double dt) {
+    if (toTarget == 0) return _coastToHalt(vel, dt);
+    final dir = toTarget.sign;
+    // Top speed we may carry and still stop within the remaining gap: v=√(2·a·d).
+    final brakeCap =
+        math.sqrt(2.0 * _basketBrake * toTarget.abs()).clamp(0.0, _basketMaxSpeed);
+    final desired = dir * brakeCap;
+    // Ramp the actual velocity toward that desired glide speed (an accel cap so it
+    // is a committed slide, not an instant teleport onto the intercept).
+    final step = _basketAccel * dt;
+    final dv = (desired - vel).clamp(-step, step);
+    return vel + dv;
   }
 
   // ── Bots ──────────────────────────────────────────────────────────────────────

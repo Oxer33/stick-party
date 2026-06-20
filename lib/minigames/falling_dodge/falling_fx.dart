@@ -201,6 +201,15 @@ class TrackFx {
   double aliveSec = 0; // cumulative seconds spent alive this run (tiebreaker)
   ReactionClock? clock;
 
+  // ── LEARN-THE-TIMING cue (the first few HOT windows pulse a "NOW!") ─────────
+  // The late-dodge window is the whole skill, so the first [hotCueBudget] times
+  // the runner's OWN lane flips HOT we pulse an unmistakable NOW! flash+scale on
+  // it to teach the player the felt timing. After the budget is spent the cue
+  // stops (a learned player no longer needs the training wheels). [hotLaneArmed]
+  // latches the warm→hot edge so one window fires the cue exactly once.
+  int hotCueShown = 0; // how many NOW! cues this track has already fired
+  bool hotLaneArmed = false; // true once the current-lane HOT window has fired
+
   // ── Earned-dodge bookkeeping (what makes a graze SKILL, not proximity) ──────
   // When the runner hops AWAY from a lane that had an imminent hazard, we stamp
   // that lane + a short claim window here. A passing hazard only banks a graze

@@ -16,9 +16,11 @@ import 'chicken_render.dart';
 
 /// Numeric tuning — no magic numbers inline. Times in seconds, speeds px/s.
 class _Tuning {
-  // Round length. The lava escalation converges the round in ~10-15s; this is a
-  // generous safety cap well above that so a stalled human still resolves.
-  static const double timeLimit = 30;
+  // Round length. Tight, not padded: the lava is CAPPED below the reachable top
+  // (see [lavaCapRungs]) so it never swallows the tower, which means the climb
+  // stays a live race for the WHOLE round. ~14s keeps it punchy — long enough to
+  // climb high and hold, short enough to never go stale.
+  static const double timeLimit = 14;
 
   // A short "GET SET" beat: the lava holds just below the lowest rung and bots
   // stay put, so everyone gets a moment to read the board before the climb. The
@@ -31,17 +33,25 @@ class _Tuning {
   static const double topInset = 96; // px from the top to the highest platform
   static const double bottomInset = 150; // px from the bottom to the lowest
 
-  // Rising lava (after the warmup): starts calm and accelerates so the round
-  // always resolves, with a forgiving reaction window per rung early on.
+  // Rising lava (after the warmup): starts calm and accelerates to keep pace
+  // pressure mounting — but it is HARD-CAPPED below the reachable top (see
+  // [lavaCapRungs]) so it can never engulf the tower. There is always headroom
+  // to keep climbing and to risk the HOLD double-leap.
   static const double lavaRiseStart = 40; // px/s initial climb (gentle start)
   static const double lavaAccel = 8.0; // px/s^2 ramp
   static const double lavaStartGap = 10; // px the lava starts below the lowest
 
-  // CLIMAX: once the round passes [climaxFrac] of its life the lava gets an
-  // extra surge multiplier so the finale visibly ramps ("HURRY!"). A one-shot
-  // popup over every live climber sells the moment.
+  // LAVA CAP: the lava surface is clamped so it never rises above this many
+  // rung-spacings BELOW the top reachable rung. The climber always has at least
+  // ~this much clear tower above the lava to keep climbing and to use the risky
+  // HOLD double-leap. ~1.5 spacings keeps the top a tense-but-reachable refuge,
+  // never an agency-free death-strobe.
+  static const double lavaCapRungs = 1.5; // clear rung-spacings kept above lava
+
+  // CLIMAX: once the round passes [climaxFrac] of its life the renderer reads
+  // max heat for a hot finale — but the lava SPEED is NOT surged (it would just
+  // slam the cap), so the cap holds and the climb stays live to the buzzer.
   static const double climaxFrac = 0.72; // fraction of timeLimit → climax begins
-  static const double climaxSurgeMul = 1.45; // lava speed × this during climax
 
   // COMEBACK (kid-assist): the single climber sitting on the lowest rung among
   // the living gets its lava held back a touch, so a younger / behind player is
@@ -615,8 +625,9 @@ class ChickenJump extends MiniGameBase {
     // the ramp from the post-warmup clock keeps the early reaction window fair.
     final runT = math.max(0.0, _elapsed - _Tuning.warmupSec);
     _lavaSpeed = _Tuning.lavaRiseStart + _Tuning.lavaAccel * runT;
-    // CLIMAX: a late surge so the finale visibly ramps.
-    if (_inClimax) _lavaSpeed *= _Tuning.climaxSurgeMul;
+    // No end-surge: the lava is capped below the reachable top (see [_lavaFloorY]
+    // / [_stepClimber]) so the climb stays live to the buzzer. The climax only
+    // drives the renderer's heat + the one-shot "HURRY!" cue.
     _maybeFireClimax();
 
     // COMEBACK: the single living climber on the lowest rung gets held lava.
@@ -702,8 +713,18 @@ class ChickenJump extends MiniGameBase {
     return c.rungs.count - 1;
   }
 
-  /// True once the round passes the climax fraction of its life — the lava
-  /// surges and the renderer reads max escalation.
+  /// The lowest the lava SURFACE may ever sit (largest y = highest it may rise):
+  /// [_Tuning.lavaCapRungs] rung-spacings BELOW the top reachable rung. Keeping
+  /// the surface at or under this y guarantees clear tower above it for the whole
+  /// round, so the climb never becomes an agency-free death-strobe.
+  double _lavaFloorY(_Climber c) {
+    final topRungY = c.rungYOf(c.rungs.count - 1); // smallest y (highest rung)
+    final spacingMag = c.rungs.spacing.abs(); // px between adjacent rungs
+    return topRungY + _Tuning.lavaCapRungs * spacingMag; // below the top rung
+  }
+
+  /// True once the round passes the climax fraction of its life — the renderer
+  /// reads max escalation (heat / cue). The lava SPEED is not surged.
   bool get _inClimax => _elapsed >= _Tuning.timeLimit * _Tuning.climaxFrac;
 
   /// Fire the one-shot "HURRY!" finale cue over every live climber.
@@ -744,6 +765,12 @@ class ChickenJump extends MiniGameBase {
     if (!_inWarmup) {
       final mul = comeback ? _Tuning.comebackLavaMul : 1.0;
       c.lavaY -= _lavaSpeed * mul * sdt;
+      // HARD CAP: never let the lava rise above ~[lavaCapRungs] spacings below the
+      // top reachable rung. Smaller y = higher, so the floor is the LARGEST y the
+      // surface may reach. This guarantees clear tower above the lava all round —
+      // the climber always has somewhere to climb and room to risk the double-leap.
+      final floorY = _lavaFloorY(c);
+      if (c.lavaY < floorY) c.lavaY = floorY;
     }
     c.sinceShake += dt;
     if (c.invuln > 0) c.invuln = math.max(0, c.invuln - dt);

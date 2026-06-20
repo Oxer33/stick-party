@@ -202,7 +202,6 @@ class MemoryRenderer {
     required Color accent,
     double turnPulse = 0,
     double oops = 0,
-    bool appendInvite = false,
   }) {
     if (block.width <= 2) return;
     final side = math.min(block.width, block.height);
@@ -328,22 +327,17 @@ class MemoryRenderer {
 
     // "Your turn" rim: a soft pulsing accent frame around the whole plate so the
     // child knows it is time to tap the colors (replaces the old cursor ring).
-    // [appendInvite] forces it on for the round winner during the append beat
-    // (they are `done`, but should still be invited to tap a color), drawn a
-    // touch brighter/thicker so "pick a color to add" reads as the active call.
     final tp = turnPulse.clamp(0.0, 1.0);
-    if (alive && (appendInvite || !done) && tp > 0.0) {
+    if (alive && !done && tp > 0.0) {
       final rr = RRect.fromRectAndRadius(
           plate, Radius.circular(plate.width * _clusterCornerFactor));
-      final widen = appendInvite ? 0.03 : 0.02;
-      final baseA = appendInvite ? 0.45 : 0.30;
       canvas.drawRRect(
         rr,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(2.0, plate.width * (0.02 + widen * tp))
-          ..color = _blend(accent, _white, appendInvite ? 0.6 : 0.4)
-              .withValues(alpha: (baseA + 0.4 * tp).clamp(0.0, 1.0)),
+          ..strokeWidth = math.max(2.0, plate.width * (0.02 + 0.02 * tp))
+          ..color = _blend(accent, _white, 0.4)
+              .withValues(alpha: (0.30 + 0.4 * tp).clamp(0.0, 1.0)),
       );
     }
 
@@ -628,37 +622,6 @@ class MemoryRenderer {
         ..shader = Gradient.radial(
           center,
           font * 1.7,
-          [color.withValues(alpha: 0.22 + 0.12 * p), const Color(0x00000000)],
-        ),
-    );
-    _drawText(canvas, text, center, font, color.withValues(alpha: 0.95),
-        weight: FontWeight.w900, glow: true, glowColor: color);
-  }
-
-  /// The call-and-response cue: during the append beat, announce that the round
-  /// winner ([appenderNumber], 1-based) is adding a color for the table. Drawn
-  /// in the winner's [accent] in the same badge style as [drawPhaseBanner] so it
-  /// reads from across the room. [pulse] 0..1 throbs it.
-  static void drawAppendBanner(
-    Canvas canvas,
-    Size size, {
-    required int appenderNumber,
-    required Color accent,
-    required double pulse,
-    double topFrac = 0.06,
-  }) {
-    final p = pulse.clamp(0.0, 1.0);
-    final color = _blend(accent, _white, 0.25);
-    final text = 'P$appenderNumber ADDS A COLOR';
-    final center = Offset(size.width / 2, size.height * topFrac);
-    final font = size.width * _bannerFontFrac * (0.78 + 0.06 * p);
-    canvas.drawCircle(
-      center,
-      font * 2.4,
-      Paint()
-        ..shader = Gradient.radial(
-          center,
-          font * 2.4,
           [color.withValues(alpha: 0.22 + 0.12 * p), const Color(0x00000000)],
         ),
     );

@@ -316,23 +316,44 @@ void _trackStarsDodgeBombs(CatchTheStar g, int id) {
   final bombX = g.nextBombXForTest(id); // intercept x of the next bomb
   final basket = g.basketXForTest(id) ?? 0.5;
 
+  // Catch range (basket half-mouth + item half-width); a bomb intercept within
+  // this of the basket would be SCOOPED, so it must be avoided.
+  const danger = 0.16;
+
   // A converging bomb's intercept is sitting on the basket and the star is NOT
   // the nearer target → bail late off the bomb (the read that threads the cross).
-  final bombOnBasket = bombX != null && (bombX - basket).abs() < 0.10;
-  final starNearer =
-      starX != null && bombX != null && (starX - basket).abs() <= (bombX - basket).abs();
+  final bombOnBasket = bombX != null && (bombX - basket).abs() < danger;
+  final starNearer = starX != null &&
+      bombX != null &&
+      (starX - basket).abs() <= (bombX - basket).abs();
   if (bombOnBasket && !starNearer) {
     final dodge = bombX < 0.5 ? bombX + 0.26 : bombX - 0.26;
     g.onInput(PlayerInput.down(id, Offset(dodge.clamp(0.02, 0.98), lineY)));
     return;
   }
-  // Otherwise commit to the next STAR's intercept — the core interception skill.
+  // Commit to the next STAR's intercept — the core interception skill — BUT a
+  // responsive glide basket would sweep THROUGH a bomb sitting between it and a
+  // far star. A real reader does not barrel across a live bomb: if the bomb's
+  // intercept lies in the path to the star (and the star is not already in hand),
+  // stop short on the near side of the bomb and let the bomb cross first.
   if (starX != null) {
+    if (bombX != null) {
+      final bombInPath = (bombX - basket).sign == (starX - basket).sign &&
+          (bombX - basket).abs() < (starX - basket).abs() &&
+          (bombX - basket).abs() < 0.45; // only a bomb genuinely on the way
+      final starInHand = (starX - basket).abs() < danger;
+      if (bombInPath && !starInHand) {
+        // Halt on the near side of the bomb until it has crossed; do not transit.
+        final hold = bombX > basket ? bombX - danger * 1.25 : bombX + danger * 1.25;
+        g.onInput(PlayerInput.down(id, Offset(hold.clamp(0.02, 0.98), lineY)));
+        return;
+      }
+    }
     g.onInput(PlayerInput.down(id, Offset(starX, lineY)));
     return;
   }
   // No star to chase: if a bomb's intercept sits under the basket, step aside.
-  if (bombX != null && (bombX - basket).abs() < 0.14) {
+  if (bombX != null && (bombX - basket).abs() < danger) {
     final dodge = bombX < 0.5 ? bombX + 0.24 : bombX - 0.24;
     g.onInput(PlayerInput.down(id, Offset(dodge.clamp(0.02, 0.98), lineY)));
     return;

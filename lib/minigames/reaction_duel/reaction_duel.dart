@@ -73,22 +73,27 @@ class ReactionDuel extends MiniGameBase {
   static const double _timeLimit = 40; // overall cap (seconds)
 
   // ── Per-draw timing + the calibrated ramp ───────────────────────────────────
-  // Draw 0 is gentle; each later draw shifts the GO band later, adds feints,
-  // lengthens feint flashes, and tightens the post-GO window — the nerve test
-  // ramps so reading real-vs-fake matters more as the match tightens.
-  static const double _minGoDelay = 1.1; // base GO band (draw 0)
-  static const double _maxGoDelay = 3.0;
-  static const double _goDelayRampPerDraw = 0.18; // band drifts later per draw
-  static const double _goDelayRampMax = 1.2; // cap the drift
+  // Draw 0 is gentle; each later draw adds feints, lengthens feint flashes, and
+  // tightens the post-GO window — the nerve test ramps so reading real-vs-fake
+  // matters more as the match tightens. The pre-GO WAIT, by contrast, is held to
+  // a TIGHT, BOUNDED random band that does NOT grow with the draw index: it stays
+  // unpredictable (so the GO can never be pre-timed) but can never stall for
+  // multiple seconds, killing the dead time that made the old loop drag.
+  static const double _minGoDelay = 0.7; // base GO band (lower bound, all draws)
+  static const double _maxGoDelay = 1.8; // bounded upper — no multi-second stall
+  // The GO band is FIXED across draws (no per-draw drift): the only escalation
+  // is more feints + a tighter post-GO window, never a longer forced wait.
+  static const double _goDelayRampPerDraw = 0.0; // band no longer drifts later
+  static const double _goDelayRampMax = 0.0; // (kept for clarity; drift disabled)
   static const int _baseFeints = 1; // feints at draw 0
   static const int _maxFeints = 3; // feints late
   static const double _baseFeintFlash = 0.18; // feint flash life (draw 0)
   static const double _maxFeintFlash = 0.30; // longer, more GO-like later
-  static const double _goWindowBase = 2.4; // post-GO window at draw 0
-  static const double _goWindowMin = 1.1; // tightest post-GO window
+  static const double _goWindowBase = 2.0; // post-GO window at draw 0
+  static const double _goWindowMin = 1.0; // tightest post-GO window
   static const double _goWindowRampPerDraw = 0.22; // window shrink per draw
-  static const double _lingerAfterWin = 0.9; // hold the KO beat before next draw
-  static const double _interDrawSec = 1.1; // beat between draws (cue + reset)
+  static const double _lingerAfterWin = 0.45; // brief KO beat before next draw
+  static const double _interDrawSec = 0.45; // tight beat between draws (cue+reset)
 
   // ── Strike / feel tuning ────────────────────────────────────────────────────
   static const double _strikeFlashSec = 0.45; // blinding flash + screen-flash

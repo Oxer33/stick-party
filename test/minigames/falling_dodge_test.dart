@@ -287,8 +287,14 @@ void main() {
       expect(flailerScore, lessThan(dodgerScore),
           reason: 'seed $seed: blind flailing must score below a measured '
               'dodger (dodger=$dodgerScore flailer=$flailerScore)');
-      expect(g.debugAliveSec(1), lessThan(g.debugAliveSec(0)),
-          reason: 'seed $seed: the flailer is crushed more, surviving less');
+      // The flailer must never OUT-survive the measured dodger. With the gentler
+      // late ramp + fixed-pixel HOT window (the readability fix) some boards are
+      // fully survivable by both, so survival can TIE there — but the flailer can
+      // never beat it. (The decisive anti-spam guarantee is the score+rank gap
+      // asserted above/below; this is the survival half of the same law.)
+      expect(g.debugAliveSec(1), lessThanOrEqualTo(g.debugAliveSec(0)),
+          reason: 'seed $seed: the flailer must never out-survive the dodger '
+              '(flailer=${g.debugAliveSec(1)} dodger=${g.debugAliveSec(0)})');
       // Worse rank = appears LATER in the best→worst ranking.
       expect(win.ranking.indexOf(1), greaterThan(win.ranking.indexOf(0)),
           reason: 'seed $seed: the flailer must rank below the dodger');

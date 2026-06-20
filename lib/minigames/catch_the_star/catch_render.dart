@@ -31,23 +31,12 @@ class CatchRenderer {
   static const Color _starGlow = Color(0xFFFFD24A); // normal star halo
   static const Color _bonusGold = Color(0xFFFFE070); // golden bonus body
   static const Color _bonusGlow = Color(0xFFFF9E1B); // golden bonus halo
-  static const Color _bombBody = Color(0xFF2A2E38); // bomb shell
-  static const Color _bombEdge = Color(0xFFE5484D); // bomb danger rim
-  static const Color _bombHi = Color(0xFF5A6172); // bomb shell highlight
-  static const Color _fuse = Color(0xFFB08050); // bomb fuse cord
-  static const Color _spark = Color(0xFFFFC85A); // bomb fuse spark
+  static const Color _bombBody = Color(0xFF2A2E38); // bomb X dark underlay
+  static const Color _bombEdge = Color(0xFFE5484D); // bomb danger red
   static const Color _laneSeam = Color(0x33FFFFFF); // lane divider tint
   static const Color _white = Color(0xFFFFFFFF);
   static const Color _black = Color(0xFF000000);
   static const Color _urgent = Color(0xFFFF6B6B);
-  static const Color _ember = Color(0xFFFB7234); // bomb ember flicker (flame accent)
-  // Rainbow shimmer ramp for the golden jackpot star (violet→magenta→amber→cyan).
-  static const List<Color> _bonusSpectrum = [
-    Color(0xFF8B5CF6),
-    Color(0xFFEC4899),
-    Color(0xFFFBBF24),
-    Color(0xFF22D3EE),
-  ];
 
   // ── Tuning (fractions / px; no inline magic numbers) ───────────────────────
   static const double _moonCenterXFrac = 0.74; // moon x / width
@@ -62,12 +51,9 @@ class CatchRenderer {
   static const double _starHaloFactor = 2.4; // glow halo / outer radius
   static const double _starCoreFactor = 0.3; // bright core / outer radius
   static const int _starPoints = 5;
-  static const int _goldenRays = 8; // sparkle-crown rays on a gold star
   static const double _bombHaloFactor = 2.2; // danger halo / bomb radius
-  static const double _fuseLen = 0.9; // fuse length / bomb radius
-  static const int _cometSegments = 4; // stacked trail puffs behind a star
-  static const double _cometLenFactor = 3.4; // trail length / star radius
-  static const int _emberCount = 5; // crackling embers around a bomb fuse
+  static const double _bombArmFactor = 0.78; // "X" arm reach / bomb radius
+  static const double _wakeLenFactor = 1.6; // single wake puff offset / radius
 
   // Trajectory-hint tuning (the legible "where it will cross" read).
   static const int _hintDashes = 9; // dashes along an item's predicted path
@@ -340,13 +326,15 @@ class CatchRenderer {
     }
   }
 
-  /// A falling item: a warm STAR, a brighter GOLD star (with a sparkle crown), or
-  /// a clearly-distinct BOMB (dark shell, red danger rim + a lit fuse). [center]
-  /// is the pixel position, [r] the outer radius; [spin] rotates it for life; [t]
-  /// drives the bomb fuse twinkle. [velDir] is the unit travel direction (pixel
-  /// space) so the comet wake streams opposite the ANGLED path — defaults to
-  /// straight-down so a legacy vertical drop still trails upward. Distinct
-  /// silhouettes + colors telegraph which is which from across the lane.
+  /// A falling item, drawn as ONE clean SHAPE per kind so the field reads at a
+  /// glance instead of a soup of stacked overlays: a STAR is a glowing 5-point
+  /// star (gold blooms brighter), a BOMB is an unmistakable red "X". A single soft
+  /// halo + body + a short wake puff is all each item carries — no fuse/ember/
+  /// rainbow-crown clutter competing with the intercept read. [center] is the
+  /// pixel position, [r] the outer radius; [spin] rotates the star; [t] drives the
+  /// breathe; [velDir] is the unit travel direction so the single wake puff streams
+  /// opposite the ANGLED path (defaults straight-down). Distinct silhouette +
+  /// color telegraph which is which from across the lane.
   static void drawItem(
     Canvas canvas,
     Offset center,
@@ -363,6 +351,25 @@ class CatchRenderer {
     } else {
       _drawStar(canvas, center, r, gold: gold, rot: spin, t: t, velDir: velDir);
     }
+  }
+
+  /// A single faint wake puff streaming opposite [velDir] so the ANGLED path reads
+  /// without a stack of trail segments. Additive, never throws.
+  static void _drawWake(
+      Canvas canvas, Offset center, double r, Color glow, Offset velDir) {
+    final wake = -_safeDir(velDir);
+    final back = r * _wakeLenFactor;
+    final at = center.translate(wake.dx * back, wake.dy * back);
+    canvas.drawCircle(
+      at,
+      r * 1.1,
+      Paint()
+        ..shader = Gradient.radial(
+          at,
+          r * 1.1,
+          [glow.withValues(alpha: 0.22), const Color(0x00000000)],
+        ),
+    );
   }
 
   /// Normalize a travel direction; fall back to straight-down if degenerate.
@@ -412,35 +419,28 @@ class CatchRenderer {
         dash,
       );
     }
-    // Pulsing intercept marker on the catch line — a soft halo + a crisp ring.
+    // ONE intercept marker on the catch line, SHAPED to its item kind so the read
+    // matches the falling glyph: a STAR's crossing is a clean pulsing RING, a
+    // BOMB's is a small "X". No stacked halo+ring+crosshair — a single legible
+    // mark per item.
     final pulse = 0.5 + 0.5 * math.sin(t * 5.0 + (isBomb ? math.pi : 0));
     final mr = math.max(3.0, minSide * _hintMarkerR) * (0.85 + 0.3 * pulse);
-    canvas.drawCircle(
-      to,
-      mr * 2.0,
-      Paint()
-        ..shader = Gradient.radial(
-          to,
-          mr * 2.0,
-          [base.withValues(alpha: (alpha * 0.9).clamp(0.0, 1.0)),
-            const Color(0x00000000)],
-        ),
-    );
-    canvas.drawCircle(
-      to,
-      mr,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, mr * 0.28)
-        ..color = base.withValues(alpha: (0.5 + 0.4 * pulse).clamp(0.0, 1.0)),
-    );
-    // A tiny crosshair tick at the marker so the exact crossing x is unambiguous.
-    final tick = math.max(2.0, mr * 0.8);
-    final tickPaint = Paint()
+    final markPaint = Paint()
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = math.max(1.0, mr * 0.22)
-      ..color = base.withValues(alpha: (0.55 + 0.3 * pulse).clamp(0.0, 1.0));
-    canvas.drawLine(to.translate(-tick, 0), to.translate(tick, 0), tickPaint);
+      ..strokeWidth = math.max(1.5, mr * 0.3)
+      ..color = base.withValues(alpha: (0.55 + 0.4 * pulse).clamp(0.0, 1.0));
+    if (isBomb) {
+      final d = mr * 0.85;
+      markPaint.style = PaintingStyle.stroke;
+      canvas.drawLine(to.translate(-d, -d), to.translate(d, d), markPaint);
+      canvas.drawLine(to.translate(-d, d), to.translate(d, -d), markPaint);
+    } else {
+      canvas.drawCircle(
+        to,
+        mr,
+        markPaint..style = PaintingStyle.stroke,
+      );
+    }
   }
 
   static void _drawStar(
@@ -456,26 +456,11 @@ class CatchRenderer {
     final body = gold ? _bonusGold : _starGold;
     final glow = gold ? _bonusGlow : _starGlow;
 
-    // Comet trail: stacked translucent puffs streaming behind the travel
-    // direction, each smaller + fainter than the last so the star reads as a
-    // streaking meteor whose wake reveals its ANGLED path.
-    final wake = -_safeDir(velDir); // opposite the direction of motion
-    final trailPaint = Paint();
-    for (var i = _cometSegments; i >= 1; i--) {
-      final f = i / _cometSegments; // 1 at tail .. 1/n near body
-      final back = r * _cometLenFactor * f * (gold ? 1.2 : 1.0);
-      final segR = r * (0.85 - 0.5 * f);
-      // Tail breathes slightly out of phase so it flickers like burning gas.
-      final flick = 0.8 + 0.2 * math.sin(t * 6.0 - i * 0.9);
-      trailPaint.color = glow.withValues(
-        alpha: ((1.05 - f) * 0.24 * flick * (gold ? 1.3 : 1.0)).clamp(0.0, 1.0),
-      );
-      canvas.drawCircle(center.translate(wake.dx * back, wake.dy * back),
-          segR.clamp(0.5, r), trailPaint);
-    }
+    // One faint wake puff reveals the ANGLED path (no stacked comet train).
+    _drawWake(canvas, center, r, glow, velDir);
 
-    // Soft halo (breathes; gold blooms larger).
-    final haloR = r * _starHaloFactor * (gold ? 1.2 : 1.0) * (0.9 + 0.2 * pulse);
+    // One soft halo (breathes; gold blooms a touch larger + brighter).
+    final haloR = r * _starHaloFactor * (gold ? 1.25 : 1.0) * (0.9 + 0.2 * pulse);
     canvas.drawCircle(
       center,
       haloR,
@@ -484,63 +469,13 @@ class CatchRenderer {
           center,
           haloR,
           [
-            glow.withValues(alpha: (gold ? 0.55 : 0.42) * (0.7 + 0.3 * pulse)),
+            glow.withValues(alpha: (gold ? 0.6 : 0.42) * (0.7 + 0.3 * pulse)),
             const Color(0x00000000),
           ],
         ),
     );
 
-    // Gold gets a sparkle crown of long thin rays — plus a big rainbow jackpot
-    // aura that shimmers through the brand spectrum so it screams "BONUS!".
-    if (gold) {
-      // Outer rainbow bloom: a wide, slow-pulsing sweep-gradient ring. The hue
-      // offset advances with the clock so colors orbit the star.
-      final auraR = r * _starHaloFactor * 1.7 * (0.85 + 0.3 * pulse);
-      final hueShift = t * 0.6; // radians; deterministic spectrum rotation
-      canvas.drawCircle(
-        center,
-        auraR,
-        Paint()
-          ..shader = Gradient.sweep(
-            center,
-            [..._bonusSpectrum, _bonusSpectrum.first]
-                .map((c) => c.withValues(alpha: 0.34 * (0.7 + 0.3 * pulse)))
-                .toList(),
-            const [0.0, 0.28, 0.55, 0.8, 1.0],
-            TileMode.clamp,
-            hueShift,
-            hueShift + math.pi * 2,
-          ),
-      );
-      // Bright inner gold halo on top so the body stays warm, not washed out.
-      canvas.drawCircle(
-        center,
-        haloR * 0.95,
-        Paint()
-          ..shader = Gradient.radial(
-            center,
-            haloR * 0.95,
-            [_bonusGlow.withValues(alpha: 0.4 * (0.7 + 0.3 * pulse)),
-              const Color(0x00000000)],
-          ),
-      );
-      // Sparkle crown — each ray tinted from a different spectrum slot so the
-      // crown itself glints in rainbow as it spins.
-      final rayBase = Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = math.max(1.0, r * 0.08);
-      for (var i = 0; i < _goldenRays; i++) {
-        final ang = rot * 0.5 + i * (math.pi * 2 / _goldenRays);
-        final dir = Offset(math.cos(ang), math.sin(ang));
-        final tint = _bonusSpectrum[i % _bonusSpectrum.length];
-        rayBase.color =
-            _blend(tint, _white, 0.45).withValues(alpha: 0.55 + 0.3 * pulse);
-        canvas.drawLine(center + dir * r * 1.2,
-            center + dir * r * (2.1 + 0.5 * pulse), rayBase);
-      }
-    }
-
-    // The 5-point star body (filled) with a gradient, plus a crisp outline.
+    // The single 5-point star body (filled gradient) + a crisp outline + core.
     final path = _starPath(center, r, r * _starInnerFactor, _starPoints, rot);
     canvas.drawPath(
       path,
@@ -552,34 +487,26 @@ class CatchRenderer {
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, r * 0.08)
-        ..color = _blend(glow, _white, 0.3).withValues(alpha: 0.8),
+        ..strokeWidth = math.max(1.0, r * (gold ? 0.1 : 0.08))
+        ..color = _blend(glow, _white, gold ? 0.45 : 0.3)
+            .withValues(alpha: gold ? 0.95 : 0.8),
     );
-    // White-hot core.
     canvas.drawCircle(center, r * _starCoreFactor,
         Paint()..color = _white.withValues(alpha: 0.9));
   }
 
+  /// A BOMB as ONE unmistakable red "X": a soft danger halo, a single wake puff
+  /// for the angle, two bright crossed strokes (the X), and a small hot core. No
+  /// fuse / shell / ember clutter — the silhouette alone says "DON'T CATCH".
   static void _drawBomb(
       Canvas canvas, Offset center, double r, double t, Offset velDir) {
-    // Pulsing red danger halo so a bomb screams "DON'T CATCH" from a distance.
     final pulse = 0.5 + 0.5 * math.sin(t * 7.0);
+
+    // One faint red wake puff reveals the ANGLED approach.
+    _drawWake(canvas, center, r, _bombEdge, velDir);
+
+    // Pulsing red danger halo so the bomb screams "DON'T CATCH" from a distance.
     final haloR = r * _bombHaloFactor * (0.9 + 0.15 * pulse);
-
-    // Faint red motion-streak behind the bomb along its travel line so its
-    // ANGLED approach reads (stacked fading puffs, opposite the direction).
-    final wake = -_safeDir(velDir);
-    final streak = Paint();
-    for (var i = _cometSegments; i >= 1; i--) {
-      final f = i / _cometSegments;
-      final back = r * (_cometLenFactor * 0.7) * f;
-      final segR = r * (0.7 - 0.42 * f);
-      streak.color = _bombEdge
-          .withValues(alpha: ((1.0 - f) * 0.16).clamp(0.0, 1.0));
-      canvas.drawCircle(center.translate(wake.dx * back, wake.dy * back),
-          segR.clamp(0.5, r), streak);
-    }
-
     canvas.drawCircle(
       center,
       haloR,
@@ -588,77 +515,32 @@ class CatchRenderer {
           center,
           haloR,
           [
-            _bombEdge.withValues(alpha: 0.30 + 0.18 * pulse),
+            _bombEdge.withValues(alpha: 0.34 + 0.18 * pulse),
             const Color(0x00000000),
           ],
         ),
     );
 
-    // Fuse cord rising from the top of the shell, with a flickering spark tip.
-    final fuseBase = center.translate(r * 0.18, -r * 0.78);
-    final fuseTip = center.translate(r * 0.42, -r * (0.78 + _fuseLen * 0.6));
-    canvas.drawLine(
-      fuseBase,
-      fuseTip,
-      Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = math.max(1.0, r * 0.1)
-        ..color = _fuse,
-    );
-    // Crackling spark head: a flickering ember halo (sized by a fast sine) with
-    // a hot white core, ringed by deterministic embers that pop in and out.
-    final crackle = 0.5 + 0.5 * math.sin(t * 13.0); // fast flame flutter
-    final sparkR = r * (0.16 + 0.07 * pulse);
-    canvas.drawCircle(
-      fuseTip,
-      sparkR * (2.2 + 0.9 * crackle),
-      Paint()..color = _ember.withValues(alpha: 0.30 + 0.22 * crackle),
-    );
-    canvas.drawCircle(
-      fuseTip,
-      sparkR * 1.6,
-      Paint()..color = _spark.withValues(alpha: 0.55 + 0.25 * crackle),
-    );
-    canvas.drawCircle(
-        fuseTip, sparkR * (0.9 + 0.2 * crackle), Paint()..color = _white);
-    // Embers flung outward — each on its own phase so they twinkle chaotically.
-    final emberPaint = Paint();
-    for (var i = 0; i < _emberCount; i++) {
-      final phase = t * (4.0 + i) + i * 1.7; // per-ember deterministic clock
-      final life = 0.5 + 0.5 * math.sin(phase); // 0..1 spawn→fade
-      final ang = i * (math.pi * 2 / _emberCount) + t * 1.3;
-      final dist = sparkR * (1.4 + 2.6 * life);
-      final pos = fuseTip.translate(math.cos(ang) * dist,
-          math.sin(ang) * dist - sparkR * life * 1.5); // drift up like sparks
-      emberPaint.color = _blend(_spark, _ember, life)
-          .withValues(alpha: (0.7 * (1.0 - life)).clamp(0.0, 1.0));
-      canvas.drawCircle(pos, sparkR * (0.42 - 0.22 * life), emberPaint);
-    }
-
-    // Dark round shell with a soft top-left highlight.
-    canvas.drawCircle(
-      center,
-      r,
-      Paint()
-        ..shader = Gradient.radial(
-          center.translate(-r * 0.35, -r * 0.35),
-          r * 1.3,
-          const [_bombHi, _bombBody],
-          const [0.0, 1.0],
-        ),
-    );
-    // Red danger rim.
-    canvas.drawCircle(
-      center,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.5, r * 0.12)
-        ..color = _bombEdge.withValues(alpha: 0.85),
-    );
-    // Tiny glint.
-    canvas.drawCircle(center.translate(-r * 0.3, -r * 0.3), r * 0.16,
-        Paint()..color = _white.withValues(alpha: 0.5));
+    // The "X": two crossed strokes. A dark underlay gives the bright red rim a
+    // crisp glassy edge so it reads against any lane color.
+    final arm = r * _bombArmFactor;
+    final a1 = center.translate(-arm, -arm), a2 = center.translate(arm, arm);
+    final b1 = center.translate(-arm, arm), b2 = center.translate(arm, -arm);
+    final under = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(2.0, r * 0.46)
+      ..color = _bombBody.withValues(alpha: 0.9);
+    canvas.drawLine(a1, a2, under);
+    canvas.drawLine(b1, b2, under);
+    final cross = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = math.max(1.5, r * 0.3)
+      ..color = _bombEdge.withValues(alpha: 0.95);
+    canvas.drawLine(a1, a2, cross);
+    canvas.drawLine(b1, b2, cross);
+    // Hot center where the strokes meet.
+    canvas.drawCircle(center, r * 0.22,
+        Paint()..color = _blend(_bombEdge, _white, 0.4).withValues(alpha: 0.9));
   }
 
   /// A player's basket at the catch line. [center] is its pixel position, [mouth]
