@@ -14,16 +14,19 @@ import '../../engine/player_manager.dart';
 import 'sumo_fx.dart';
 import 'sumo_render.dart';
 
-/// Sumo Smash — "Schianto & Brace": a readable LUNGE-vs-BRACE mind-game in a
-/// circular dohyo. Not shove-spam — a duel of reads.
+/// Sumo Smash — "Last One Standing": a readable LUNGE-vs-BRACE mind-game in a
+/// circular dohyo, played as REAL-SUMO SINGLE ELIMINATION. Not shove-spam, not a
+/// scored brawl — a tense FFA where every ring-out is FATAL.
 ///
-/// SCORED BRAWL (kept from the original): the round runs the FULL [_timeLimit]
-/// and your SCORE is the number of ring-outs you CAUSE. A knocked-out wrestler
-/// does NOT end the round — it RESPAWNS ~[_respawnSec] later, flung back in from
-/// its spawn edge with a brief spawn-invuln, so a 1v1 becomes a sustained duel:
-/// ring the rival, it comes back, most KOs in [_timeLimit] wins. A ring-out
-/// credits the LAST wrestler who launched the victim; ringing YOURSELF out (no
-/// recent attacker) scores nobody and docks [_selfRingPenalty].
+/// ELIMINATION (the identity): a ring-out ELIMINATES that wrestler PERMANENTLY —
+/// NO RESPAWN. The round ends the instant <= 1 wrestler is left in the dohyo; the
+/// lone survivor WINS. Ranking is by REVERSE elimination order: the survivor is
+/// 1st, the last wrestler eliminated is 2nd, … the first out is last. A
+/// time-limit FALLBACK guarantees resolution: if more than one is still alive at
+/// [_timeLimit], the alive ones rank first (closest-to-centre = best, i.e. the
+/// most in-control) ahead of the eliminated (reverse KO order). SOLO (1 player,
+/// no rivals) wins immediately. Because there is no respawn, every exchange is
+/// potentially lethal, so the lunge/brace bluff is the whole, tense game.
 ///
 /// CONTROL — one touch, two intents (the heart of it):
 ///  * SHORT TAP (down→up within [_braceThresholdSec]) = **LUNGE**: one strong
@@ -38,23 +41,27 @@ import 'sumo_render.dart';
 /// THE READ (core fun): a LUNGE into a BRACED foe → the LUNGER is REPELLED
 /// backward + STUNNED ([_stunSec], exposed, can't act, drifts) and the braced
 /// foe barely moves. A LUNGE into a NON-braced / moving foe → LAUNCHES them
-/// (ring-out). So you bait the brace, wait for the drop, then lunge. Bracing too
-/// early/long means you cannot attack while a smart foe repositions.
+/// (ring-out = ELIMINATED). So you bait the brace, wait for the drop, then lunge.
+/// Bracing too early/long means you cannot attack while a smart foe repositions.
 ///
 /// WHY SPAM LOSES (a tested design law): each lunge exposes a recovery window;
 /// lunging into a braced/aware opponent is repelled + stunned and drifts toward
-/// the rim → you self-ring. A blind masher who only lunges therefore loses to a
-/// measured player who baits, braces and counters.
+/// the rim → you self-ring → with no respawn you are OUT. A blind masher who only
+/// lunges therefore is eliminated early and LOSES to a measured player who baits,
+/// braces and counters.
 ///
 /// Feel: low-friction clay so a launch carries the victim off the ring; the
-/// dohyo shrinks after a grace (SUDDEN DEATH) so the late duel tightens; the
-/// star pickup buffs your next lunges. FINAL TWO / WINNER confetti spectacle.
+/// dohyo shrinks fast after a short grace as an anti-stall SUDDEN DEATH that
+/// forces a quick finish so nobody sits out long. FINAL TWO showdown the instant
+/// two remain; WINNER confetti for the lone survivor; an OUT! beat per ring-out.
 ///
 /// Bots cannot drag, so they aim at the nearest opponent and either BRACE (when
 /// a foe is lunging at them, reaction/accuracy gated) or LUNGE (when a foe is in
-/// range and not braced). Easy bots mistime (lunge into braces, brace at random,
-/// mis-aim); hard bots read well. [BotProfile] + [ReactionClock] + a warmup
-/// grace govern timing so they never instantly ring an idle human.
+/// range and not braced). Easy bots mistime (lunge into braces, over-commit off
+/// the rim and self-eliminate, mis-aim); hard bots read + survive. [BotProfile] +
+/// [ReactionClock] + a warmup grace govern timing so they never instantly ring an
+/// idle human. With no respawn a self-ring is fatal, so a clumsy easy bot tends
+/// to eliminate itself — exactly the behaviour a measured player exploits.
 class SumoSmash extends MiniGameBase {
   @override
   MiniGameMeta get meta => const MiniGameMeta(
@@ -67,10 +74,10 @@ class SumoSmash extends MiniGameBase {
   );
 
   // ── Arena / sim tuning ──────────────────────────────────────────────────────
-  // Tuned for a sustained ~28s duel: small bodies + big ring + grippy clay so a
-  // stray bump never ejects an idle player; ring-outs come from a committed
-  // lunge into an unbraced foe near the edge. KO'd wrestlers respawn, so the
-  // round always plays the FULL limit.
+  // Small bodies + big ring + grippy clay so a stray bump never ejects an idle
+  // player; ring-outs come from a committed lunge into an unbraced foe near the
+  // edge. There is NO respawn — a ring-out is fatal — so the round normally ends
+  // by elimination well before [_timeLimit]; the cap is only a safety fallback.
   static const double _timeLimit = 28;
   static const double _ringRadiusFactor = 0.46;
   static const double _bodyRadiusFactor = 0.05;
@@ -87,13 +94,18 @@ class SumoSmash extends MiniGameBase {
   // unbraced rival near the rim) that does NOT coast across the whole ring and
   // off the far edge. Over-committing only self-rings you when you lunge while
   // ALREADY near the rim — a positioning mistake, not every lunge.
-  static const double _lungeImpulse = 3.1; // × ringRadius (peak dash speed)
+  // Kept SHORT-RANGE on purpose: with NO respawn a self-ring is fatal, so a
+  // lunge must close a combat gap and SLAM a foe (the ring-out comes from the
+  // contact knockback, not the lunger flying off) without itself coasting to the
+  // rim from a central/mid position. Over-committing self-rings you only when you
+  // lunge while ALREADY near the rim — a real positioning mistake.
+  static const double _lungeImpulse = 2.5; // × ringRadius (peak dash speed)
   static const double _lungeSelfPushback = 0.06; // tiny recoil opposite a lunge
   // After a lunge: cannot act for this long (the commitment cost). The dash
   // carries free for [_lungeCarrySec] then the rest of recovery brakes it.
   static const double _recoverySec = 0.35;
-  static const double _lungeCarrySec = 0.13; // full-speed dash window
-  static const double _lungeBrakeRetain = 0.55; // speed kept per 1/60s post-carry
+  static const double _lungeCarrySec = 0.10; // full-speed dash window
+  static const double _lungeBrakeRetain = 0.45; // speed kept per 1/60s post-carry
   // While braced, retain only this share of incoming knockback (near-immovable),
   // and root the body to a hard stop so a braced wrestler holds the centre.
   static const double _braceKnockbackRetain = 0.10;
@@ -120,52 +132,57 @@ class SumoSmash extends MiniGameBase {
   static const double _headOnExtra = 0.85;
   static const double _heavyHitSpeed = 380.0;
   static const double _idleHitFloor = 0.22; // non-lunge bump knockback share
+  // Knockback a hit transfers to a victim at dead-CENTRE, as a fraction of the
+  // knockback the same hit transfers at the rim. < 1 means you cannot ring out a
+  // foe from the middle — you must push it toward the edge first. This is the
+  // skill discriminator under elimination (central bots survive a counter).
+  static const double _rimKnockbackFloor = 0.12;
   // Contact is detected within this × the summed radii. A margin > 1 catches the
   // frame the bodies are closest even though the arena's own elastic step has
   // already nudged them apart, so the LUNGE-vs-BRACE read never slips through.
   static const double _contactMargin = 1.3;
 
-  // ── Shrinking ring tuning ───────────────────────────────────────────────────
-  static const double _shrinkDelaySec = 9.0;
-  static const double _minRingFactor = 0.5;
-  static const double _shrinkPerSec = 0.024;
+  // ── Shrinking ring tuning (anti-stall SUDDEN DEATH) ─────────────────────────
+  // After a short grace the dohyo collapses FAST so a stalled FFA is forced to a
+  // finish: with this floor + rate a 4p all-bot round reliably ends by
+  // elimination (the rim closes onto the wrestlers) well under [_timeLimit] —
+  // typically ~12-22s — so nobody sits the round out and the cap rarely fires.
+  static const double _shrinkDelaySec = 4.0;
+  static const double _minRingFactor = 0.34;
+  static const double _shrinkPerSec = 0.052;
 
   // ── Climax (sudden death) tuning ────────────────────────────────────────────
-  static const double _suddenDeathFrac = 0.72; // enters at this share of time
-  static const double _suddenDeathShrinkMul = 2.6;
-  static const double _suddenDeathFloorMul = 0.78;
-  static const double _showdownMargin = 1.0; // within this many KOs of the lead
-
-  // ── Star pickup (chaos) tuning ──────────────────────────────────────────────
-  // One star floats near the centre; grabbing it buffs your next lunges. Any
-  // wrestler can take it, so it creates a scramble + swings.
-  static const double _starRadiusFactor = 0.55;
-  static const double _starFirstSpawnSec = 4.0;
-  static const double _starRespawnSec = 7.5;
-  static const double _starSpawnSpreadFactor = 0.42;
-  static const double _starAppearPerSec = 3.0;
-  static const double _starSpinPerSec = 3.2;
-  static const double _starLifeSec = 6.0;
-  static const double _buffSec = 4.0; // how long the lunge buff lasts
-  static const double _buffLungeMul = 1.55; // lunge magnitude × this while buffed
+  // Sudden death enters early (a small share of the cap) and shrinks harder, so
+  // the squeeze that ends the round arrives quickly.
+  static const double _suddenDeathFrac = 0.30; // enters at this share of time
+  static const double _suddenDeathShrinkMul = 2.4;
+  static const double _suddenDeathFloorMul = 0.82;
 
   // ── Kid-assist (comeback) tuning ────────────────────────────────────────────
-  // A wrestler teetering in the last sliver before the edge while moving SLOWLY
-  // gets a gentle inward brake — a young player merely drifting out is nudged
-  // back, but a genuine launch (fast) still ejects them.
-  static const double _rescueBandFactor = 0.93;
-  static const double _rescueMaxSpeed = 150.0;
-  static const double _rescueBrakePerSec = 2.6;
+  // A wrestler near the edge while moving SLOWLY is firmly pulled back toward the
+  // centre — a player merely drifting (or being chased by the shrinking rim) is
+  // kept in play, but a genuine LAUNCH (fast, above [_rescueMaxSpeed]) still
+  // ejects them. This is what lets the anti-stall squeeze COMPRESS everyone into
+  // a brawl instead of auto-ejecting an idle, in-control wrestler: eliminations
+  // come from combat, not from sitting still. The band is wide and the pull
+  // strong so the rescue out-paces the (fast) shrink for a controlled body.
+  static const double _rescueBandFactor = 0.80;
+  static const double _rescueMaxSpeed = 220.0;
+  static const double _rescueBrakePerSec = 9.0;
 
   // ── Ring-out fling tuning ───────────────────────────────────────────────────
   static const double _flingBaseFactor = 0.5;
   static const double _flingSpeedFactor = 0.55;
 
-  // ── Scored brawl: KO credit + respawn ───────────────────────────────────────
-  static const double _respawnSec = 1.2; // delay before a KO'd wrestler returns
-  static const double _spawnInvulnSec = 0.9; // post-respawn grace (no KO either way)
-  static const double _attackerCreditSec = 1.1; // a hit credits a KO this recently
-  static const double _selfRingPenalty = 1.0; // score docked for a self-ring-out
+  // ── Start grace ──────────────────────────────────────────────────────────────
+  // A brief opening invuln so nobody is rung out in the first instant (there is
+  // NO post-respawn invuln — there is no respawn).
+  static const double _startInvulnSec = 0.6;
+
+  // ── Elimination classification ───────────────────────────────────────────────
+  // A ring-out where a foe launched the victim THIS recently counts as a kill;
+  // otherwise the victim rang ITSELF out (drift / over-commit off the rim).
+  static const double _attackerCreditSec = 1.1;
 
   // ── Bot tuning ──────────────────────────────────────────────────────────────
   static const double _botWarmupSec = 2.0; // grace before bots engage
@@ -191,7 +208,7 @@ class SumoSmash extends MiniGameBase {
 
   // ── Visuals ─────────────────────────────────────────────────────────────────
   static const Color _accent = Color(0xFFFFC062);
-  static const Color _starColor = Color(0xFFFFE45C); // pickup gold
+  static const Color _outColor = Color(0xFFFF5A4D); // elimination red
   static const Color _braceColor = Color(0xFF7FE3FF); // cool shield blue
   static const int _dustMotes = 22;
 
@@ -216,16 +233,12 @@ class SumoSmash extends MiniGameBase {
   final Set<int> _braceContacts = <int>{}; // brace-read debounce (pre-step)
   final List<Offset> _dust = <Offset>[];
 
-  /// Spawn position per player, reused to fling a respawn back in from its edge.
-  final Map<int, Offset> _spawnPos = <int, Offset>{};
+  /// Elimination order, FIRST-out → LAST-out (no respawn — once added, gone).
+  final List<int> _eliminationOrder = <int>[];
 
-  /// KO'd wrestlers waiting to respawn (id → seconds remaining).
-  final Map<int, double> _respawnTimers = <int, double>{};
-
-  late StarController _stars;
   bool _suddenDeathAnnounced = false;
-  bool _showdownAnnounced = false; // one-shot: the FINAL-2 KO-race callout
-  bool _winnerCheered = false; // one-shot: the leader cheers when time expires
+  bool _showdownAnnounced = false; // one-shot: the FINAL-2 (two left) callout
+  bool _finished = false; // one-shot guard so the winner beat fires once
 
   @override
   void init(MiniGameContext ctx) {
@@ -237,22 +250,13 @@ class SumoSmash extends MiniGameBase {
     _ringRadius = minSide * _ringRadiusFactor;
     _currentRingRadius = _ringRadius;
     _bodyRadius = minSide * _bodyRadiusFactor;
-    _stars = StarController(
-      radius: _bodyRadius * _starRadiusFactor,
-      firstSpawnSec: _starFirstSpawnSec,
-      respawnSec: _starRespawnSec,
-      lifeSec: _starLifeSec,
-      appearPerSec: _starAppearPerSec,
-      spinPerSec: _starSpinPerSec,
-      spawnSpreadFactor: _starSpawnSpreadFactor,
-    );
     _proportions = _sumoProportions();
     _footReach = _proportions.thigh + _proportions.shin;
 
     // The arena's own ring-falloff must NOT cull bodies: this game owns
     // elimination via [_detectRingOuts] against the *shrinking* radius so the KO
-    // juice, ragdoll fling and credit all fire. Use a radius beyond the screen
-    // so the arena never falls a body off.
+    // juice and ragdoll fling all fire. Use a radius beyond the screen so the
+    // arena never falls a body off.
     _arena = PushArena(
       center: _center,
       ringRadius: _size.width + _size.height,
@@ -275,7 +279,6 @@ class SumoSmash extends MiniGameBase {
       final angle = (i / count) * math.pi * 2 + math.pi / 2;
       final pos =
           _center + Offset(math.cos(angle), math.sin(angle)) * spawnRadius;
-      _spawnPos[p.id] = pos;
       _arena.add(Body(id: p.id, pos: pos, radius: _bodyRadius));
 
       final facing = pos.dx <= _center.dx ? 1.0 : -1.0;
@@ -286,8 +289,9 @@ class SumoSmash extends MiniGameBase {
       )..setLoco(LocoState.idle);
 
       // Aim starts pointing toward the centre so the first lunge is sensible.
+      // A brief opening invuln so nobody is rung out in the first instant.
       final towardCenter = math.atan2(_center.dy - pos.dy, _center.dx - pos.dx);
-      _fighters[p.id] = _Fighter(aim: towardCenter);
+      _fighters[p.id] = _Fighter(aim: towardCenter)..invuln = _startInvulnSec;
       if (p.isBot) {
         _botClocks[p.id] = ReactionClock(ctx.botProfile, ctx.rng);
       }
@@ -400,16 +404,8 @@ class SumoSmash extends MiniGameBase {
     _juice.update(dt);
 
     _tickFighters(dt);
-    _tickRespawns(dt);
     _driveBots(dt);
     _shrinkRing(dt);
-    _stars.tick(
-      dt,
-      _arena.aliveBodies.length,
-      ctx.rng,
-      _center,
-      _currentRingRadius,
-    );
 
     // THE READ must be resolved BEFORE the arena integrates/collides: a lunge
     // into a brace cancels the lunger's velocity (so the arena cannot then
@@ -427,7 +423,6 @@ class SumoSmash extends MiniGameBase {
       brakePerSec: _rescueBrakePerSec,
       dt: sdt,
     );
-    _collectStars();
     _resolveContacts();
     _syncFigures(sdt);
     _detectRingOuts();
@@ -576,14 +571,28 @@ class SumoSmash extends MiniGameBase {
     final aim = math.atan2(to.dy, to.dx) + ctx.rng.jitter(err);
     f.aim = aim;
 
+    final selfRimFrac = (self.pos - _center).distance / _currentRingRadius;
+
     // 4) ATTACK — a foe in lunge range. A SKILLED bot only lunges when the foe is
     // NOT bracing (a read it wins by accuracy); a WEAK bot lunges anyway and gets
-    // repelled + stunned, drifting toward the rim.
+    // repelled + stunned, drifting toward the rim. A skilled bot also REFUSES a
+    // lunge that would leave it stranded out near the rim (where a counter ejects
+    // it) — a low-accuracy bot has no such restraint and over-commits.
     if (dist <= _bodyRadius * _botLungeRangeFactor) {
       final targetBracing = _fighters[targetId]?.bracing ?? false;
       final readsTheBrace = ctx.rng.chance(acc); // skill = seeing the brace
       if (targetBracing && readsTheBrace) {
         // Saw the brace → hold (don't feed a stun). A patient bot beats a wall.
+        return;
+      }
+      // SAFE-LUNGE GATE (skill): a high-accuracy bot only commits a lunge from a
+      // reasonably central spot, so after the dash it is not exposed at the rim.
+      // Gated by acc² so a WEAK bot almost never restrains itself — it over-
+      // commits at the rim and self-eliminates, while a HARD bot reliably pulls
+      // back to safety.
+      final tooExposedToLunge = selfRimFrac > (0.82 - 0.34 * acc);
+      if (tooExposedToLunge && ctx.rng.chance(acc * acc)) {
+        _botRecenter(playerId, self, f, err);
         return;
       }
       _commitLunge(playerId, self, aim);
@@ -595,16 +604,35 @@ class SumoSmash extends MiniGameBase {
     // leaves bots idling apart). Only from WELL inside the ring (so the dash can't
     // fling the bot off), only when the foe is not bracing (don't dash into a
     // wall), and only sometimes (accuracy-gated) so a bot does not robotically
-    // chain dashes into self-rings. Beyond the approach band the bot waits.
+    // chain dashes into self-rings. A skilled bot that has drifted out RECENTRES
+    // instead of chasing — staying central is how it survives a counter; a weak
+    // bot just keeps dashing and over-commits.
+    final targetBracing = _fighters[targetId]?.bracing ?? false;
+    if (selfRimFrac > 0.5 && ctx.rng.chance(acc * acc)) {
+      _botRecenter(playerId, self, f, err);
+      return;
+    }
     final wellInside =
         (self.pos - _center).distance < _currentRingRadius * 0.45;
-    final targetBracing = _fighters[targetId]?.bracing ?? false;
     if (wellInside &&
         !targetBracing &&
         dist <= _bodyRadius * _botApproachRangeFactor &&
-        ctx.rng.chance(0.35 + 0.4 * acc)) {
+        ctx.rng.chance(0.30 + 0.25 * acc)) {
       _commitLunge(playerId, self, aim);
     }
+  }
+
+  /// A skilled bot's safety move: a committed dash back toward the centre so it
+  /// is not stranded near the rim where a counter would eject it. (A weak bot
+  /// rarely picks this — accuracy-gated by the callers — so it stays exposed.)
+  void _botRecenter(int playerId, Body self, _Fighter f, double err) {
+    final toC = math.atan2(
+          _center.dy - self.pos.dy,
+          _center.dx - self.pos.dx,
+        ) +
+        ctx.rng.jitter(err);
+    f.aim = toC;
+    _commitLunge(playerId, self, toC);
   }
 
   /// The nearest alive opponent of [playerId] that is currently EXPOSED (stunned
@@ -660,10 +688,7 @@ class SumoSmash extends MiniGameBase {
     if (f == null || !f.canAct) return;
 
     final dir = Offset(math.cos(aimAngle), math.sin(aimAngle));
-    // A collected star briefly amplifies the lunge — the buffed wrestler hits
-    // noticeably harder, the core of the chaos swing.
-    final buffMul = f.buffed ? _buffLungeMul : 1.0;
-    final magnitude = _ringRadius * _lungeImpulse * buffMul;
+    final magnitude = _ringRadius * _lungeImpulse;
     // A lunge SETS the launch velocity (not stacks) so repeated taps can't pile
     // speed into a super-shot; each lunge is one clean committed dash.
     _arena.impulse(playerId, dir * magnitude - self.vel);
@@ -871,14 +896,24 @@ class SumoSmash extends MiniGameBase {
     // COMMIT GATE: only an ACTIVE LUNGE transfers full knockback; an incidental
     // bump (no live lunge) transfers only [_idleHitFloor], so a rival is launched
     // off the ring solely by a committed lunge — drifting into someone cannot
-    // luck-KO. A star-buffed lunge always counts as fully committed. The push
-    // rides the attacker→victim contact normal, with a fixed head-on boost (the
-    // dash is always aimed straight into the foe).
+    // luck-KO. The push rides the attacker→victim contact normal, with a fixed
+    // head-on boost (the dash is always aimed straight into the foe).
     final commit = attackerLunging ? 1.0 : _idleHitFloor;
+    // POSITION GATE: you cannot ring out a foe from the MIDDLE — the knockback a
+    // hit transfers scales up with how close the victim already is to the rim, so
+    // a launch only ejects an opponent you have first pushed to the edge. This is
+    // the skill discriminator under elimination: an EASY bot over-commits to the
+    // rim (exposed there → a counter ejects it), while a HARD bot that stays
+    // CENTRAL survives the same counter and lives to punish back.
+    final victimRimFrac =
+        ((victim.pos - _center).distance / _currentRingRadius).clamp(0.0, 1.0);
+    final positionGate = _rimKnockbackFloor +
+        (1.0 - _rimKnockbackFloor) * victimRimFrac;
     final bonus = _ringRadius *
         _contactBonusScale *
         speedFactor *
         commit *
+        positionGate *
         (1.0 + _headOnExtra);
     _arena.impulse(victim.id, toVictim * bonus);
 
@@ -911,38 +946,6 @@ class SumoSmash extends MiniGameBase {
       floor,
       _ringRadius,
     );
-  }
-
-  // ── Star pickup (chaos) ─────────────────────────────────────────────────────
-
-  /// Any wrestler overlapping a ready star collects it: brief lunge buff + a
-  /// burst + popup. The grabber gets a swingy edge — pure chaos for the table.
-  void _collectStars() {
-    final star = _stars.star;
-    if (star == null || !star.ready) return;
-    for (final b in _arena.aliveBodies) {
-      if ((b.pos - star.pos).distance > b.radius + star.radius) continue;
-      final f = _fighters[b.id];
-      if (f != null) f.buff = _buffSec;
-      _stars.consume();
-      _juice.particles.burst(
-        at: star.pos,
-        count: 18,
-        color: _starColor,
-        speed: 280,
-        size: 6,
-        gravity: 120,
-        life: 0.6,
-      );
-      _juice.hit(b.pos, _colorOf(b.id), sparks: 8);
-      _juice.popup(
-        b.pos.translate(0, -_bodyRadius * 1.8),
-        'POWER!',
-        _starColor,
-        size: 30,
-      );
-      return;
-    }
   }
 
   // ── Figures ─────────────────────────────────────────────────────────────────
@@ -983,11 +986,14 @@ class SumoSmash extends MiniGameBase {
 
   // ── Ring-out ────────────────────────────────────────────────────────────────
 
+  /// Eject any wrestler now outside the (shrinking) ring: PERMANENT elimination
+  /// (no respawn). The order is recorded so the finish can rank by reverse
+  /// elimination (survivor first). A clear OUT! beat fires per ring-out.
   void _detectRingOuts() {
     var firedBig = false; // one cinematic ring-out beat per frame (kid-tasteful)
     for (final b in _arena.bodies) {
       if (!b.alive || _ragdolled.contains(b.id)) continue;
-      // A just-respawned wrestler cannot be rung out during its spawn grace.
+      // An opening-grace wrestler cannot be rung out in the first instant.
       if (_fighters[b.id]?.invulnerable ?? false) continue;
       if ((b.pos - _center).distance <= _currentRingRadius) continue;
 
@@ -995,14 +1001,24 @@ class SumoSmash extends MiniGameBase {
       b.alive = false;
       b.vel = Offset.zero;
       _ragdolled.add(b.id);
-      _scoreRingOut(b.id);
-      _respawnTimers[b.id] = _respawnSec;
+      // PERMANENT: record the elimination (no respawn). Classify it: a fresh
+      // attacker within the credit window means a foe launched it; otherwise it
+      // rang ITSELF out (drifted/over-committed off the rim) — the anti-spam tell
+      // the SPAM-LOSES test reads via [debugSelfRingsOf].
+      _eliminationOrder.add(b.id);
+      final vf = _fighters[b.id];
+      if (vf != null) {
+        final foeLaunched = vf.lastAttacker >= 0 &&
+            vf.lastAttacker != b.id &&
+            vf.attackerAge <= _attackerCreditSec;
+        if (!foeLaunched) vf.selfRings += 1;
+      }
 
       if (!firedBig) {
         firedBig = true;
-        _juice.bigMoment(b.pos, _colorOf(b.id), banner: 'RING OUT!');
+        _juice.bigMoment(b.pos, _outColor, banner: 'OUT!');
       } else {
-        _juice.ko(b.pos, _colorOf(b.id));
+        _juice.ko(b.pos, _outColor);
       }
       final outDir = _normalize(b.pos - _center);
       _juice.particles.burst(
@@ -1029,121 +1045,24 @@ class SumoSmash extends MiniGameBase {
     }
   }
 
-  /// Award a ring-out: credit the wrestler who last launched [victimId] (if the
-  /// hit was recent enough), bumping their [koScore]. A self-ring-out — no fresh
-  /// attacker — scores nobody and docks the victim [_selfRingPenalty], so a blind
-  /// lunger who flings itself off the edge actively loses ground. Live scores are
-  /// mirrored to the engine so the on-field HUD shows the KO race.
-  void _scoreRingOut(int victimId) {
-    final victim = _fighters[victimId];
-    final attackerId = victim?.lastAttacker ?? -1;
-    final recent = (victim?.attackerAge ?? double.infinity) <=
-        _attackerCreditSec;
-    if (victim != null) {
-      victim.lastAttacker = -1; // consumed — a later eject must be re-earned
-    }
-    if (attackerId >= 0 && attackerId != victimId && recent) {
-      final attacker = _fighters[attackerId];
-      if (attacker != null) {
-        attacker.koScore += 1;
-        setScore(attackerId, attacker.koScore);
-        final pos = _bodyOf(attackerId)?.pos;
-        if (pos != null) {
-          _juice.popup(
-            pos.translate(0, -_bodyRadius * 1.9),
-            'KO!',
-            _colorOf(attackerId),
-            size: 28,
-          );
-        }
-      }
-      return;
-    }
-    // Self-ring-out (or stale attacker): no credit, small penalty. The score may
-    // go NEGATIVE on purpose — that is the anti-spam signal that a blind lunger
-    // who rockets itself off the edge has actively LOST ground (the SPAM-LOSES
-    // tests rely on it). The winner is still whoever banked the most KOs.
-    if (victim != null) {
-      victim.koScore -= _selfRingPenalty;
-      victim.selfRings += 1;
-      setScore(victimId, victim.koScore);
-    }
-  }
-
-  /// Count down each KO'd wrestler's respawn timer; when it elapses, fling the
-  /// wrestler back in from its spawn edge at rest, clear its ragdoll, and grant
-  /// [_spawnInvulnSec] of grace so it cannot be re-ejected the instant it lands.
-  void _tickRespawns(double dt) {
-    if (_respawnTimers.isEmpty) return;
-    final ready = <int>[];
-    _respawnTimers.updateAll((id, t) => t - dt);
-    _respawnTimers.forEach((id, t) {
-      if (t <= 0) ready.add(id);
-    });
-    for (final id in ready) {
-      _respawnTimers.remove(id);
-      _respawn(id);
-    }
-  }
-
-  /// Bring [id] back into the dohyo from its spawn edge (clamped inside the
-  /// current shrunk ring), upright and invulnerable for a beat.
-  void _respawn(int id) {
-    final body = _bodyOf(id);
-    if (body == null) return;
-    final spawn = _spawnPos[id] ?? _center;
-    final fromCenter = spawn - _center;
-    final maxR = _currentRingRadius * 0.7;
-    final pos = fromCenter.distance > maxR
-        ? _center + _normalize(fromCenter) * maxR
-        : spawn;
-    body.pos = pos;
-    body.vel = Offset.zero; // flung back in at rest; the player re-aims
-    body.alive = true;
-    _ragdolled.remove(id);
-    _contactPairs.removeWhere((key) => key ~/ 8 == id || key % 8 == id);
-    _braceContacts.removeWhere((key) => key ~/ 8 == id || key % 8 == id);
-    final f = _fighters[id];
-    if (f != null) {
-      f
-        ..pressing = false
-        ..bracing = false
-        ..hasDragAim = false
-        ..pressHeld = 0
-        ..invuln = _spawnInvulnSec
-        ..recovery = 0
-        ..lungeCarry = 0
-        ..stun = 0
-        ..lastAttacker = -1
-        ..trail = null;
-    }
-    final fig = _figures[id];
-    if (fig != null) {
-      fig.exitRagdoll();
-      fig.facing = pos.dx <= _center.dx ? 1.0 : -1.0;
-      fig.setLoco(LocoState.idle);
-    }
-    _juice.particles.burst(
-      at: pos,
-      count: 12,
-      color: _colorOf(id),
-      speed: 220,
-      size: 6,
-      gravity: 120,
-      life: 0.5,
-    );
-    _juice.popup(
-      pos.translate(0, -_bodyRadius * 1.9),
-      'BACK!',
-      _colorOf(id),
-      size: 24,
-    );
-  }
-
   // ── Outcome ─────────────────────────────────────────────────────────────────
 
+  /// IDs still alive in the dohyo right now.
+  List<int> get _aliveIds =>
+      [for (final b in _arena.bodies) if (b.alive) b.id];
+
   void _resolveOutcome() {
-    if (!_suddenDeathAnnounced && _isSuddenDeath && ctx.players.length > 1) {
+    if (_finished) return;
+    final alive = _aliveIds;
+
+    // SOLO (no rivals): the lone player wins immediately.
+    if (ctx.players.length <= 1) {
+      _finishElimination(alive);
+      return;
+    }
+
+    // SUDDEN DEATH callout (anti-stall squeeze has begun).
+    if (!_suddenDeathAnnounced && _isSuddenDeath) {
       _suddenDeathAnnounced = true;
       _juice.shake.medium();
       _juice.popup(
@@ -1153,68 +1072,69 @@ class SumoSmash extends MiniGameBase {
         size: 38,
       );
     }
-    if (!_showdownAnnounced &&
-        _isSuddenDeath &&
-        ctx.players.length > 2 &&
-        _isTwoWayShowdown()) {
+
+    // FINAL TWO: literally two wrestlers left — the showdown beat (3+ starters).
+    if (!_showdownAnnounced && ctx.players.length > 2 && alive.length == 2) {
       _showdownAnnounced = true;
       _juice.slowMo(dur: 0.45, scale: 0.4);
       _juice.flashScreen(_accent, strength: 0.35);
       _juice.bigBanner('FINAL TWO!', color: _accent);
       _juice.shake.medium();
     }
-    // SCORED BRAWL: the round runs the FULL limit (KO'd wrestlers respawn), so it
-    // NEVER ends early. Most ring-outs wins.
-    if (_elapsed >= _timeLimit) _finishScored();
+
+    // WIN = SURVIVAL: the instant <= 1 remain, the survivor wins.
+    if (alive.length <= 1) {
+      _finishElimination(alive);
+      return;
+    }
+
+    // FALLBACK: more than one still alive at the cap. Rank the alive ones first
+    // (closest-to-centre = most in-control), then the eliminated by reverse KO.
+    if (_elapsed >= _timeLimit) {
+      final aliveByControl = [...alive]..sort(
+          (a, b) =>
+              _distFromCenter(a).compareTo(_distFromCenter(b)),
+        );
+      _finishElimination(aliveByControl);
+    }
   }
 
-  void _finishScored() {
-    if (!_winnerCheered) {
-      _winnerCheered = true;
-      final leader = _leaderId();
-      final fig = leader == null ? null : _figures[leader];
-      if (fig != null && !fig.isRagdoll) {
-        fig.setLoco(LocoState.idle);
-        fig.victory();
-      }
-      _juice.confetti(_size, colors: [_accent, _starColor, _colorOfLeader(leader)]);
-      if (ctx.players.length > 1) {
-        final at = (leader != null ? _bodyOf(leader)?.pos : null) ?? _center;
-        _juice.bigMoment(at, _colorOfLeader(leader), banner: 'WINNER!');
-      }
-    }
-    finishByScore();
+  double _distFromCenter(int id) {
+    final b = _bodyOf(id);
+    return b == null ? double.infinity : (b.pos - _center).distance;
   }
 
-  /// True when EXACTLY two players are within [_showdownMargin] KOs of the top
-  /// score and that top score is a real lead (> 0) — a genuine two-way race.
-  bool _isTwoWayShowdown() {
-    var top = double.negativeInfinity;
-    for (final p in ctx.players) {
-      final s = _fighters[p.id]?.koScore ?? 0;
-      if (s > top) top = s;
-    }
-    if (top <= 0) return false;
-    var contenders = 0;
-    for (final p in ctx.players) {
-      final s = _fighters[p.id]?.koScore ?? 0;
-      if (top - s <= _showdownMargin) contenders++;
-    }
-    return contenders == 2;
-  }
+  /// Finish: rank best→worst as [survivorsBest] (already best-first), then the
+  /// eliminated by REVERSE elimination order (last-out ranks above first-out).
+  /// Celebrate the lone survivor (winner). Idempotent via [_finished].
+  void _finishElimination(List<int> survivorsBest) {
+    if (_finished) return;
+    _finished = true;
 
-  /// The id with the highest [koScore] (ties → lowest id), or null if empty.
-  int? _leaderId() {
-    int? best;
-    double bestScore = double.negativeInfinity;
+    final ranking = <int>[
+      ...survivorsBest,
+      for (final id in _eliminationOrder.reversed) id,
+    ];
+    // Defensive: include any id not yet placed (should not happen) so the
+    // ranking is always a full permutation of the players.
     for (final p in ctx.players) {
-      final s = _fighters[p.id]?.koScore ?? 0;
-      if (s > bestScore) {
-        bestScore = s;
-        best = p.id;
-      }
+      if (!ranking.contains(p.id)) ranking.add(p.id);
     }
-    return best;
+
+    // WINNER celebration for the lone survivor.
+    final winner = ranking.isEmpty ? null : ranking.first;
+    final fig = winner == null ? null : _figures[winner];
+    if (fig != null && !fig.isRagdoll) {
+      fig.setLoco(LocoState.idle);
+      fig.victory();
+    }
+    _juice.confetti(_size, colors: [_accent, _braceColor, _colorOfId(winner)]);
+    if (ctx.players.length > 1) {
+      final at = (winner != null ? _bodyOf(winner)?.pos : null) ?? _center;
+      _juice.bigMoment(at, _colorOfId(winner), banner: 'WINNER!');
+    }
+
+    finishByOrder(ranking);
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -1233,9 +1153,6 @@ class SumoSmash extends MiniGameBase {
       accent: _accent,
       dangerPulse: _dangerPulse(),
     );
-
-    final star = _stars.star;
-    if (star != null) SumoFx.drawStar(canvas, star);
 
     _drawWrestlers(canvas);
 
@@ -1286,21 +1203,6 @@ class SumoSmash extends MiniGameBase {
           _bodyRadius,
           color,
           tr.strength,
-        );
-      }
-
-      // Star buff aura.
-      if (f != null && f.buffed) {
-        final pulse = 0.5 + 0.5 * math.sin(_animClock * 6.0);
-        canvas.drawCircle(
-          b.pos,
-          _bodyRadius * (1.45 + 0.15 * pulse),
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = _bodyRadius * 0.18
-            ..color = _starColor.withValues(
-              alpha: (0.45 + 0.35 * pulse).clamp(0.0, 1.0),
-            ),
         );
       }
 
@@ -1384,7 +1286,7 @@ class SumoSmash extends MiniGameBase {
     return const Color(0xFFFFFFFF);
   }
 
-  Color _colorOfLeader(int? leader) => leader == null ? _accent : _colorOf(leader);
+  Color _colorOfId(int? id) => id == null ? _accent : _colorOf(id);
 
   static int _pairKey(int a, int b) => a < b ? a * 8 + b : b * 8 + a;
 
@@ -1466,9 +1368,24 @@ class SumoSmash extends MiniGameBase {
       ..bracing = false;
   }
 
-  /// The ring-outs [id] has CAUSED (equal to the engine score this game reports).
+  /// A SURVIVAL score for [id]: how many rivals were eliminated before it (an
+  /// alive wrestler counts every elimination so far). Higher = survived longer,
+  /// so the survivor scores highest and the first-out scores 0 — a monotone proxy
+  /// for finishing rank that the balance/spam tests can compare directly.
   @visibleForTesting
-  double debugScoreOf(int id) => _fighters[id]?.koScore ?? 0;
+  double debugScoreOf(int id) {
+    final idx = _eliminationOrder.indexOf(id);
+    if (idx < 0) return _eliminationOrder.length.toDouble(); // still alive
+    return idx.toDouble();
+  }
+
+  /// True once [id] has been eliminated (rung out — permanent, no respawn).
+  @visibleForTesting
+  bool debugIsEliminated(int id) => _eliminationOrder.contains(id);
+
+  /// The elimination order so far, FIRST-out → LAST-out (test fixture only).
+  @visibleForTesting
+  List<int> get debugEliminationOrder => List<int>.unmodifiable(_eliminationOrder);
 
   /// Number of times [id] rang ITSELF out (no fresh attacker) this round.
   @visibleForTesting
@@ -1509,6 +1426,28 @@ class SumoSmash extends MiniGameBase {
     return b == null ? double.infinity : (b.pos - _center).distance;
   }
 
+  /// Distance of [id] from the centre as a fraction of the current (shrinking)
+  /// ring radius — 0 at dead centre, ~1 at the rim. Lets a test fixture read how
+  /// "in control" a wrestler is (the fallback ranks alive players by this).
+  @visibleForTesting
+  double debugRimFraction(int id) {
+    final b = _bodyOf(id);
+    if (b == null) return double.infinity;
+    return (b.pos - _center).distance / _currentRingRadius;
+  }
+
+  /// Angle (radians) from [id]'s body toward the ring centre — the direction a
+  /// skilled human would lunge to RECENTRE when it has drifted out. Zero if the
+  /// body is missing or already at the centre.
+  @visibleForTesting
+  double debugAngleToCenter(int id) {
+    final b = _bodyOf(id);
+    if (b == null) return 0;
+    final d = _center - b.pos;
+    if (d.distance < 1e-6) return 0;
+    return math.atan2(d.dy, d.dx);
+  }
+
   /// Elapsed sim seconds this round.
   @visibleForTesting
   double get debugElapsed => _elapsed;
@@ -1539,14 +1478,12 @@ class _Fighter {
   double stun = 0; // repelled-lunge lockout, seconds
   double botBraceTimer = 0; // a bot's auto-release brace countdown
 
-  double buff = 0; // seconds of star lunge-buff remaining
   bool nearFallReacted = false; // latched while teetering slowly near the edge
   _DashTrail? trail;
 
-  // ── Scored brawl ──
-  double koScore = 0; // ring-outs this wrestler has CAUSED (the score)
+  // ── Elimination bookkeeping ──
   int selfRings = 0; // times this wrestler rang ITSELF out (for tests)
-  double invuln = 0; // post-respawn grace, seconds (no KO either way)
+  double invuln = 0; // opening grace, seconds (no KO either way)
   int lastAttacker = -1; // id of the wrestler who last launched this one
   double attackerAge = 0; // seconds since [lastAttacker] was recorded
 
@@ -1560,7 +1497,6 @@ class _Fighter {
   /// recovering, not stunned, not in its spawn grace.
   bool get canAct => !pressing && recovery <= 0 && stun <= 0 && invuln <= 0;
   bool get stunned => stun > 0;
-  bool get buffed => buff > 0;
   bool get invulnerable => invuln > 0;
 
   // A fired lunge "counts" as committed for this long so the contact resolver
@@ -1606,7 +1542,6 @@ class _Fighter {
     if (recovery > 0) recovery = math.max(0, recovery - dt);
     if (lungeCarry > 0) lungeCarry = math.max(0, lungeCarry - dt);
     if (stun > 0) stun = math.max(0, stun - dt);
-    if (buff > 0) buff = math.max(0, buff - dt);
     if (invuln > 0) invuln = math.max(0, invuln - dt);
     attackerAge += dt;
     if (_lungeAge.isFinite) _lungeAge += dt;
